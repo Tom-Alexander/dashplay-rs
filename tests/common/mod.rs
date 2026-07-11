@@ -279,8 +279,9 @@ async fn serve_multi_period_path(
     State(state): State<MultiPeriodLiveState>,
     Path(path): Path<String>,
     uri: Uri,
+    headers: axum::http::HeaderMap,
 ) -> Response {
-    serve_static_path(&state.files, &path, &uri)
+    serve_static_path(&state.files, &path, &uri, &headers)
 }
 
 async fn serve_advancing_manifest(State(state): State<AdvancingLiveState>) -> Response {
@@ -319,11 +320,17 @@ async fn serve_advancing_path(
     State(state): State<AdvancingLiveState>,
     Path(path): Path<String>,
     uri: Uri,
+    headers: axum::http::HeaderMap,
 ) -> Response {
-    serve_static_path(&state.files, &path, &uri)
+    serve_static_path(&state.files, &path, &uri, &headers)
 }
 
-fn serve_static_path(files: &HashMap<String, Vec<u8>>, path: &str, uri: &Uri) -> Response {
+fn serve_static_path(
+    files: &HashMap<String, Vec<u8>>,
+    path: &str,
+    uri: &Uri,
+    headers: &axum::http::HeaderMap,
+) -> Response {
     let url_path = uri.path().trim_end_matches('/').to_string();
     if url_path.is_empty() {
         return StatusCode::NOT_FOUND.into_response();
@@ -339,10 +346,45 @@ fn serve_static_path(files: &HashMap<String, Vec<u8>>, path: &str, uri: &Uri) ->
         return StatusCode::NOT_FOUND.into_response();
     };
 
+    if let Some(range_hdr) = headers.get(axum::http::header::RANGE) {
+        if let Ok(range_str) = range_hdr.to_str() {
+            if let Some((start, end)) = parse_http_range(range_str, bytes.len()) {
+                let slice = &bytes[start..=end];
+                return Response::builder()
+                    .status(StatusCode::PARTIAL_CONTENT)
+                    .header(
+                        axum::http::header::CONTENT_RANGE,
+                        format!("bytes {start}-{end}/{}", bytes.len()),
+                    )
+                    .body(Body::from(slice.to_vec()))
+                    .unwrap_or_else(|_| StatusCode::INTERNAL_SERVER_ERROR.into_response());
+            }
+        }
+    }
+
     Response::builder()
         .status(StatusCode::OK)
         .body(Body::from(bytes.clone()))
         .unwrap_or_else(|_| StatusCode::INTERNAL_SERVER_ERROR.into_response())
+}
+
+fn parse_http_range(header: &str, len: usize) -> Option<(usize, usize)> {
+    let bytes_part = header.strip_prefix("bytes=")?;
+    let (start_s, end_s) = bytes_part.split_once('-')?;
+    let end = if end_s.is_empty() {
+        len.saturating_sub(1)
+    } else {
+        end_s.parse().ok()?
+    };
+    let start = if start_s.is_empty() {
+        len.saturating_sub(end + 1)
+    } else {
+        start_s.parse().ok()?
+    };
+    if start > end || end >= len {
+        return None;
+    }
+    Some((start, end))
 }
 
 fn path_matches_prefix(url_path: &str, prefix: &str) -> bool {
@@ -366,7 +408,12 @@ pub fn read_fixture(name: &str, relative: &str) -> String {
         .unwrap_or_else(|e| panic!("read fixture {name}/{relative}: {e}"))
 }
 
-async fn serve_path(State(state): State<AppState>, Path(path): Path<String>, uri: Uri) -> Response {
+async fn serve_path(
+    State(state): State<AppState>,
+    Path(path): Path<String>,
+    uri: Uri,
+    headers: axum::http::HeaderMap,
+) -> Response {
     let url_path = uri.path().trim_end_matches('/').to_string();
     if url_path.is_empty() {
         return StatusCode::NOT_FOUND.into_response();
@@ -385,7 +432,7 @@ async fn serve_path(State(state): State<AppState>, Path(path): Path<String>, uri
         }
     }
 
-    serve_static_path(&state.files, &path, &uri)
+    serve_static_path(&state.files, &path, &uri, &headers)
 }
 
 fn load_fixture_files(root: &FsPath) -> HashMap<String, Vec<u8>> {

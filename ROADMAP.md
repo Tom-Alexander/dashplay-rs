@@ -26,7 +26,7 @@ Status legend: `[ ]` not started · `[~]` partial · `[x]` done.
 | ABR (BOLA) | `[~]` | Works, but drives off a synthetic buffer estimate |
 | DRM | `[~]` | Widevine only; requires external CDM device |
 | Track selection | `[~]` | MIME type only (`audio/mp4`, `video/mp4`) |
-| Segment addressing | `[~]` | `SegmentTemplate` and `SegmentList` / `SegmentURL` |
+| Segment addressing | `[~]` | `SegmentTemplate`, `SegmentList` / `SegmentURL`, `SegmentBase` + byte ranges |
 | Playback control (seek/pause/stop) | `[ ]` | Not implemented |
 | Demux / decode | `[ ]` | Out of scope (bytes only) |
 | Metrics / rich events | `[ ]` | Only `Init`/`Segment`/`End` |
@@ -43,7 +43,7 @@ These close the largest gaps between "delivers some streams" and "handles confor
   hard-requires `AdaptationSet@SegmentTemplate` and errors otherwise.
 - [x] **SegmentList addressing.** Support explicit `SegmentList` / `SegmentURL` media
   addressing.
-- [ ] **SegmentBase + byte ranges.** Support `SegmentBase`, `Initialization@range`, and
+- [x] **SegmentBase + byte ranges.** Support `SegmentBase`, `Initialization@range`, and
   `indexRange` (single-file `sidx`-indexed representations).
 - [ ] **Full template variable set.** `$Bandwidth$` and width/format specifiers such as
   `$Number%05d$` / `$Time%0Nd$`.

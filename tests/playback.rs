@@ -64,6 +64,21 @@ async fn vod_segment_timeline_playback() {
 }
 
 #[tokio::test]
+async fn vod_segment_base_playback() {
+    let server = FixtureServer::spawn("vod_segment_base").await;
+    let events = play_single_track(&server.manifest_url, TIMEOUT)
+        .await
+        .expect("playback");
+
+    assert_eq!(init_payload(&events).as_deref(), Some(b"INIT!!!".as_ref()));
+    assert_eq!(
+        segment_payloads(&events),
+        vec![b"SEGMENT-1!!".to_vec(), b"SEGMENT-2!!".to_vec()]
+    );
+    assert!(has_end(&events));
+}
+
+#[tokio::test]
 async fn vod_audio_video_parallel_tracks() {
     let server = FixtureServer::spawn("vod_av").await;
     let tracks = play_all_tracks(&server.manifest_url, TIMEOUT)

@@ -12,10 +12,12 @@ use super::abr_controller::AbrController;
 use super::drm::License;
 use super::manifest::{self, TimelineBuildContext};
 use super::segment_blacklist::SegmentBlacklist;
-use super::segment_fetcher::fetch_bytes_with_base_failover;
+use super::segment_fetcher::{
+    fetch_bytes_with_base_failover, fetch_bytes_with_base_failover_and_range,
+};
 use super::types::PlayerEvent;
 use bytes::Bytes;
-use dash_mpd::{AdaptationSet, Period};
+use dash_mpd::{AdaptationSet, Period, Representation};
 use reqwest::Client;
 use tokio::sync::broadcast;
 
@@ -56,7 +58,35 @@ pub(crate) async fn run_adaptation_stream(ctx: AdaptationStreamContext) -> Resul
 
     let addressing = manifest::segment_addressing_for_timeline(&period, &adaptation_set)?;
 
-    let segments_all = manifest::timeline_segments_for_addressing(&addressing, &timeline_ctx)?;
+    let segments_all = match &addressing {
+        manifest::SegmentAddressing::Base(sb) if sb.indexRange.is_some() => {
+            let rep = adaptation_set
+                .representations
+                .first()
+                .ok_or(PlayerError::SegmentExhaustedRepresentations)?;
+            let bases = manifest::segment_bases_for_representation(
+                &segment_base_ctx,
+                &adaptation_set,
+                rep,
+            )?;
+            let rep_addressing =
+                manifest::segment_addressing_for_representation(&period, &adaptation_set, rep)?;
+            let merged_sb = match rep_addressing {
+                manifest::SegmentAddressing::Base(b) => b,
+                _ => sb.clone(),
+            };
+            let index_range = merged_sb
+                .indexRange
+                .as_deref()
+                .ok_or(PlayerError::MissingSegmentBaseIndexRange)?;
+            let br = manifest::parse_byte_range(index_range)?;
+            let index_bytes =
+                fetch_bytes_with_base_failover_and_range(&client, &bases, "", Some(br), &blacklist)
+                    .await?;
+            manifest::parse_sidx_index(&merged_sb, &index_bytes)?
+        }
+        _ => manifest::timeline_segments_for_addressing(&addressing, &timeline_ctx)?,
+    };
 
     // Align every adaptation set to the same media instant: pick the first segment whose
     // interval (in MPD time) still contains instants after `target`. Using "last segment with
@@ -104,9 +134,8 @@ pub(crate) async fn run_adaptation_stream(ctx: AdaptationStreamContext) -> Resul
             let rep_license = wv_by_rep.get(rep_id).cloned().or_else(|| license.clone());
             let rep_addressing =
                 manifest::segment_addressing_for_representation(&period, &adaptation_set, rep)?;
-            let init_path = init_path_for_addressing(&rep_addressing, rep_id)?;
-            let bytes =
-                fetch_bytes_with_base_failover(&client, &bases, &init_path, &blacklist).await?;
+            let init_target = init_target_for_addressing(&rep_addressing, rep_id)?;
+            let bytes = fetch_segment_target(&client, &bases, &init_target, &blacklist).await?;
             let init_bytes = Bytes::from(bytes);
             encrypted_init_by_rep.insert(rep_id.to_string(), init_bytes.clone());
             active_rep_id = Some(rep_id.to_string());
@@ -126,6 +155,7 @@ pub(crate) async fn run_adaptation_stream(ctx: AdaptationStreamContext) -> Resul
         }
     }
 
+    let mut sidx_segments_by_rep: HashMap<String, Vec<manifest::TimelineSegment>> = HashMap::new();
     let mut buffer_s = abr.buffer_s();
 
     for (local_idx, seg) in segments.into_iter().enumerate() {
@@ -142,11 +172,10 @@ pub(crate) async fn run_adaptation_stream(ctx: AdaptationStreamContext) -> Resul
         if active_rep_id.as_deref() != Some(rep_id) || !encrypted_init_by_rep.contains_key(rep_id) {
             let rep_addressing =
                 manifest::segment_addressing_for_representation(&period, &adaptation_set, rep)?;
-            let init_path = init_path_for_addressing(&rep_addressing, rep_id)?;
-            let init_bytes =
-                fetch_bytes_with_base_failover(&client, &bases, &init_path, &blacklist)
-                    .await
-                    .map(Bytes::from)?;
+            let init_target = init_target_for_addressing(&rep_addressing, rep_id)?;
+            let init_bytes = fetch_segment_target(&client, &bases, &init_target, &blacklist)
+                .await
+                .map(Bytes::from)?;
             encrypted_init_by_rep.insert(rep_id_string.clone(), init_bytes.clone());
             active_rep_id = Some(rep_id_string.clone());
 
@@ -165,14 +194,33 @@ pub(crate) async fn run_adaptation_stream(ctx: AdaptationStreamContext) -> Resul
         let rep_addressing =
             manifest::segment_addressing_for_representation(&period, &adaptation_set, rep)?;
         let list_idx = segment_start_index + local_idx;
-        let seg_path = media_path_for_addressing(&rep_addressing, &seg, list_idx, rep_id)?;
+        let mut seg_for_fetch = seg;
+        if let manifest::SegmentAddressing::Base(ref sb) = rep_addressing {
+            if sb.indexRange.is_some() {
+                let rep_segs = sidx_segments_for_rep(
+                    &client,
+                    &segment_base_ctx,
+                    &period,
+                    &adaptation_set,
+                    rep,
+                    &blacklist,
+                    &mut sidx_segments_by_rep,
+                )
+                .await?;
+                if let Some(rep_seg) = rep_segs.get(local_idx) {
+                    seg_for_fetch.media_range = rep_seg.media_range;
+                }
+            }
+        }
+        let seg_target =
+            media_target_for_addressing(&rep_addressing, &seg_for_fetch, list_idx, rep_id)?;
         let t0 = Instant::now();
-        let bytes = fetch_bytes_with_base_failover(&client, &bases, &seg_path, &blacklist).await?;
+        let bytes = fetch_segment_target(&client, &bases, &seg_target, &blacklist).await?;
         let elapsed_s = t0.elapsed().as_secs_f64().max(1e-6);
         let throughput_bps = (bytes.len() as f64 * 8.0) / elapsed_s;
 
         abr.observe_throughput(throughput_bps);
-        buffer_s = (buffer_s + seg.duration_s - elapsed_s).max(0.0);
+        buffer_s = (buffer_s + seg_for_fetch.duration_s - elapsed_s).max(0.0);
         abr.update_buffer(buffer_s);
 
         let mut data = Bytes::from(bytes);
@@ -192,9 +240,9 @@ pub(crate) async fn run_adaptation_stream(ctx: AdaptationStreamContext) -> Resul
         }
 
         let _ = tx.send(PlayerEvent::Segment {
-            number: seg.number,
-            time: seg.time,
-            sub_number: seg.sub_number,
+            number: seg_for_fetch.number,
+            time: seg_for_fetch.time,
+            sub_number: seg_for_fetch.sub_number,
             data,
         });
     }
@@ -202,55 +250,120 @@ pub(crate) async fn run_adaptation_stream(ctx: AdaptationStreamContext) -> Resul
     Ok(())
 }
 
-fn init_path_for_addressing(
+fn init_target_for_addressing(
     addressing: &manifest::SegmentAddressing,
     rep_id: &str,
-) -> Result<String, PlayerError> {
+) -> Result<manifest::SegmentFetchTarget, PlayerError> {
     match addressing {
         manifest::SegmentAddressing::Template(st) => {
             let init_tpl = st
                 .initialization
                 .as_deref()
                 .ok_or(PlayerError::MissingInitializationTemplate)?;
-            Ok(manifest::interpolate_template(
-                init_tpl, rep_id, None, None, None,
-            ))
+            Ok(manifest::SegmentFetchTarget {
+                path: manifest::interpolate_template(init_tpl, rep_id, None, None, None),
+                range: None,
+            })
         }
         manifest::SegmentAddressing::List(sl) => {
             let init_src = manifest::segment_list_init_source(sl)?;
-            Ok(manifest::interpolate_template(
-                init_src, rep_id, None, None, None,
-            ))
+            Ok(manifest::SegmentFetchTarget {
+                path: manifest::interpolate_template(init_src, rep_id, None, None, None),
+                range: None,
+            })
         }
+        manifest::SegmentAddressing::Base(sb) => manifest::segment_base_init_target(sb, rep_id),
     }
 }
 
-fn media_path_for_addressing(
+fn media_target_for_addressing(
     addressing: &manifest::SegmentAddressing,
     seg: &manifest::TimelineSegment,
     list_idx: usize,
     rep_id: &str,
-) -> Result<String, PlayerError> {
+) -> Result<manifest::SegmentFetchTarget, PlayerError> {
     match addressing {
         manifest::SegmentAddressing::Template(st) => {
             let media_tpl = st
                 .media
                 .as_deref()
                 .ok_or(PlayerError::MissingMediaTemplate)?;
-            Ok(manifest::interpolate_template(
-                media_tpl,
-                rep_id,
-                Some(seg.number),
-                Some(seg.time),
-                seg.sub_number,
-            ))
+            Ok(manifest::SegmentFetchTarget {
+                path: manifest::interpolate_template(
+                    media_tpl,
+                    rep_id,
+                    Some(seg.number),
+                    Some(seg.time),
+                    seg.sub_number,
+                ),
+                range: None,
+            })
         }
         manifest::SegmentAddressing::List(sl) => {
-            if let Some(url) = seg.media_url.as_deref() {
-                Ok(url.to_string())
+            let path = if let Some(url) = seg.media_url.as_deref() {
+                url.to_string()
             } else {
-                Ok(manifest::segment_list_media_for_index(sl, list_idx)?.to_string())
-            }
+                manifest::segment_list_media_for_index(sl, list_idx)?.to_string()
+            };
+            Ok(manifest::SegmentFetchTarget { path, range: None })
+        }
+        manifest::SegmentAddressing::Base(sb) => {
+            manifest::segment_base_media_target(sb, seg, rep_id)
         }
     }
+}
+
+async fn fetch_segment_target(
+    client: &Client,
+    bases: &[url::Url],
+    target: &manifest::SegmentFetchTarget,
+    blacklist: &SegmentBlacklist,
+) -> Result<Vec<u8>, PlayerError> {
+    if target.range.is_some() {
+        return fetch_bytes_with_base_failover_and_range(
+            client,
+            bases,
+            &target.path,
+            target.range,
+            blacklist,
+        )
+        .await;
+    }
+    fetch_bytes_with_base_failover(client, bases, &target.path, blacklist).await
+}
+
+async fn sidx_segments_for_rep<'a>(
+    client: &Client,
+    segment_base_ctx: &manifest::SegmentBaseContext,
+    period: &Period,
+    adaptation_set: &AdaptationSet,
+    rep: &Representation,
+    blacklist: &SegmentBlacklist,
+    cache: &'a mut HashMap<String, Vec<manifest::TimelineSegment>>,
+) -> Result<&'a [manifest::TimelineSegment], PlayerError> {
+    let rep_id = rep.id.as_deref().unwrap_or_default().to_string();
+    if let std::collections::hash_map::Entry::Vacant(e) = cache.entry(rep_id) {
+        let rep_addressing =
+            manifest::segment_addressing_for_representation(period, adaptation_set, rep)?;
+        let sb = match rep_addressing {
+            manifest::SegmentAddressing::Base(sb) => sb,
+            _ => return Ok(&[]),
+        };
+        let index_range = sb
+            .indexRange
+            .as_deref()
+            .ok_or(PlayerError::MissingSegmentBaseIndexRange)?;
+        let bases =
+            manifest::segment_bases_for_representation(segment_base_ctx, adaptation_set, rep)?;
+        let br = manifest::parse_byte_range(index_range)?;
+        let index_bytes =
+            fetch_bytes_with_base_failover_and_range(client, &bases, "", Some(br), blacklist)
+                .await?;
+        let segs = manifest::parse_sidx_index(&sb, &index_bytes)?;
+        e.insert(segs);
+    }
+    Ok(cache
+        .get(rep.id.as_deref().unwrap_or_default())
+        .map(|v| v.as_slice())
+        .unwrap_or(&[]))
 }

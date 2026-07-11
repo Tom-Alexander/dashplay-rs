@@ -71,6 +71,18 @@ pub enum PlayerError {
     MissingSegmentTemplate,
     #[error("missing SegmentList")]
     MissingSegmentList,
+    #[error("missing SegmentBase")]
+    MissingSegmentBase,
+    #[error("invalid byte range specifier: {0}")]
+    InvalidByteRange(String),
+    #[error("missing SegmentBase@indexRange")]
+    MissingSegmentBaseIndexRange,
+    #[error("SegmentBase@indexRange timeline requires fetched sidx index")]
+    SegmentBaseIndexNotLoaded,
+    #[error("failed to parse sidx index: {0}")]
+    SidxParse(String),
+    #[error("hierarchical sidx references are not supported")]
+    HierarchicalSidxNotSupported,
     #[error("SegmentList SegmentURL count does not match expanded timeline")]
     SegmentListUrlTimelineMismatch,
     #[error("SegmentList has no SegmentURL entries")]

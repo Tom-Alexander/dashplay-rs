@@ -2,7 +2,9 @@ use std::collections::HashSet;
 use std::time::Duration;
 
 use chrono::{DateTime, Utc};
-use dash_mpd::{AdaptationSet, BaseURL, MPD, Period, Representation, SegmentList, SegmentTemplate};
+use dash_mpd::{
+    AdaptationSet, BaseURL, MPD, Period, Representation, SegmentBase, SegmentList, SegmentTemplate,
+};
 use reqwest::Client;
 use url::Url;
 
@@ -77,6 +79,40 @@ pub(crate) struct TimelineSegment {
     pub sub_number: Option<u64>,
     /// Explicit `SegmentURL@media` when using `SegmentList` addressing (may be rep-specific).
     pub media_url: Option<String>,
+    /// Inclusive byte range for `SegmentBase@indexRange` / `Initialization@range` addressing.
+    pub media_range: Option<ByteRange>,
+}
+
+/// Inclusive byte range (`start`..=`end`) for HTTP Range requests.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) struct ByteRange {
+    pub start: u64,
+    pub end: u64,
+}
+
+/// Relative path plus optional byte range for a segment or init fetch.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub(crate) struct SegmentFetchTarget {
+    pub path: String,
+    pub range: Option<ByteRange>,
+}
+
+/// Parse a DASH range specifier (`start-end`, inclusive).
+pub(crate) fn parse_byte_range(range: &str) -> Result<ByteRange, PlayerError> {
+    let parts: Vec<&str> = range.split('-').collect();
+    if parts.len() != 2 {
+        return Err(PlayerError::InvalidByteRange(range.to_string()));
+    }
+    let start: u64 = parts[0]
+        .parse()
+        .map_err(|_| PlayerError::InvalidByteRange(range.to_string()))?;
+    let end: u64 = parts[1]
+        .parse()
+        .map_err(|_| PlayerError::InvalidByteRange(range.to_string()))?;
+    if end < start {
+        return Err(PlayerError::InvalidByteRange(range.to_string()));
+    }
+    Ok(ByteRange { start, end })
 }
 
 /// Rewind a timeline index so playback begins at a DASH random-access point aligned with
@@ -382,6 +418,7 @@ pub(crate) fn segment_template_for_timeline(
 pub(crate) enum SegmentAddressing {
     Template(SegmentTemplate),
     List(SegmentList),
+    Base(SegmentBase),
 }
 
 fn has_segment_list_in_chain(
@@ -401,6 +438,218 @@ fn adaptation_set_uses_segment_list(period: &Period, adaptation_set: &Adaptation
             .representations
             .iter()
             .any(|r| r.SegmentList.is_some())
+}
+
+fn adaptation_set_uses_segment_template(period: &Period, adaptation_set: &AdaptationSet) -> bool {
+    period.SegmentTemplate.is_some()
+        || adaptation_set.SegmentTemplate.is_some()
+        || adaptation_set
+            .representations
+            .iter()
+            .any(|r| r.SegmentTemplate.is_some())
+}
+
+fn adaptation_set_uses_segment_base(period: &Period, adaptation_set: &AdaptationSet) -> bool {
+    period.SegmentBase.is_some()
+        || adaptation_set.SegmentBase.is_some()
+        || adaptation_set
+            .representations
+            .iter()
+            .any(|r| r.SegmentBase.is_some())
+}
+
+fn has_segment_template_in_chain(
+    period: &Period,
+    adaptation_set: &AdaptationSet,
+    representation: Option<&Representation>,
+) -> bool {
+    period.SegmentTemplate.is_some()
+        || adaptation_set.SegmentTemplate.is_some()
+        || representation.is_some_and(|r| r.SegmentTemplate.is_some())
+}
+
+fn has_segment_base_in_chain(
+    period: &Period,
+    adaptation_set: &AdaptationSet,
+    representation: Option<&Representation>,
+) -> bool {
+    period.SegmentBase.is_some()
+        || adaptation_set.SegmentBase.is_some()
+        || representation.is_some_and(|r| r.SegmentBase.is_some())
+}
+
+/// Merge two `SegmentBase` nodes: `child` attributes override `parent` when present.
+fn merge_segment_base(parent: &SegmentBase, child: &SegmentBase) -> SegmentBase {
+    SegmentBase {
+        timescale: child.timescale.or(parent.timescale),
+        presentationTimeOffset: child
+            .presentationTimeOffset
+            .or(parent.presentationTimeOffset),
+        indexRange: child
+            .indexRange
+            .clone()
+            .or_else(|| parent.indexRange.clone()),
+        indexRangeExact: child.indexRangeExact.or(parent.indexRangeExact),
+        availabilityTimeOffset: child
+            .availabilityTimeOffset
+            .or(parent.availabilityTimeOffset),
+        availabilityTimeComplete: child
+            .availabilityTimeComplete
+            .or(parent.availabilityTimeComplete),
+        presentationDuration: child.presentationDuration.or(parent.presentationDuration),
+        eptDelta: child.eptDelta.or(parent.eptDelta),
+        pbDelta: child.pbDelta.or(parent.pbDelta),
+        Initialization: child
+            .Initialization
+            .clone()
+            .or_else(|| parent.Initialization.clone()),
+        representation_index: child
+            .representation_index
+            .clone()
+            .or_else(|| parent.representation_index.clone()),
+        failover_content: child
+            .failover_content
+            .clone()
+            .or_else(|| parent.failover_content.clone()),
+    }
+}
+
+fn merge_segment_base_chain(bases: &[Option<&SegmentBase>]) -> Option<SegmentBase> {
+    bases.iter().filter_map(|sb| *sb).fold(None, |acc, sb| {
+        Some(match acc {
+            None => sb.clone(),
+            Some(parent) => merge_segment_base(&parent, sb),
+        })
+    })
+}
+
+/// Effective `SegmentBase` for timeline expansion on an adaptation set.
+pub(crate) fn segment_base_for_timeline(
+    period: &Period,
+    adaptation_set: &AdaptationSet,
+) -> Result<SegmentBase, PlayerError> {
+    merge_segment_base_chain(&[
+        period.SegmentBase.as_ref(),
+        adaptation_set.SegmentBase.as_ref(),
+    ])
+    .or_else(|| {
+        adaptation_set
+            .representations
+            .iter()
+            .find_map(|r| r.SegmentBase.as_ref())
+            .cloned()
+    })
+    .ok_or(PlayerError::MissingSegmentBase)
+}
+
+/// Effective `SegmentBase` for fetching init/media of one representation.
+pub(crate) fn segment_base_for_representation(
+    period: &Period,
+    adaptation_set: &AdaptationSet,
+    representation: &Representation,
+) -> Result<SegmentBase, PlayerError> {
+    merge_segment_base_chain(&[
+        period.SegmentBase.as_ref(),
+        adaptation_set.SegmentBase.as_ref(),
+        representation.SegmentBase.as_ref(),
+    ])
+    .ok_or(PlayerError::MissingSegmentBase)
+}
+
+/// Build timeline segments from a parsed ISOBMFF `sidx` box and `SegmentBase@indexRange`.
+pub(crate) fn timeline_segments_from_sidx(
+    sb: &SegmentBase,
+    sidx: &dash_mpd::sidx::SidxBox,
+    index_start: u64,
+) -> Result<Vec<TimelineSegment>, PlayerError> {
+    let timescale = sb.timescale.unwrap_or(u64::from(sidx.timescale));
+    if timescale == 0 {
+        return Err(PlayerError::ZeroTimescale);
+    }
+    let presentation_time_offset = sb.presentationTimeOffset.unwrap_or(0);
+
+    let mut segments = Vec::with_capacity(sidx.references.len());
+    let mut current_pos = index_start;
+    let mut presentation_time = sidx.earliest_presentation_time;
+
+    for (i, sref) in sidx.references.iter().enumerate() {
+        if sref.reference_type != 0 {
+            return Err(PlayerError::HierarchicalSidxNotSupported);
+        }
+        let start = current_pos;
+        let end = current_pos.saturating_sub(1) + u64::from(sref.referenced_size);
+        let duration_ticks = u64::from(sref.subsegment_duration);
+        let duration_s = duration_ticks as f64 / timescale as f64;
+        let presentation_time_s =
+            presentation_time.saturating_sub(presentation_time_offset) as f64 / timescale as f64;
+
+        segments.push(TimelineSegment {
+            number: (i as u64).saturating_add(1),
+            time: presentation_time,
+            duration: duration_ticks,
+            duration_s,
+            presentation_time_s,
+            sub_number: None,
+            media_url: None,
+            media_range: Some(ByteRange { start, end }),
+        });
+
+        current_pos += u64::from(sref.referenced_size);
+        presentation_time = presentation_time.saturating_add(duration_ticks);
+    }
+
+    Ok(segments)
+}
+
+/// Parse `sidx` index bytes referenced by `SegmentBase@indexRange`.
+pub(crate) fn parse_sidx_index(
+    sb: &SegmentBase,
+    index_bytes: &[u8],
+) -> Result<Vec<TimelineSegment>, PlayerError> {
+    let index_range = sb
+        .indexRange
+        .as_deref()
+        .ok_or(PlayerError::MissingSegmentBaseIndexRange)?;
+    let br = parse_byte_range(index_range)?;
+    let index_start = br.end.saturating_add(1);
+    let sidx = dash_mpd::sidx::SidxBox::parse(index_bytes)
+        .map_err(|e| PlayerError::SidxParse(e.to_string()))?;
+    timeline_segments_from_sidx(sb, &sidx, index_start)
+}
+
+/// Init fetch target for merged `SegmentBase` addressing.
+pub(crate) fn segment_base_init_target(
+    sb: &SegmentBase,
+    rep_id: &str,
+) -> Result<SegmentFetchTarget, PlayerError> {
+    let init = sb
+        .Initialization
+        .as_ref()
+        .ok_or(PlayerError::MissingInitializationTemplate)?;
+    let path = init
+        .sourceURL
+        .as_deref()
+        .map(|s| interpolate_template(s, rep_id, None, None, None))
+        .unwrap_or_default();
+    let range = init.range.as_deref().map(parse_byte_range).transpose()?;
+    Ok(SegmentFetchTarget { path, range })
+}
+
+/// Media fetch target for one timeline segment under `SegmentBase` addressing.
+pub(crate) fn segment_base_media_target(
+    _sb: &SegmentBase,
+    seg: &TimelineSegment,
+    rep_id: &str,
+) -> Result<SegmentFetchTarget, PlayerError> {
+    let path = seg
+        .media_url
+        .as_deref()
+        .map(|s| interpolate_template(s, rep_id, Some(seg.number), Some(seg.time), seg.sub_number))
+        .unwrap_or_default();
+    Ok(SegmentFetchTarget {
+        path,
+        range: seg.media_range,
+    })
 }
 
 /// Merge two `SegmentList` nodes: `child` attributes override `parent` when present.
@@ -505,10 +754,19 @@ pub(crate) fn segment_addressing_for_timeline(
             adaptation_set,
         )?));
     }
-    Ok(SegmentAddressing::Template(segment_template_for_timeline(
-        period,
-        adaptation_set,
-    )?))
+    if adaptation_set_uses_segment_template(period, adaptation_set) {
+        return Ok(SegmentAddressing::Template(segment_template_for_timeline(
+            period,
+            adaptation_set,
+        )?));
+    }
+    if adaptation_set_uses_segment_base(period, adaptation_set) {
+        return Ok(SegmentAddressing::Base(segment_base_for_timeline(
+            period,
+            adaptation_set,
+        )?));
+    }
+    Err(PlayerError::MissingSegmentTemplate)
 }
 
 /// Effective segment addressing for fetching init/media of one representation.
@@ -524,9 +782,19 @@ pub(crate) fn segment_addressing_for_representation(
             representation,
         )?));
     }
-    Ok(SegmentAddressing::Template(
-        segment_template_for_representation(period, adaptation_set, representation)?,
-    ))
+    if has_segment_template_in_chain(period, adaptation_set, Some(representation)) {
+        return Ok(SegmentAddressing::Template(
+            segment_template_for_representation(period, adaptation_set, representation)?,
+        ));
+    }
+    if has_segment_base_in_chain(period, adaptation_set, Some(representation)) {
+        return Ok(SegmentAddressing::Base(segment_base_for_representation(
+            period,
+            adaptation_set,
+            representation,
+        )?));
+    }
+    Err(PlayerError::MissingSegmentTemplate)
 }
 
 /// `SegmentList@Initialization@sourceURL` for the effective merged list.
@@ -556,7 +824,39 @@ pub(crate) fn timeline_segments_for_addressing(
     match addressing {
         SegmentAddressing::Template(st) => timeline_segments(st, ctx),
         SegmentAddressing::List(sl) => timeline_segments_from_list(sl, ctx),
+        SegmentAddressing::Base(sb) => timeline_segments_from_segment_base(sb, ctx),
     }
+}
+
+fn timeline_segments_from_segment_base(
+    sb: &SegmentBase,
+    _ctx: &TimelineBuildContext,
+) -> Result<Vec<TimelineSegment>, PlayerError> {
+    if sb.indexRange.is_some() {
+        return Err(PlayerError::SegmentBaseIndexNotLoaded);
+    }
+
+    let timescale = sb.timescale.unwrap_or(1);
+    if timescale == 0 {
+        return Err(PlayerError::ZeroTimescale);
+    }
+
+    let duration_ticks = sb
+        .presentationDuration
+        .filter(|d| *d > 0)
+        .ok_or(PlayerError::MissingSegmentDuration)?;
+    let duration_s = duration_ticks as f64 / timescale as f64;
+
+    Ok(vec![TimelineSegment {
+        number: 1,
+        time: 0,
+        duration: duration_ticks,
+        duration_s,
+        presentation_time_s: 0.0,
+        sub_number: None,
+        media_url: None,
+        media_range: None,
+    }])
 }
 
 fn timeline_segments_from_list(
@@ -626,6 +926,7 @@ fn segments_from_list_urls(sl: &SegmentList) -> Result<Vec<TimelineSegment>, Pla
             presentation_time_s: i as f64 * duration_s,
             sub_number: None,
             media_url: su.media.clone(),
+            media_range: None,
         })
         .collect())
 }
@@ -815,6 +1116,7 @@ fn emit_segment_sequence(
             presentation_time_s,
             sub_number: if k > 1 { Some(sub) } else { None },
             media_url: None,
+            media_range: None,
         });
     }
     Ok(())
@@ -935,6 +1237,7 @@ fn segments_from_duration_template(
                 presentation_time_s,
                 sub_number: None,
                 media_url: None,
+                media_range: None,
             });
         }
         Ok(segments)
@@ -958,6 +1261,7 @@ fn segments_from_duration_template(
                 presentation_time_s,
                 sub_number: None,
                 media_url: None,
+                media_range: None,
             });
         }
         Ok(segments)
@@ -1261,6 +1565,7 @@ mod timeline_tests {
                 presentation_time_s: 0.0,
                 sub_number: Some(1),
                 media_url: None,
+                media_range: None,
             },
             TimelineSegment {
                 number: 1,
@@ -1270,6 +1575,7 @@ mod timeline_tests {
                 presentation_time_s: 1.0,
                 sub_number: Some(2),
                 media_url: None,
+                media_range: None,
             },
             TimelineSegment {
                 number: 1,
@@ -1279,6 +1585,7 @@ mod timeline_tests {
                 presentation_time_s: 2.0,
                 sub_number: Some(3),
                 media_url: None,
+                media_range: None,
             },
         ];
         assert_eq!(align_start_index_to_sap(&segs, 2, &aset), 0);
@@ -1300,6 +1607,7 @@ mod timeline_tests {
                 presentation_time_s: 0.0,
                 sub_number: Some(1),
                 media_url: None,
+                media_range: None,
             },
             TimelineSegment {
                 number: 1,
@@ -1309,6 +1617,7 @@ mod timeline_tests {
                 presentation_time_s: 1.0,
                 sub_number: Some(2),
                 media_url: None,
+                media_range: None,
             },
         ];
         assert_eq!(align_start_index_to_sap(&segs, 1, &aset), 1);
@@ -1320,7 +1629,8 @@ mod manifest_logic_tests {
     use super::*;
     use chrono::TimeZone;
     use dash_mpd::{
-        AdaptationSet, Period, Representation, SegmentList, SegmentTemplate, SegmentURL,
+        AdaptationSet, Period, Representation, SegmentBase, SegmentList, SegmentTemplate,
+        SegmentURL,
     };
 
     #[test]
@@ -1677,6 +1987,105 @@ mod manifest_logic_tests {
                 assert_eq!(sl.segment_urls[0].media.as_deref(), Some("list.m4s"));
             }
             SegmentAddressing::Template(_) => panic!("expected SegmentList addressing"),
+            SegmentAddressing::Base(_) => panic!("expected SegmentList addressing"),
         }
+    }
+
+    #[test]
+    fn parse_byte_range_accepts_inclusive_specifier() {
+        let br = parse_byte_range("7-62").unwrap();
+        assert_eq!(br.start, 7);
+        assert_eq!(br.end, 62);
+        assert!(parse_byte_range("bad").is_err());
+        assert!(parse_byte_range("10-5").is_err());
+    }
+
+    #[test]
+    fn segment_addressing_prefers_template_over_base() {
+        let period = Period {
+            SegmentBase: Some(SegmentBase {
+                indexRange: Some("0-10".into()),
+                ..Default::default()
+            }),
+            ..Default::default()
+        };
+        let adaptation_set = AdaptationSet {
+            representations: vec![Representation {
+                SegmentTemplate: Some(SegmentTemplate {
+                    media: Some("seg-$Number$.m4s".into()),
+                    initialization: Some("init.mp4".into()),
+                    duration: Some(4000.0),
+                    timescale: Some(1000),
+                    ..Default::default()
+                }),
+                ..Default::default()
+            }],
+            ..Default::default()
+        };
+        let rep = &adaptation_set.representations[0];
+        let addressing =
+            segment_addressing_for_representation(&period, &adaptation_set, rep).unwrap();
+        assert!(matches!(addressing, SegmentAddressing::Template(_)));
+    }
+
+    #[test]
+    fn segment_base_init_target_uses_range_on_base_url() {
+        let sb = SegmentBase {
+            Initialization: Some(dash_mpd::Initialization {
+                range: Some("0-6".into()),
+                ..Default::default()
+            }),
+            ..Default::default()
+        };
+        let target = segment_base_init_target(&sb, "1").unwrap();
+        assert_eq!(target.path, "");
+        assert_eq!(target.range, Some(ByteRange { start: 0, end: 6 }));
+    }
+
+    fn minimal_sidx_bytes(seg_sizes: &[(u32, u32)], timescale: u32) -> Vec<u8> {
+        let mut body = Vec::new();
+        body.push(0); // version
+        body.extend_from_slice(&[0, 0, 0]); // flags
+        body.extend_from_slice(&1u32.to_be_bytes()); // reference_id
+        body.extend_from_slice(&timescale.to_be_bytes());
+        body.extend_from_slice(&0u32.to_be_bytes()); // ept
+        body.extend_from_slice(&0u32.to_be_bytes()); // first_offset
+        body.extend_from_slice(&0u16.to_be_bytes()); // reserved
+        body.extend_from_slice(&(seg_sizes.len() as u16).to_be_bytes());
+        for &(size, dur) in seg_sizes {
+            body.extend_from_slice(&(size & 0x7FFF_FFFF).to_be_bytes());
+            body.extend_from_slice(&dur.to_be_bytes());
+            body.extend_from_slice(&0x9000_0000u32.to_be_bytes());
+        }
+        let mut out = (8 + body.len() as u32).to_be_bytes().to_vec();
+        out.extend_from_slice(b"sidx");
+        out.extend_from_slice(&body);
+        out
+    }
+
+    #[test]
+    fn parse_sidx_index_builds_timeline_with_byte_ranges() {
+        let seg1_len = 11u32;
+        let seg2_len = 11u32;
+        let init_len = 7usize;
+        let sidx = minimal_sidx_bytes(&[(seg1_len, 2000), (seg2_len, 2000)], 1000);
+        let index_start = init_len;
+        let index_end = init_len + sidx.len() - 1;
+        let sb = SegmentBase {
+            timescale: Some(1000),
+            indexRange: Some(format!("{index_start}-{index_end}")),
+            ..Default::default()
+        };
+        let segs = parse_sidx_index(&sb, &sidx).unwrap();
+        assert_eq!(segs.len(), 2);
+        assert_eq!(
+            segs[0].media_range,
+            Some(ByteRange {
+                start: (index_end + 1) as u64,
+                end: (index_end + 1 + seg1_len as usize - 1) as u64,
+            })
+        );
+        assert!((segs[0].duration_s - 2.0).abs() < 1e-9);
+        assert!((segs[1].presentation_time_s - 2.0).abs() < 1e-9);
     }
 }

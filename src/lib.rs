@@ -52,6 +52,8 @@ mod manifest;
 mod media_events;
 mod media_player;
 mod metrics;
+mod mp4_box;
+mod partial_segment;
 mod playback_control;
 mod player;
 mod segment_blacklist;
@@ -82,7 +84,8 @@ pub use player::{
 };
 pub use track_selection::{TrackDescriptor, TrackInfo, TrackKind, TrackPreference, TrackSelection};
 pub use types::{
-    BufferFeedback, BufferFeedbackError, PlayerEvent, PlayerEventError, PlayerOutputs, PlayerTrack,
+    BufferFeedback, BufferFeedbackError, PartialSegmentChunk, PlayerEvent, PlayerEventError,
+    PlayerOutputs, PlayerTrack,
 };
 
 use crate::drm::LicenseError;

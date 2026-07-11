@@ -1420,9 +1420,6 @@ pub(crate) fn segment_sequence_start_s(period_start: Duration, seg: &TimelineSeg
 }
 
 /// Whether a segment is published and fetchable at `since_availability_start`.
-///
-/// For `@availabilityTimeComplete=false`, whole-segment fetch still waits until the sequence
-/// start plus `@availabilityTimeOffset` (partial/chunked transfer is a later increment).
 pub(crate) fn segment_is_available(
     seg: &TimelineSegment,
     period_start: Duration,
@@ -1437,10 +1434,26 @@ pub(crate) fn segment_is_available(
         return true;
     }
 
-    let sap_s = segment_sequence_start_s(period_start, seg);
     let now_s = since_availability_start.as_secs_f64();
-    let _ = availability.availability_time_complete;
+
+    if !availability.availability_time_complete {
+        if seg.sub_number.is_some() {
+            return now_s + 1e-6 >= period_start.as_secs_f64() + seg.presentation_time_s;
+        }
+        let sap_s = segment_sequence_start_s(period_start, seg);
+        return now_s + 1e-6 >= sap_s;
+    }
+
+    let sap_s = segment_sequence_start_s(period_start, seg);
     now_s + 1e-6 >= sap_s + ato.max(0.0)
+}
+
+/// `@availabilityTimeComplete=false` on a whole segment (no `S@k` sub-number): fetch via chunked HTTP.
+pub(crate) fn uses_chunked_segment_transfer(
+    availability: &SegmentAvailability,
+    seg: &TimelineSegment,
+) -> bool {
+    !availability.availability_time_complete && seg.sub_number.is_none()
 }
 
 /// Drop segments that are not yet published on dynamic MPDs.
@@ -2061,7 +2074,37 @@ mod manifest_logic_tests {
     }
 
     #[test]
-    fn segment_availability_waits_for_availability_time_offset() {
+    fn segment_availability_waits_for_availability_time_offset_when_complete() {
+        let seg = TimelineSegment {
+            number: 3,
+            time: 8000,
+            duration: 4000,
+            duration_s: 4.0,
+            presentation_time_s: 8.0,
+            sub_number: None,
+            media_url: None,
+            media_range: None,
+        };
+        let availability = SegmentAvailability {
+            availability_time_offset_s: Some(7.0),
+            availability_time_complete: true,
+        };
+        assert!(!segment_is_available(
+            &seg,
+            Duration::ZERO,
+            Duration::from_secs(14),
+            &availability,
+        ));
+        assert!(segment_is_available(
+            &seg,
+            Duration::ZERO,
+            Duration::from_secs(15),
+            &availability,
+        ));
+    }
+
+    #[test]
+    fn segment_availability_partial_whole_segment_available_at_sap() {
         let seg = TimelineSegment {
             number: 3,
             time: 8000,
@@ -2079,13 +2122,13 @@ mod manifest_logic_tests {
         assert!(!segment_is_available(
             &seg,
             Duration::ZERO,
-            Duration::from_secs(14),
+            Duration::from_secs(7),
             &availability,
         ));
         assert!(segment_is_available(
             &seg,
             Duration::ZERO,
-            Duration::from_secs(15),
+            Duration::from_secs(8),
             &availability,
         ));
     }
@@ -2122,13 +2165,13 @@ mod manifest_logic_tests {
     }
 
     #[test]
-    fn filter_segments_by_availability_drops_unpublished_live_edge() {
+    fn filter_segments_by_availability_drops_unpublished_complete_live_edge() {
         let st = SegmentTemplate {
             timescale: Some(1000),
             duration: Some(4000.0),
             startNumber: Some(1),
             availabilityTimeOffset: Some(7.0),
-            availabilityTimeComplete: Some(false),
+            availabilityTimeComplete: Some(true),
             ..Default::default()
         };
         let addressing = SegmentAddressing::Template(st.clone());
@@ -2154,6 +2197,41 @@ mod manifest_logic_tests {
         );
         let numbers: Vec<_> = filtered.iter().map(|s| s.number).collect();
         assert_eq!(numbers, vec![1, 2]);
+    }
+
+    #[test]
+    fn filter_segments_by_availability_includes_partial_live_edge_at_sap() {
+        let st = SegmentTemplate {
+            timescale: Some(1000),
+            duration: Some(4000.0),
+            startNumber: Some(1),
+            availabilityTimeOffset: Some(7.0),
+            availabilityTimeComplete: Some(false),
+            ..Default::default()
+        };
+        let addressing = SegmentAddressing::Template(st.clone());
+        let ctx = TimelineBuildContext {
+            is_dynamic: true,
+            period_window: PeriodWindow {
+                idx: 0,
+                start: Duration::ZERO,
+                end: None,
+            },
+            period_duration: None,
+            media_presentation_duration: None,
+            time_shift_buffer_depth: Some(Duration::from_secs(20)),
+            since_availability_start: Some(Duration::from_secs(11)),
+        };
+        let segments = timeline_segments(&st, &ctx).unwrap();
+        let filtered = filter_segments_by_availability(
+            segments,
+            true,
+            Duration::ZERO,
+            ctx.since_availability_start,
+            &addressing,
+        );
+        let numbers: Vec<_> = filtered.iter().map(|s| s.number).collect();
+        assert_eq!(numbers, vec![1, 2, 3]);
     }
 
     #[test]

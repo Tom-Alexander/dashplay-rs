@@ -69,6 +69,15 @@ impl BufferFeedback {
     }
 }
 
+/// One chunk of a progressive low-latency segment transfer.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct PartialSegmentChunk {
+    /// 1-based chunk index within this segment transfer.
+    pub index: u64,
+    /// `true` when this is the last chunk for the segment.
+    pub is_final: bool,
+}
+
 /// Events emitted on a single DASH adaptation-set stream.
 ///
 /// Fragment events ([`Self::Init`], [`Self::Segment`], [`Self::End`]) carry media bytes.
@@ -109,6 +118,8 @@ pub enum PlayerEvent {
         time: u64,
         /// Set when `SegmentTimeline/S@k` > 1 (ISO 23009-1 §5.3.9.6.4); 1-based chunk within the sequence.
         sub_number: Option<u64>,
+        /// Progressive low-latency delivery when `@availabilityTimeComplete=false`.
+        partial: Option<PartialSegmentChunk>,
         data: Bytes,
     },
     /// No more fragments will be sent for this adaptation set (VOD / bounded static window).
@@ -220,6 +231,7 @@ mod tests {
                 number: 1,
                 time: 0,
                 sub_number: None,
+                partial: None,
                 data: Bytes::new(),
             }
             .is_fragment()

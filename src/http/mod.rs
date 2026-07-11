@@ -8,10 +8,13 @@ use std::future::Future;
 use std::pin::Pin;
 use std::sync::Arc;
 
+mod body_stream;
 mod error;
 mod request;
 mod reqwest;
 mod response;
+
+pub(crate) use body_stream::HttpBodyStream;
 
 pub use error::HttpError;
 pub use request::HttpRequest;
@@ -26,6 +29,12 @@ pub enum HttpMethod {
     Post,
 }
 
+/// Shared handle to an [`HttpClient`] implementation.
+pub type SharedHttpClient = Arc<dyn HttpClient>;
+
+type OpenBodyFuture<'a> =
+    Pin<Box<dyn Future<Output = Result<(u16, HttpBodyStream), HttpError>> + Send + 'a>>;
+
 /// Async HTTP transport used throughout the playback pipeline.
 pub trait HttpClient: Send + Sync {
     /// Execute `request` and return the full response.
@@ -33,10 +42,17 @@ pub trait HttpClient: Send + Sync {
         &'a self,
         request: HttpRequest,
     ) -> Pin<Box<dyn Future<Output = Result<HttpResponse, HttpError>> + Send + 'a>>;
-}
 
-/// Shared handle to an [`HttpClient`] implementation.
-pub type SharedHttpClient = Arc<dyn HttpClient>;
+    /// Open a response body for progressive reads (Low-Latency DASH partial segments).
+    ///
+    /// The default implementation buffers via [`Self::send`].
+    fn open_body_stream<'a>(&'a self, request: HttpRequest) -> OpenBodyFuture<'a> {
+        Box::pin(async move {
+            let resp = self.send(request).await?;
+            Ok((resp.status(), HttpBodyStream::from_bytes(resp.into_bytes())))
+        })
+    }
+}
 
 /// Wrap a concrete client for sharing across playback tasks.
 pub fn shared(client: impl HttpClient + 'static) -> SharedHttpClient {

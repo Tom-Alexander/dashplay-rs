@@ -1,9 +1,10 @@
 use std::future::Future;
 use std::pin::Pin;
 
+use futures_util::StreamExt;
 use reqwest::Client;
 
-use super::{HttpClient, HttpError, HttpMethod, HttpRequest, HttpResponse};
+use super::{HttpBodyStream, HttpClient, HttpError, HttpMethod, HttpRequest, HttpResponse};
 
 /// Default [`HttpClient`] backed by [`reqwest`](https://docs.rs/reqwest).
 #[derive(Debug, Clone)]
@@ -68,6 +69,33 @@ impl HttpClient for ReqwestClient {
                 .map_err(|err| HttpError::Transport(err.to_string()))?;
 
             Ok(HttpResponse::new(status, headers, body))
+        })
+    }
+
+    fn open_body_stream<'a>(&'a self, request: HttpRequest) -> super::OpenBodyFuture<'a> {
+        Box::pin(async move {
+            let mut builder = match request.method {
+                HttpMethod::Get => self.inner.get(request.url),
+                HttpMethod::Head => self.inner.head(request.url),
+                HttpMethod::Post => self.inner.post(request.url),
+            };
+
+            for (name, value) in request.headers {
+                builder = builder.header(name, value);
+            }
+            if let Some(body) = request.body {
+                builder = builder.body(body);
+            }
+
+            let resp = builder
+                .send()
+                .await
+                .map_err(|err| HttpError::Transport(err.to_string()))?;
+            let status = resp.status().as_u16();
+            let stream = resp
+                .bytes_stream()
+                .map(|result| result.map_err(|err| HttpError::Transport(err.to_string())));
+            Ok((status, HttpBodyStream::from_stream(Box::pin(stream))))
         })
     }
 }

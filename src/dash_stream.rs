@@ -17,12 +17,13 @@ use super::http::SharedHttpClient;
 use super::manifest::{self, TimelineBuildContext};
 use super::media_events;
 use super::metrics::TrackMetrics;
+use super::partial_segment;
 use super::playback_control::{PlaybackController, PlaybackState};
 use super::segment_blacklist::SegmentBlacklist;
 use super::segment_fetcher::{
     fetch_bytes_with_base_failover, fetch_bytes_with_base_failover_and_range,
 };
-use super::types::PlayerEvent;
+use super::types::{PartialSegmentChunk, PlayerEvent};
 use bytes::Bytes;
 use dash_mpd::{AdaptationSet, Period, Representation};
 use tokio::sync::Mutex as AsyncMutex;
@@ -207,7 +208,102 @@ pub(crate) async fn run_adaptation_stream(ctx: AdaptationStreamContext) -> Resul
         metrics.record_buffer(latest_buffer_s(&buffer_rx));
         let decision = abr.decide();
         let list_idx = segment_start_index + local_idx;
+        let set_availability = manifest::SegmentAvailability::from_addressing(&addressing);
+        let chunked = timeline_ctx.is_dynamic
+            && manifest::uses_chunked_segment_transfer(&set_availability, &seg);
+
         let t0 = Instant::now();
+        if chunked {
+            let (fragments, used_quality_index, seg_for_fetch) =
+                fetch_cmaf_media_with_rep_fallback(
+                    &fetch_env,
+                    abr.as_ref(),
+                    MediaFetchParams {
+                        start_quality_index: decision.quality_index,
+                        seg: &seg,
+                        local_idx,
+                        list_idx,
+                    },
+                    &mut encrypted_init_by_rep,
+                )
+                .await?;
+            let elapsed_s = t0.elapsed().as_secs_f64().max(1e-6);
+            let download_duration = t0.elapsed();
+            let total_bytes: usize = fragments.iter().map(|f| f.len()).sum();
+            let throughput_bps = (total_bytes as f64 * 8.0) / elapsed_s;
+
+            record_quality_switch_and_throughput(
+                &fetch_env,
+                abr.as_mut(),
+                &metrics,
+                &tx,
+                &mut last_quality_index,
+                used_quality_index,
+                throughput_bps,
+                total_bytes,
+                download_duration,
+                &buffer_rx,
+            )
+            .await?;
+
+            let rep_idx = abr.representation_index_for_quality_index(used_quality_index);
+            let rep = &adaptation_set.representations[rep_idx];
+            let rep_id = rep.id.as_deref().unwrap_or_default();
+            let init_for_decrypt = encrypted_init_by_rep
+                .get(rep_id)
+                .ok_or(PlayerError::SegmentExhaustedRepresentations)?;
+
+            let fragment_count = fragments.len();
+            for (chunk_idx, fragment) in fragments.into_iter().enumerate() {
+                if playback.is_stopped() || playback.seek_generation() != seek_generation_at_start {
+                    return Ok(());
+                }
+                playback.wait_while_paused().await;
+
+                {
+                    let mut guard = drm.lock().await;
+                    guard
+                        .ensure_from_fragments(
+                            period_adaptation_index,
+                            rep_id,
+                            init_for_decrypt,
+                            Some(fragment.as_ref()),
+                        )
+                        .await?;
+                }
+
+                let data = decrypt_media_fragment(
+                    &drm,
+                    period_adaptation_index,
+                    rep_id,
+                    init_for_decrypt,
+                    fragment,
+                )
+                .await?;
+
+                if playback.is_paused() {
+                    continue;
+                }
+
+                let partial = partial_chunk_meta(chunk_idx, fragment_count);
+                emit_segment(
+                    &tx,
+                    &metrics,
+                    &adaptation_set,
+                    rep,
+                    &seg_for_fetch,
+                    data,
+                    partial,
+                    &mut playback_started_emitted,
+                    &playback,
+                );
+            }
+
+            let mut delivered_tracker = lock_delivered(&delivered);
+            delivered_tracker.mark_delivered(&seg_for_fetch);
+            continue;
+        }
+
         let (bytes, used_quality_index, seg_for_fetch) = fetch_media_with_rep_fallback(
             &fetch_env,
             abr.as_ref(),
@@ -225,32 +321,19 @@ pub(crate) async fn run_adaptation_stream(ctx: AdaptationStreamContext) -> Resul
         let download_duration = t0.elapsed();
         let throughput_bps = (bytes.len() as f64 * 8.0) / elapsed_s;
 
-        metrics.record_throughput(throughput_bps, bytes.len(), download_duration);
-        if let Some(prev_q) = last_quality_index {
-            if prev_q != used_quality_index {
-                let from_bitrate_bps = abr.bitrate_bps_for_quality_index(prev_q);
-                let to_bitrate_bps = abr.bitrate_bps_for_quality_index(used_quality_index);
-                metrics.record_bitrate_switch(
-                    prev_q,
-                    used_quality_index,
-                    from_bitrate_bps,
-                    to_bitrate_bps,
-                );
-                let _ = tx.send(PlayerEvent::BitrateChanged {
-                    from_quality_index: prev_q,
-                    to_quality_index: used_quality_index,
-                    from_bitrate_bps,
-                    to_bitrate_bps,
-                });
-            }
-        } else {
-            metrics.set_quality_index(used_quality_index);
-        }
-        last_quality_index = Some(used_quality_index);
-
-        abr.observe_segment_download(throughput_bps, bytes.len(), used_quality_index);
-        abr.update_buffer(latest_buffer_s(&buffer_rx));
-        metrics.record_buffer(latest_buffer_s(&buffer_rx));
+        record_quality_switch_and_throughput(
+            &fetch_env,
+            abr.as_mut(),
+            &metrics,
+            &tx,
+            &mut last_quality_index,
+            used_quality_index,
+            throughput_bps,
+            bytes.len(),
+            download_duration,
+            &buffer_rx,
+        )
+        .await?;
 
         let rep_idx = abr.representation_index_for_quality_index(used_quality_index);
         let rep = &adaptation_set.representations[rep_idx];
@@ -287,39 +370,117 @@ pub(crate) async fn run_adaptation_stream(ctx: AdaptationStreamContext) -> Resul
             continue;
         }
 
-        let inband_filters =
-            media_events::inband_event_streams_for_representation(&adaptation_set, rep);
-        for event in media_events::inband_events_from_segment(
-            data.as_ref(),
-            &inband_filters,
-            seg_for_fetch.number,
-            seg_for_fetch.time,
-            seg_for_fetch.sub_number,
-        ) {
-            let _ = tx.send(PlayerEvent::MediaEvent(event));
-        }
-
-        let _ = tx.send(PlayerEvent::Segment {
-            number: seg_for_fetch.number,
-            time: seg_for_fetch.time,
-            sub_number: seg_for_fetch.sub_number,
+        emit_segment(
+            &tx,
+            &metrics,
+            &adaptation_set,
+            rep,
+            &seg_for_fetch,
             data,
-        });
-        metrics.record_segment_delivered();
-
-        if !playback_started_emitted {
-            let _ = tx.send(PlayerEvent::PlaybackStarted);
-            playback_started_emitted = true;
-        }
-
-        if playback.state() != PlaybackState::Playing {
-            playback.set_state(PlaybackState::Playing);
-        }
+            None,
+            &mut playback_started_emitted,
+            &playback,
+        );
 
         let mut delivered_tracker = lock_delivered(&delivered);
         delivered_tracker.mark_delivered(&seg_for_fetch);
     }
 
+    Ok(())
+}
+
+fn partial_chunk_meta(chunk_idx: usize, fragment_count: usize) -> Option<PartialSegmentChunk> {
+    if fragment_count <= 1 {
+        return None;
+    }
+    Some(PartialSegmentChunk {
+        index: chunk_idx as u64 + 1,
+        is_final: chunk_idx + 1 == fragment_count,
+    })
+}
+
+#[allow(clippy::too_many_arguments)]
+fn emit_segment(
+    tx: &broadcast::Sender<PlayerEvent>,
+    metrics: &TrackMetrics,
+    adaptation_set: &AdaptationSet,
+    rep: &Representation,
+    seg: &manifest::TimelineSegment,
+    data: Bytes,
+    partial: Option<PartialSegmentChunk>,
+    playback_started_emitted: &mut bool,
+    playback: &PlaybackController,
+) {
+    let inband_filters = media_events::inband_event_streams_for_representation(adaptation_set, rep);
+    for event in media_events::inband_events_from_segment(
+        data.as_ref(),
+        &inband_filters,
+        seg.number,
+        seg.time,
+        seg.sub_number,
+    ) {
+        let _ = tx.send(PlayerEvent::MediaEvent(event));
+    }
+
+    let _ = tx.send(PlayerEvent::Segment {
+        number: seg.number,
+        time: seg.time,
+        sub_number: seg.sub_number,
+        partial,
+        data,
+    });
+    metrics.record_segment_delivered();
+
+    if !*playback_started_emitted {
+        let _ = tx.send(PlayerEvent::PlaybackStarted);
+        *playback_started_emitted = true;
+    }
+
+    if playback.state() != PlaybackState::Playing {
+        playback.set_state(PlaybackState::Playing);
+    }
+}
+
+#[allow(clippy::too_many_arguments)]
+async fn record_quality_switch_and_throughput(
+    env: &RepFetchEnv<'_>,
+    abr: &mut dyn AbrController,
+    metrics: &TrackMetrics,
+    tx: &broadcast::Sender<PlayerEvent>,
+    last_quality_index: &mut Option<usize>,
+    used_quality_index: usize,
+    throughput_bps: f64,
+    byte_len: usize,
+    download_duration: Duration,
+    buffer_rx: &watch::Receiver<f64>,
+) -> Result<(), PlayerError> {
+    let _ = env;
+    metrics.record_throughput(throughput_bps, byte_len, download_duration);
+    if let Some(prev_q) = *last_quality_index {
+        if prev_q != used_quality_index {
+            let from_bitrate_bps = abr.bitrate_bps_for_quality_index(prev_q);
+            let to_bitrate_bps = abr.bitrate_bps_for_quality_index(used_quality_index);
+            metrics.record_bitrate_switch(
+                prev_q,
+                used_quality_index,
+                from_bitrate_bps,
+                to_bitrate_bps,
+            );
+            let _ = tx.send(PlayerEvent::BitrateChanged {
+                from_quality_index: prev_q,
+                to_quality_index: used_quality_index,
+                from_bitrate_bps,
+                to_bitrate_bps,
+            });
+        }
+    } else {
+        metrics.set_quality_index(used_quality_index);
+    }
+    *last_quality_index = Some(used_quality_index);
+
+    abr.observe_segment_download(throughput_bps, byte_len, used_quality_index);
+    abr.update_buffer(latest_buffer_s(buffer_rx));
+    metrics.record_buffer(latest_buffer_s(buffer_rx));
     Ok(())
 }
 
@@ -468,6 +629,57 @@ async fn fetch_media_with_rep_fallback(
         )?;
         match fetch_segment_target(env.client, &bases, &seg_target, env.blacklist).await {
             Ok(bytes) => return Ok((bytes, quality_index, seg_for_fetch)),
+            Err(e) => last_err = e,
+        }
+    }
+    Err(last_err)
+}
+
+async fn fetch_cmaf_media_with_rep_fallback(
+    env: &RepFetchEnv<'_>,
+    abr: &dyn AbrController,
+    params: MediaFetchParams<'_>,
+    encrypted_init_by_rep: &mut HashMap<String, Bytes>,
+) -> Result<(Vec<Bytes>, usize, manifest::TimelineSegment), PlayerError> {
+    let mut last_err = PlayerError::SegmentExhaustedRepresentations;
+    for quality_index in quality_indices_for_fallback(params.start_quality_index) {
+        let rep_idx = abr.representation_index_for_quality_index(quality_index);
+        let rep = &env.adaptation_set.representations[rep_idx];
+        let bases = manifest::segment_bases_for_representation(
+            env.segment_base_ctx,
+            env.adaptation_set,
+            rep,
+        )?;
+        match ensure_init_for_rep(env, rep, encrypted_init_by_rep).await {
+            Ok(_) => {}
+            Err(e) => {
+                last_err = e;
+                continue;
+            }
+        }
+
+        let rep_addressing =
+            manifest::segment_addressing_for_representation(env.period, env.adaptation_set, rep)?;
+        let seg_for_fetch = params.seg.clone();
+        let template_vars = manifest::template_vars_for_representation(rep);
+        let seg_target = media_target_for_addressing(
+            &rep_addressing,
+            &seg_for_fetch,
+            params.list_idx,
+            &template_vars,
+        )?;
+        match partial_segment::fetch_cmaf_fragments_for_target(
+            env.client,
+            &bases,
+            &seg_target,
+            env.blacklist,
+        )
+        .await
+        {
+            Ok(fragments) if !fragments.is_empty() => {
+                return Ok((fragments, quality_index, seg_for_fetch));
+            }
+            Ok(_) => last_err = PlayerError::SegmentExhaustedRepresentations,
             Err(e) => last_err = e,
         }
     }

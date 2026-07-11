@@ -95,8 +95,8 @@ These close the largest gaps between "delivers some streams" and "handles confor
 
 - [ ] **Additional DRM systems.** ClearKey
 - [~] **Low-Latency DASH.** `availabilityTimeComplete`, `ServiceDescription`, resync
-  points, and chunked/partial segment transfer. *(Availability timing + `ServiceDescription`
-  target latency done; resync and partial transfer remain.)*
+  points, and chunked/partial segment transfer. *(Availability timing, `ServiceDescription`
+  target latency, and chunked CMAF partial transfer done; resync points remain.)*
 - [x] **In-band and MPD events.** `EventStream`, `emsg`, and SCTE-35 ad markers.
 - [ ] **Content steering / MPD updates.** `Location`, content steering, and MPD patch
   (`urn:mpeg:dash:mpd-patch`) updates.

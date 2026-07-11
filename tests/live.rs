@@ -1,8 +1,9 @@
 mod common;
 
 use common::{
-    AdvancingLiveServer, FixtureServer, assert_no_duplicate_segments, has_end, init_payload,
-    init_payloads, play_single_track_live, segment_numbers, segment_payloads,
+    AdvancingLiveServer, FixtureServer, PartialLiveServer, assert_no_duplicate_segments, has_end,
+    init_payload, init_payloads, partial_segment_payloads, play_single_track_live, segment_numbers,
+    segment_payloads,
 };
 
 const LIVE_TIMEOUT: std::time::Duration = std::time::Duration::from_millis(800);
@@ -140,6 +141,40 @@ async fn live_multi_period_transition_re_emits_init() {
             .iter()
             .any(|seg| seg.starts_with(b"dashplay-period2-seg-")),
         "expected period-2 segments after manifest refresh, got {segments:?}"
+    );
+    assert!(!has_end(&events));
+}
+
+#[tokio::test]
+async fn live_partial_segment_transfer_emits_chunked_cmaf_fragments() {
+    let server = PartialLiveServer::spawn().await;
+    let events = play_single_track_live(&server.manifest_url, LIVE_TIMEOUT)
+        .await
+        .expect("playback");
+
+    assert_eq!(
+        init_payload(&events).as_deref(),
+        Some(b"dashplay-init-v1".as_ref())
+    );
+
+    let partials = partial_segment_payloads(&events);
+    assert!(
+        partials.len() >= 4,
+        "expected multiple partial chunks, got {partials:?}"
+    );
+    assert!(
+        partials.iter().any(
+            |(meta, payload)| meta.is_some_and(|p| p.index == 1 && !p.is_final)
+                && payload.ends_with(b"partial-seg-5.m4s-a")
+        ),
+        "expected first chunk of seg-5, got {partials:?}"
+    );
+    assert!(
+        partials
+            .iter()
+            .any(|(meta, payload)| meta.is_some_and(|p| p.is_final)
+                && payload.ends_with(b"partial-seg-5.m4s-b")),
+        "expected final chunk of seg-5, got {partials:?}"
     );
     assert!(!has_end(&events));
 }

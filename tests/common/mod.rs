@@ -178,6 +178,132 @@ impl Drop for AdvancingLiveServer {
 }
 
 #[derive(Clone)]
+struct PartialLiveState {
+    files: Arc<HashMap<String, Vec<u8>>>,
+}
+
+/// Dynamic live server with `@availabilityTimeComplete=false` and chunked CMAF segment bodies.
+pub struct PartialLiveServer {
+    pub manifest_url: Url,
+    shutdown: Option<oneshot::Sender<()>>,
+    handle: JoinHandle<()>,
+}
+
+impl PartialLiveServer {
+    pub async fn spawn() -> Self {
+        let root = fixture_dir("live_duration");
+        let files = Arc::new(load_fixture_files(&root));
+        let state = PartialLiveState { files };
+
+        let app = Router::new()
+            .route("/manifest.mpd", get(serve_partial_live_manifest))
+            .route("/{*path}", get(serve_partial_live_path))
+            .with_state(state);
+
+        let listener = tokio::net::TcpListener::bind("127.0.0.1:0")
+            .await
+            .expect("bind test server");
+        let addr = listener.local_addr().expect("local addr");
+
+        let (shutdown_tx, shutdown_rx) = oneshot::channel();
+        let handle = tokio::spawn(async move {
+            axum::serve(listener, app)
+                .with_graceful_shutdown(async move {
+                    let _ = shutdown_rx.await;
+                })
+                .await
+                .expect("serve");
+        });
+
+        let manifest_url =
+            Url::parse(&format!("http://{addr}/manifest.mpd")).expect("manifest url");
+
+        Self {
+            manifest_url,
+            shutdown: Some(shutdown_tx),
+            handle,
+        }
+    }
+}
+
+impl Drop for PartialLiveServer {
+    fn drop(&mut self) {
+        if let Some(tx) = self.shutdown.take() {
+            let _ = tx.send(());
+        }
+        self.handle.abort();
+    }
+}
+
+async fn serve_partial_live_manifest() -> Response {
+    let body = r#"<?xml version="1.0" encoding="UTF-8"?>
+<MPD xmlns="urn:mpeg:dash:schema:mpd:2011"
+     type="dynamic"
+     minimumUpdatePeriod="PT0.5S"
+     availabilityStartTime="2020-05-01T12:00:00Z"
+     timeShiftBufferDepth="PT20S"
+     suggestedPresentationDelay="PT4S"
+     minBufferTime="PT2S">
+  <UTCTiming schemeIdUri="urn:mpeg:dash:utc:direct:2014" value="2020-05-01T12:00:20Z"/>
+  <Period>
+    <AdaptationSet mimeType="video/mp4" contentType="video">
+      <SegmentTemplate timescale="1000" duration="4000" initialization="init.mp4" media="seg-$Number$.m4s" startNumber="1" availabilityTimeOffset="7" availabilityTimeComplete="false"/>
+      <Representation id="1" bandwidth="100000" codecs="avc1.42E01E" width="640" height="360"/>
+    </AdaptationSet>
+  </Period>
+</MPD>
+"#;
+
+    Response::builder()
+        .status(StatusCode::OK)
+        .header("Content-Type", "application/dash+xml")
+        .body(Body::from(body))
+        .unwrap_or_else(|_| StatusCode::INTERNAL_SERVER_ERROR.into_response())
+}
+
+async fn serve_partial_live_path(
+    State(state): State<PartialLiveState>,
+    Path(path): Path<String>,
+    uri: Uri,
+    headers: axum::http::HeaderMap,
+) -> Response {
+    let url_path = uri.path().trim_end_matches('/').to_string();
+    if url_path.ends_with(".m4s") {
+        let segment_id = url_path.rsplit('/').next().unwrap_or("");
+        let (chunk_a, chunk_b) = dual_cmaf_chunks_for_segment(segment_id);
+        let stream = futures_util::stream::iter(vec![
+            Ok::<_, std::convert::Infallible>(chunk_a),
+            Ok(chunk_b),
+        ]);
+        return Response::builder()
+            .status(StatusCode::OK)
+            .header("Content-Type", "video/iso.segment")
+            .body(Body::from_stream(stream))
+            .unwrap_or_else(|_| StatusCode::INTERNAL_SERVER_ERROR.into_response());
+    }
+    serve_static_path(&state.files, &path, &uri, &headers)
+}
+
+fn dual_cmaf_chunks_for_segment(segment_id: &str) -> (Vec<u8>, Vec<u8>) {
+    (
+        build_cmaf_chunk(format!("partial-{segment_id}-a").as_bytes()),
+        build_cmaf_chunk(format!("partial-{segment_id}-b").as_bytes()),
+    )
+}
+
+fn build_cmaf_chunk(payload: &[u8]) -> Vec<u8> {
+    let mut moof = Vec::with_capacity(8);
+    moof.extend_from_slice(&8u32.to_be_bytes());
+    moof.extend_from_slice(b"moof");
+    let mut mdat = Vec::with_capacity(8 + payload.len());
+    mdat.extend_from_slice(&(8u32 + payload.len() as u32).to_be_bytes());
+    mdat.extend_from_slice(b"mdat");
+    mdat.extend_from_slice(payload);
+    moof.extend_from_slice(&mdat);
+    moof
+}
+
+#[derive(Clone)]
 struct MultiPeriodLiveState {
     files: Arc<HashMap<String, Vec<u8>>>,
     fetch_count: Arc<AtomicUsize>,
@@ -691,4 +817,18 @@ pub fn assert_no_duplicate_segments(events: &[dashplayrs::PlayerEvent]) {
             segment_keys(events)
         );
     }
+}
+
+pub fn partial_segment_payloads(
+    events: &[dashplayrs::PlayerEvent],
+) -> Vec<(Option<dashplayrs::PartialSegmentChunk>, Vec<u8>)> {
+    events
+        .iter()
+        .filter_map(|ev| match ev {
+            dashplayrs::PlayerEvent::Segment { partial, data, .. } => {
+                Some((*partial, trim_payload(data.as_ref())))
+            }
+            _ => None,
+        })
+        .collect()
 }

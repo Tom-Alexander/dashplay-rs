@@ -7,6 +7,7 @@ use url::Url;
 use super::drm::coordinator::DrmSessionCoordinator;
 
 use super::PlayerError;
+use super::abr::{BolaAbrFactory, SharedAbrFactory, shared as shared_abr_factory};
 use super::http::{HttpRequest, ReqwestClient, SharedHttpClient, shared};
 use super::manifest;
 use super::playback_control::PlaybackController;
@@ -28,6 +29,7 @@ pub struct MediaPlayer {
     mpd_xml: Option<String>,
     drm: DrmSessionCoordinator,
     track_selection: TrackSelection,
+    abr_factory: SharedAbrFactory,
 }
 
 impl MediaPlayer {
@@ -43,6 +45,7 @@ impl MediaPlayer {
             mpd_xml: None,
             drm: DrmSessionCoordinator::new(client, license_uri, None),
             track_selection: TrackSelection::default(),
+            abr_factory: shared_abr_factory(BolaAbrFactory::default()),
         })
     }
 
@@ -71,6 +74,14 @@ impl MediaPlayer {
     /// Configure deterministic audio, video, and text adaptation-set selection.
     pub fn with_track_selection(mut self, selection: TrackSelection) -> Self {
         self.track_selection = selection;
+        self
+    }
+
+    /// Use a custom [`AbrFactory`](crate::AbrFactory) for representation selection.
+    ///
+    /// The default is [`BolaAbrFactory`].
+    pub fn with_abr_factory(mut self, factory: SharedAbrFactory) -> Self {
+        self.abr_factory = factory;
         self
     }
 
@@ -139,6 +150,7 @@ impl MediaPlayer {
             drm: self.drm,
             playback: playback.clone(),
             track_selection: self.track_selection,
+            abr_factory: self.abr_factory,
         };
 
         Ok(PlayerOutputs {

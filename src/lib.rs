@@ -41,7 +41,7 @@
 
 use thiserror::Error;
 
-mod abr_controller;
+pub mod abr;
 pub mod bola;
 mod dash_stream;
 mod delivered_segments;
@@ -61,6 +61,10 @@ mod track_selection;
 mod types;
 mod utc_timing;
 
+pub use abr::{
+    AbrController, AbrDecision, AbrFactory, BolaAbrFactory, QualityRung, SharedAbrFactory,
+    quality_ladder_from_adaptation_set, shared as shared_abr_factory,
+};
 pub use dash_mpd::SubtitleType;
 pub use http::{
     HttpClient, HttpError, HttpMethod, HttpRequest, HttpResponse, ReqwestClient, SharedHttpClient,

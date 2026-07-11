@@ -8,7 +8,7 @@ A pure Rust implementation of an MPEG-DASH player library.
 - **Live streaming** — Dynamic manifests, time-shift buffer windows, periodic manifest refresh, and multi-period transitions with init re-emission
 - **Multi-track output** — Separate audio, video, and text adaptation sets, or a single merged byte stream
 - **Track selection** — Ordered language, role, codec, and accessibility preferences with per-kind output limits (audio, video, and opt-in subtitles/captions)
-- **Adaptive bitrate** — BOLA (Buffer Occupancy based Lyapunov Algorithm) with automatic representation switching and init re-emission on quality changes
+- **Adaptive bitrate** — pluggable [`AbrFactory`](#abr) with BOLA ([`BolaAbrFactory`](#abr)) as the default; automatic representation switching and init re-emission on quality changes
 - **Widevine DRM** — PSSH and license URL parsing from the MPD, license acquisition, and in-pipeline segment decryption
 - **Custom license handling** — Pluggable async license fetcher for custom headers, cookies, or proxies
 - **Pluggable HTTP client** — [`HttpClient`](#http-client) trait with a default [`ReqwestClient`](#http-client); swap in browser fetch, embedded stacks, or custom TLS
@@ -330,6 +330,7 @@ controller. Clone handles (`outputs.playback.clone()`) share one session.
 | `TrackDescriptor` | Accessibility descriptor scheme/value matcher and metadata |
 | [`WidevineLicenseFetcher`](#widevinelicensefetcher) | Custom async Widevine license HTTP handler |
 | [`HttpClient`](#http-client) / [`ReqwestClient`](#http-client) | Pluggable HTTP transport for manifest, segment, and clock-sync requests |
+| [`AbrFactory`](#abr) / [`BolaAbrFactory`](#abr) | Pluggable adaptive bitrate; default BOLA implementation |
 | [`HttpRequest`](#http-client) / [`HttpResponse`](#http-client) / [`HttpError`](#http-client) | Request/response types for custom HTTP backends |
 | `shared` | Wrap a concrete [`HttpClient`](#http-client) in [`SharedHttpClient`](#http-client) |
 | [`PlayerError`](#playererror) | Unified error type for the playback pipeline |
@@ -353,11 +354,13 @@ server when the manifest does not specify one.
 Player::with_license_fetcher(self, fetcher: WidevineLicenseFetcher) -> Player
 Player::with_track_selection(self, selection: TrackSelection) -> Player
 Player::with_http_client(self, client: SharedHttpClient) -> Player
+Player::with_abr_factory(self, factory: SharedAbrFactory) -> Player
 ```
 
 Replace the default `reqwest` license POST with a custom fetcher (extra headers, cookies, proxy,
 etc.). `with_http_client` replaces the default [`ReqwestClient`](#http-client) used for manifest,
-segment, and `UTCTiming` requests.
+segment, and `UTCTiming` requests. `with_abr_factory` replaces the default
+[`BolaAbrFactory`](#abr) used for representation selection.
 
 ```rust
 Player::start_tracks(self) -> Result<PlayerTrackOutputs, PlayerError>
@@ -414,6 +417,7 @@ MediaPlayer::new(uri: &str, license_uri: Option<&str>) -> Result<MediaPlayer, Pl
 MediaPlayer::with_license_fetcher(self, fetcher: WidevineLicenseFetcher) -> MediaPlayer
 MediaPlayer::with_track_selection(self, selection: TrackSelection) -> MediaPlayer
 MediaPlayer::with_http_client(self, client: SharedHttpClient) -> MediaPlayer
+MediaPlayer::with_abr_factory(self, factory: SharedAbrFactory) -> MediaPlayer
 MediaPlayer::fetch_manifest(&mut self) -> Result<(), PlayerError>
 MediaPlayer::start(self) -> Result<PlayerOutputs, PlayerError>
 ```
@@ -496,7 +500,7 @@ One DASH adaptation set exposed as a `tokio::sync::broadcast` channel.
 ### `BufferFeedback`
 
 Consumer-reported buffer level (seconds of media buffered ahead of the playhead) used by
-the internal BOLA ABR controller.
+the active [`AbrController`](#abr).
 
 | Method | Description |
 |--------|-------------|
@@ -700,6 +704,34 @@ MediaPlayer::with_http_client(self, client: SharedHttpClient) -> MediaPlayer
 
 ---
 
+### ABR
+
+Adaptive bitrate is abstracted behind [`AbrFactory`](src/abr/mod.rs) so playback is not tied to
+a single algorithm. The default backend is [`BolaAbrFactory`](src/abr/bola.rs) (BOLA).
+
+| Type / function | Description |
+|-----------------|-------------|
+| `AbrFactory` | Creates a per-adaptation-set [`AbrController`] when a stream starts |
+| `AbrController` | Stateful controller: buffer updates, throughput observations, `decide()` |
+| `AbrDecision` | Chosen quality index and nominal bitrate |
+| `BolaAbrFactory` | Default BOLA backend; configure `ewma_alpha` on the struct |
+| `SharedAbrFactory` | `Arc<dyn AbrFactory>` shared across playback tasks |
+| `shared_abr_factory(factory)` | Wrap a concrete factory for use with `with_abr_factory` |
+| `quality_ladder_from_adaptation_set` | Build a bandwidth-ordered ladder from an adaptation set |
+
+Configure on [`Player`](#player) or [`MediaPlayer`](#mediaplayer):
+
+```rust
+Player::with_abr_factory(self, factory: SharedAbrFactory) -> Player
+MediaPlayer::with_abr_factory(self, factory: SharedAbrFactory) -> MediaPlayer
+```
+
+Implement [`AbrFactory`] and optionally reuse [`quality_ladder_from_adaptation_set`] when
+building custom controllers. [`bola`](#bola) exposes the BOLA algorithm directly for advanced
+integrations.
+
+---
+
 ### `PlayerError`
 
 Unified error type covering manifest parsing, HTTP, URL resolution, segment fetch failures,
@@ -723,7 +755,7 @@ See [`src/lib.rs`](src/lib.rs) for the full list.
 ### `bola`
 
 Buffer Occupancy based Lyapunov Algorithm (BOLA) for adaptive bitrate selection. Used
-internally by the player; exposed for custom ABR integrations.
+by [`BolaAbrFactory`](#abr); also exposed for standalone or custom ABR integrations.
 
 | Type | Description |
 |------|-------------|

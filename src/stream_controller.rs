@@ -13,6 +13,7 @@ use url::Url;
 use super::drm::coordinator::DrmSessionCoordinator;
 
 use super::PlayerError;
+use super::abr::SharedAbrFactory;
 use super::dash_stream::{AdaptationStreamContext, run_adaptation_stream};
 use super::delivered_segments::DeliveredSegmentTracker;
 use super::http::{HttpRequest, SharedHttpClient};
@@ -30,6 +31,7 @@ pub(crate) struct PlaybackLoopState {
     pub drm: DrmSessionCoordinator,
     pub playback: PlaybackController,
     pub track_selection: TrackSelection,
+    pub abr_factory: SharedAbrFactory,
 }
 
 impl PlaybackLoopState {
@@ -40,6 +42,7 @@ impl PlaybackLoopState {
             drm,
             playback,
             track_selection,
+            abr_factory,
         } = self;
 
         let mut manifest = None;
@@ -189,6 +192,7 @@ impl PlaybackLoopState {
                         let metrics = tracks[track_idx].metrics.clone();
                         let delivered = delivered[track_idx].clone();
                         let playback = playback.clone();
+                        let abr_factory = abr_factory.clone();
 
                         let period = period.clone();
                         streams.push(async move {
@@ -210,6 +214,7 @@ impl PlaybackLoopState {
                                 buffer_rx,
                                 metrics,
                                 playback,
+                                abr_factory,
                             })
                             .await
                         });

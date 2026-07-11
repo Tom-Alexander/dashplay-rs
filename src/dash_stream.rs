@@ -9,7 +9,7 @@ use std::time::Duration;
 use std::time::Instant;
 
 use super::PlayerError;
-use super::abr_controller::AbrController;
+use super::abr::{AbrController, SharedAbrFactory, quality_indices_for_fallback};
 use super::delivered_segments::DeliveredSegmentTracker;
 use super::drm::License;
 use super::drm::coordinator::DrmSessionCoordinator;
@@ -50,6 +50,7 @@ pub(crate) struct AdaptationStreamContext {
     pub buffer_rx: watch::Receiver<f64>,
     pub metrics: TrackMetrics,
     pub playback: PlaybackController,
+    pub abr_factory: SharedAbrFactory,
 }
 
 /// Run the fragment loop for one adaptation set until segments are exhausted for this manifest snapshot.
@@ -72,6 +73,7 @@ pub(crate) async fn run_adaptation_stream(ctx: AdaptationStreamContext) -> Resul
         buffer_rx,
         metrics,
         playback,
+        abr_factory,
     } = ctx;
 
     let seek_generation_at_start = playback.seek_generation();
@@ -133,7 +135,7 @@ pub(crate) async fn run_adaptation_stream(ctx: AdaptationStreamContext) -> Resul
         }
     };
 
-    let Some(mut abr) = AbrController::from_adaptation_set(&adaptation_set, 0.3) else {
+    let Some(mut abr) = abr_factory.create(&adaptation_set) else {
         return Ok(());
     };
 
@@ -161,7 +163,7 @@ pub(crate) async fn run_adaptation_stream(ctx: AdaptationStreamContext) -> Resul
             let decision = abr.decide();
             let (_, rep_id) = fetch_init_with_rep_fallback(
                 &fetch_env,
-                &abr,
+                abr.as_ref(),
                 decision.quality_index,
                 &mut encrypted_init_by_rep,
             )
@@ -201,7 +203,7 @@ pub(crate) async fn run_adaptation_stream(ctx: AdaptationStreamContext) -> Resul
         let t0 = Instant::now();
         let (bytes, used_quality_index, seg_for_fetch) = fetch_media_with_rep_fallback(
             &fetch_env,
-            &abr,
+            abr.as_ref(),
             MediaFetchParams {
                 start_quality_index: decision.quality_index,
                 seg: &seg,
@@ -387,12 +389,12 @@ struct MediaFetchParams<'a> {
 
 async fn fetch_init_with_rep_fallback(
     env: &RepFetchEnv<'_>,
-    abr: &AbrController,
+    abr: &dyn AbrController,
     start_quality_index: usize,
     encrypted_init_by_rep: &mut HashMap<String, Bytes>,
 ) -> Result<(Bytes, String), PlayerError> {
     let mut last_err = PlayerError::SegmentExhaustedRepresentations;
-    for quality_index in abr.quality_indices_for_fallback(start_quality_index) {
+    for quality_index in quality_indices_for_fallback(start_quality_index) {
         let rep_idx = abr.representation_index_for_quality_index(quality_index);
         let rep = &env.adaptation_set.representations[rep_idx];
         match ensure_init_for_rep(env, rep, encrypted_init_by_rep).await {
@@ -408,13 +410,13 @@ async fn fetch_init_with_rep_fallback(
 
 async fn fetch_media_with_rep_fallback(
     env: &RepFetchEnv<'_>,
-    abr: &AbrController,
+    abr: &dyn AbrController,
     params: MediaFetchParams<'_>,
     encrypted_init_by_rep: &mut HashMap<String, Bytes>,
     sidx_segments_by_rep: &mut HashMap<String, Vec<manifest::TimelineSegment>>,
 ) -> Result<(Vec<u8>, usize, manifest::TimelineSegment), PlayerError> {
     let mut last_err = PlayerError::SegmentExhaustedRepresentations;
-    for quality_index in abr.quality_indices_for_fallback(params.start_quality_index) {
+    for quality_index in quality_indices_for_fallback(params.start_quality_index) {
         let rep_idx = abr.representation_index_for_quality_index(quality_index);
         let rep = &env.adaptation_set.representations[rep_idx];
         let bases = manifest::segment_bases_for_representation(

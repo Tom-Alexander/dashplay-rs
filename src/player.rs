@@ -7,6 +7,7 @@ use tokio::task::JoinHandle;
 use tokio_stream::Stream;
 use tokio_stream::wrappers::ReceiverStream;
 
+use super::abr::SharedAbrFactory;
 use super::http::SharedHttpClient;
 use super::media_player::{MediaPlayer, WidevineLicenseFetcher};
 use super::metrics::TrackMetrics;
@@ -46,6 +47,13 @@ impl Player {
     pub fn with_http_client(self, client: SharedHttpClient) -> Self {
         Self {
             media_player: self.media_player.with_http_client(client),
+        }
+    }
+
+    /// Use a custom [`AbrFactory`](crate::AbrFactory) for representation selection.
+    pub fn with_abr_factory(self, factory: SharedAbrFactory) -> Self {
+        Self {
+            media_player: self.media_player.with_abr_factory(factory),
         }
     }
 

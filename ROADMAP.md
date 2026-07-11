@@ -62,7 +62,7 @@ These close the largest gaps between "delivers some streams" and "handles confor
   `stream_controller` currently spawn hidden `tokio` tasks, which conflicts with the
   architecture principle of never spawning hidden background work. Either make the loop
   caller-driven or document/expose it as an explicit concurrency contract.
-- [ ] **Downloaded-segment dedup.** Track already-delivered segments across manifest
+- [x] **Downloaded-segment dedup.** Track already-delivered segments across manifest
   refreshes so live refresh cannot re-emit or skip fragments.
 - [x] **Static multi-period VOD.** Live multi-period is covered; add VOD multi-period
   handling and tests.

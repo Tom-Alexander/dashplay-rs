@@ -39,6 +39,7 @@ use thiserror::Error;
 mod abr_controller;
 pub mod bola;
 mod dash_stream;
+mod delivered_segments;
 pub mod drm;
 mod manifest;
 mod media_player;

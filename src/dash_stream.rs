@@ -3,12 +3,14 @@
 
 use std::collections::HashMap;
 use std::sync::Arc;
+use std::sync::Mutex;
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::time::Duration;
 use std::time::Instant;
 
 use super::PlayerError;
 use super::abr_controller::AbrController;
+use super::delivered_segments::DeliveredSegmentTracker;
 use super::drm::License;
 use super::manifest::{self, TimelineBuildContext};
 use super::segment_blacklist::SegmentBlacklist;
@@ -33,6 +35,7 @@ pub(crate) struct AdaptationStreamContext {
     pub aset_idx: usize,
     pub tx: broadcast::Sender<PlayerEvent>,
     pub have_init: Arc<Vec<AtomicBool>>,
+    pub delivered: Arc<Mutex<DeliveredSegmentTracker>>,
     pub blacklist: SegmentBlacklist,
     pub license: Option<Arc<License>>,
     /// Representation-specific Widevine sessions (effective DRM at Representation level).
@@ -54,6 +57,7 @@ pub(crate) async fn run_adaptation_stream(ctx: AdaptationStreamContext) -> Resul
         aset_idx,
         tx,
         have_init,
+        delivered,
         blacklist,
         license,
         wv_by_rep,
@@ -96,19 +100,24 @@ pub(crate) async fn run_adaptation_stream(ctx: AdaptationStreamContext) -> Resul
     // interval (in MPD time) still contains instants after `target`. Using "last segment with
     // start <= target" breaks A/V sync when audio and video use different segment durations
     // (e.g. 6s audio vs 2s video): each track would start at a different segment start time.
-    let (segments, segment_start_index) = if let Some(target) = target_time {
-        let target_s = target.as_secs_f64();
-        let p0 = period_start.as_secs_f64();
-        let start_idx = segments_all
-            .iter()
-            .position(|s| p0 + s.presentation_time_s + s.duration_s > target_s)
-            .unwrap_or(0);
-        let start_idx =
-            manifest::align_start_index_to_sap(&segments_all, start_idx, &adaptation_set);
-        (segments_all[start_idx..].to_vec(), start_idx)
-    } else {
-        let start_idx = manifest::align_start_index_to_sap(&segments_all, 0, &adaptation_set);
-        (segments_all[start_idx..].to_vec(), start_idx)
+    let (segments, segment_start_index) = {
+        let delivered_tracker = lock_delivered(&delivered);
+        if let Some(target) = target_time {
+            let target_s = target.as_secs_f64();
+            let p0 = period_start.as_secs_f64();
+            let start_idx = segments_all
+                .iter()
+                .position(|s| p0 + s.presentation_time_s + s.duration_s > target_s)
+                .unwrap_or(0);
+            let start_idx =
+                manifest::align_start_index_to_sap(&segments_all, start_idx, &adaptation_set);
+            let start_idx = delivered_tracker.advance_start_index(&segments_all, start_idx);
+            (segments_all[start_idx..].to_vec(), start_idx)
+        } else {
+            let start_idx = manifest::align_start_index_to_sap(&segments_all, 0, &adaptation_set);
+            let start_idx = delivered_tracker.advance_start_index(&segments_all, start_idx);
+            (segments_all[start_idx..].to_vec(), start_idx)
+        }
     };
 
     let Some(mut abr) = AbrController::from_adaptation_set(&adaptation_set, 0.3) else {
@@ -156,6 +165,13 @@ pub(crate) async fn run_adaptation_stream(ctx: AdaptationStreamContext) -> Resul
     let mut sidx_segments_by_rep: HashMap<String, Vec<manifest::TimelineSegment>> = HashMap::new();
 
     for (local_idx, seg) in segments.into_iter().enumerate() {
+        {
+            let delivered_tracker = lock_delivered(&delivered);
+            if delivered_tracker.is_delivered(&seg) {
+                continue;
+            }
+        }
+
         abr.update_buffer(latest_buffer_s(&buffer_rx));
         let decision = abr.decide();
         let list_idx = segment_start_index + local_idx;
@@ -207,9 +223,18 @@ pub(crate) async fn run_adaptation_stream(ctx: AdaptationStreamContext) -> Resul
             sub_number: seg_for_fetch.sub_number,
             data,
         });
+
+        let mut delivered_tracker = lock_delivered(&delivered);
+        delivered_tracker.mark_delivered(&seg_for_fetch);
     }
 
     Ok(())
+}
+
+fn lock_delivered(
+    delivered: &Arc<Mutex<DeliveredSegmentTracker>>,
+) -> std::sync::MutexGuard<'_, DeliveredSegmentTracker> {
+    delivered.lock().unwrap_or_else(|e| e.into_inner())
 }
 
 struct RepFetchEnv<'a> {

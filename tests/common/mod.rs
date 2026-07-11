@@ -641,3 +641,31 @@ pub fn segment_numbers(events: &[dashplayrs::PlayerEvent]) -> Vec<u64> {
         })
         .collect()
 }
+
+/// Unique `(number, time, sub_number)` keys for delivered segments.
+pub fn segment_keys(events: &[dashplayrs::PlayerEvent]) -> Vec<(u64, u64, Option<u64>)> {
+    events
+        .iter()
+        .filter_map(|ev| match ev {
+            dashplayrs::PlayerEvent::Segment {
+                number,
+                time,
+                sub_number,
+                ..
+            } => Some((*number, *time, *sub_number)),
+            _ => None,
+        })
+        .collect()
+}
+
+pub fn assert_no_duplicate_segments(events: &[dashplayrs::PlayerEvent]) {
+    let keys = segment_keys(events);
+    let mut seen = std::collections::HashSet::new();
+    for key in keys {
+        assert!(
+            seen.insert(key),
+            "duplicate segment {key:?}; all keys: {:?}",
+            segment_keys(events)
+        );
+    }
+}

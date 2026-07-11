@@ -3,6 +3,7 @@
 
 use std::collections::HashMap;
 use std::sync::Arc;
+use std::sync::Mutex;
 use std::sync::atomic::{AtomicBool, Ordering};
 
 use futures::future::join_all;
@@ -14,6 +15,7 @@ use super::drm::License;
 
 use super::PlayerError;
 use super::dash_stream::{AdaptationStreamContext, run_adaptation_stream};
+use super::delivered_segments::DeliveredSegmentTracker;
 use super::manifest::{self, MimeType};
 use super::segment_blacklist::SegmentBlacklist;
 use super::types::PlayerEvent;
@@ -38,6 +40,11 @@ impl PlaybackLoopState {
     pub async fn run(mut self, tracks: Vec<super::types::PlayerTrack>) -> Result<(), PlayerError> {
         let have_init: Arc<Vec<AtomicBool>> =
             Arc::new((0..tracks.len()).map(|_| AtomicBool::new(false)).collect());
+        let delivered: Arc<Vec<Arc<Mutex<DeliveredSegmentTracker>>>> = Arc::new(
+            (0..tracks.len())
+                .map(|_| Arc::new(Mutex::new(DeliveredSegmentTracker::default())))
+                .collect(),
+        );
         let blacklist = SegmentBlacklist::new();
 
         loop {
@@ -67,6 +74,11 @@ impl PlaybackLoopState {
                 if self.last_period_idx != Some(current_window.idx) {
                     for flag in have_init.iter() {
                         flag.store(false, Ordering::Release);
+                    }
+                    for tracker in delivered.iter() {
+                        if let Ok(mut t) = tracker.lock() {
+                            t.reset();
+                        }
                     }
                 }
                 self.last_period_idx = Some(current_window.idx);
@@ -123,6 +135,7 @@ impl PlaybackLoopState {
                         .cloned()
                         .unwrap_or_default();
                     let buffer_rx = tracks[aset_idx].buffer_rx.clone();
+                    let delivered = delivered[aset_idx].clone();
 
                     let period = period.clone();
                     tasks.push(tokio::spawn(async move {
@@ -137,6 +150,7 @@ impl PlaybackLoopState {
                             aset_idx,
                             tx,
                             have_init,
+                            delivered,
                             blacklist,
                             license,
                             wv_by_rep,

@@ -1,8 +1,8 @@
 mod common;
 
 use common::{
-    AdvancingLiveServer, FixtureServer, has_end, init_payload, init_payloads,
-    play_single_track_live, segment_numbers, segment_payloads,
+    AdvancingLiveServer, FixtureServer, assert_no_duplicate_segments, has_end, init_payload,
+    init_payloads, play_single_track_live, segment_numbers, segment_payloads,
 };
 
 const LIVE_TIMEOUT: std::time::Duration = std::time::Duration::from_millis(800);
@@ -88,6 +88,26 @@ async fn live_manifest_refresh_advances_playback_window() {
         "expected live edge segments after refresh, got {numbers:?}"
     );
     assert!(!has_end(&events));
+}
+
+#[tokio::test]
+async fn live_manifest_refresh_does_not_reemit_segments() {
+    let server = AdvancingLiveServer::spawn().await;
+    let events = play_single_track_live(&server.manifest_url, REFRESH_TIMEOUT)
+        .await
+        .expect("playback");
+
+    assert!(
+        segment_payloads(&events).len() >= 2,
+        "expected segments across manifest refreshes, got {:?}",
+        segment_payloads(&events)
+    );
+    assert_no_duplicate_segments(&events);
+    let numbers = segment_numbers(&events);
+    assert!(
+        numbers.iter().any(|&n| n >= 4),
+        "expected live edge segments after refresh, got {numbers:?}"
+    );
 }
 
 #[tokio::test]

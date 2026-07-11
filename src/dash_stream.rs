@@ -19,6 +19,8 @@ use super::media_events;
 use super::metrics::TrackMetrics;
 use super::partial_segment;
 use super::playback_control::{PlaybackController, PlaybackState};
+use super::prft;
+use super::resync::ProducerReferenceAnchor;
 use super::segment_blacklist::SegmentBlacklist;
 use super::segment_fetcher::{
     fetch_bytes_with_base_failover, fetch_bytes_with_base_failover_and_range,
@@ -52,6 +54,10 @@ pub(crate) struct AdaptationStreamContext {
     pub metrics: TrackMetrics,
     pub playback: PlaybackController,
     pub abr_factory: SharedAbrFactory,
+    /// Latest in-band `prft` anchor for `ProducerReferenceTime@inband=true` clock correction.
+    pub inband_prt_anchor: Arc<Mutex<Option<ProducerReferenceAnchor>>>,
+    /// `@referenceId` from `ServiceDescription::Latency` when present.
+    pub prt_reference_id: Option<String>,
 }
 
 /// Run the fragment loop for one adaptation set until segments are exhausted for this manifest snapshot.
@@ -75,6 +81,8 @@ pub(crate) async fn run_adaptation_stream(ctx: AdaptationStreamContext) -> Resul
         metrics,
         playback,
         abr_factory,
+        inband_prt_anchor,
+        prt_reference_id,
     } = ctx;
 
     let seek_generation_at_start = playback.seek_generation();
@@ -291,6 +299,7 @@ pub(crate) async fn run_adaptation_stream(ctx: AdaptationStreamContext) -> Resul
                 emit_segment(
                     &tx,
                     &metrics,
+                    &period,
                     &adaptation_set,
                     rep,
                     &seg_for_fetch,
@@ -298,6 +307,8 @@ pub(crate) async fn run_adaptation_stream(ctx: AdaptationStreamContext) -> Resul
                     partial,
                     &mut playback_started_emitted,
                     &playback,
+                    &inband_prt_anchor,
+                    prt_reference_id.as_deref(),
                 );
             }
 
@@ -375,6 +386,7 @@ pub(crate) async fn run_adaptation_stream(ctx: AdaptationStreamContext) -> Resul
         emit_segment(
             &tx,
             &metrics,
+            &period,
             &adaptation_set,
             rep,
             &seg_for_fetch,
@@ -382,6 +394,8 @@ pub(crate) async fn run_adaptation_stream(ctx: AdaptationStreamContext) -> Resul
             None,
             &mut playback_started_emitted,
             &playback,
+            &inband_prt_anchor,
+            prt_reference_id.as_deref(),
         );
 
         let mut delivered_tracker = lock_delivered(&delivered);
@@ -405,6 +419,7 @@ fn partial_chunk_meta(chunk_idx: usize, fragment_count: usize) -> Option<Partial
 fn emit_segment(
     tx: &broadcast::Sender<PlayerEvent>,
     metrics: &TrackMetrics,
+    period: &Period,
     adaptation_set: &AdaptationSet,
     rep: &Representation,
     seg: &manifest::TimelineSegment,
@@ -412,7 +427,18 @@ fn emit_segment(
     partial: Option<PartialSegmentChunk>,
     playback_started_emitted: &mut bool,
     playback: &PlaybackController,
+    inband_prt_anchor: &Arc<Mutex<Option<ProducerReferenceAnchor>>>,
+    prt_reference_id: Option<&str>,
 ) {
+    prft::maybe_update_inband_anchor_from_segment(
+        data.as_ref(),
+        period,
+        adaptation_set,
+        rep,
+        prt_reference_id,
+        inband_prt_anchor,
+    );
+
     let inband_filters = media_events::inband_event_streams_for_representation(adaptation_set, rep);
     for event in media_events::inband_events_from_segment(
         data.as_ref(),

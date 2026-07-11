@@ -67,13 +67,30 @@ pub(crate) fn producer_reference_anchor(
     adaptation_set: &AdaptationSet,
     representation: &Representation,
     reference_id: Option<&str>,
+    inband_anchor: Option<ProducerReferenceAnchor>,
+) -> Option<ProducerReferenceAnchor> {
+    let prt = select_producer_reference_time(adaptation_set, representation, reference_id)?;
+
+    if prt.inband == Some(true) {
+        return inband_anchor.or_else(|| {
+            mpd_producer_reference_anchor(period, adaptation_set, representation, prt)
+        });
+    }
+
+    mpd_producer_reference_anchor(period, adaptation_set, representation, prt)
+}
+
+fn mpd_producer_reference_anchor(
+    period: &Period,
+    adaptation_set: &AdaptationSet,
+    representation: &Representation,
+    prt: &ProducerReferenceTime,
 ) -> Option<ProducerReferenceAnchor> {
     let addressing =
         manifest::segment_addressing_for_representation(period, adaptation_set, representation)
             .ok()?;
     let (timescale, pto) = timescale_and_pto(&addressing)?;
 
-    let prt = select_producer_reference_time(adaptation_set, representation, reference_id)?;
     let wall = prt.wallClockTime?;
     let presentation_time = prt.presentationTime?;
     let pta_ticks = presentation_time.saturating_sub(pto);
@@ -83,6 +100,16 @@ pub(crate) fn producer_reference_anchor(
         pta_ticks,
         timescale,
     })
+}
+
+/// Whether `adaptation_set` / `representation` declares in-band producer reference time.
+pub(crate) fn producer_reference_inband_enabled(
+    adaptation_set: &AdaptationSet,
+    representation: &Representation,
+    reference_id: Option<&str>,
+) -> bool {
+    select_producer_reference_time(adaptation_set, representation, reference_id)
+        .is_some_and(|prt| prt.inband == Some(true))
 }
 
 fn timescale_and_pto(addressing: &SegmentAddressing) -> Option<(u64, u64)> {
@@ -190,6 +217,7 @@ pub(crate) fn resync_corrected_since_ast(
     period_start: Duration,
     adaptation_set: &AdaptationSet,
     representation: &Representation,
+    inband_anchor: Option<ProducerReferenceAnchor>,
 ) -> Option<Duration> {
     let reference_id = latency_reference_id(mpd);
     let anchor = producer_reference_anchor(
@@ -197,6 +225,7 @@ pub(crate) fn resync_corrected_since_ast(
         adaptation_set,
         representation,
         reference_id.as_deref(),
+        inband_anchor,
     )?;
     Some(anchor.since_availability_start_at(wall_now, period_start))
 }
@@ -244,7 +273,7 @@ mod tests {
         let period = sample_period();
         let ad = sample_adaptation_set();
         let rep = &ad.representations[0];
-        let anchor = producer_reference_anchor(&period, &ad, rep, None).expect("anchor");
+        let anchor = producer_reference_anchor(&period, &ad, rep, None, None).expect("anchor");
         assert_eq!(anchor.pta_ticks, 0);
         let t0 = anchor.since_availability_start_at(anchor.wall_clock_time, Duration::ZERO);
         assert_eq!(t0, Duration::ZERO);
@@ -283,7 +312,7 @@ mod tests {
             },
         ];
         let rep = &ad.representations[0];
-        let anchor = producer_reference_anchor(&period, &ad, rep, Some("0")).expect("anchor");
+        let anchor = producer_reference_anchor(&period, &ad, rep, Some("0"), None).expect("anchor");
         assert_eq!(anchor.pta_ticks, 100);
         assert_eq!(
             anchor.wall_clock_time,
@@ -307,8 +336,32 @@ mod tests {
         let ad = sample_adaptation_set();
         let rep = &ad.representations[0];
         let wall = Utc.with_ymd_and_hms(2020, 5, 1, 12, 0, 7).unwrap();
-        let corrected = resync_corrected_since_ast(&mpd, wall, &period, Duration::ZERO, &ad, rep)
-            .expect("corrected");
+        let corrected =
+            resync_corrected_since_ast(&mpd, wall, &period, Duration::ZERO, &ad, rep, None)
+                .expect("corrected");
         assert_eq!(corrected, Duration::from_secs(7));
+    }
+
+    #[test]
+    fn inband_anchor_overrides_mpd_prt_when_inband_true() {
+        let period = sample_period();
+        let mut ad = sample_adaptation_set();
+        ad.ProducerReferenceTime[0].inband = Some(true);
+        ad.ProducerReferenceTime[0].presentationTime = Some(20_000);
+        ad.ProducerReferenceTime[0].wallClockTime =
+            Some(Utc.with_ymd_and_hms(2020, 5, 1, 12, 0, 20).unwrap());
+        let rep = &ad.representations[0];
+
+        let mpd_only = producer_reference_anchor(&period, &ad, rep, None, None).expect("mpd");
+        assert_eq!(mpd_only.pta_ticks, 19_900);
+
+        let inband = ProducerReferenceAnchor {
+            wall_clock_time: Utc.with_ymd_and_hms(2020, 5, 1, 12, 0, 20).unwrap(),
+            pta_ticks: 0,
+            timescale: 1000,
+        };
+        let corrected =
+            producer_reference_anchor(&period, &ad, rep, None, Some(inband)).expect("inband");
+        assert_eq!(corrected.pta_ticks, 0);
     }
 }

@@ -183,6 +183,13 @@ fn parse_xs_datetime_loose(s: &str) -> Option<DateTime<Utc>> {
     None
 }
 
+/// Convert a 64-bit NTP timestamp (ISO BMFF `prft` / RFC 5905) to UTC.
+pub(crate) fn ntp_u64_to_utc(ntp: u64) -> Option<DateTime<Utc>> {
+    let seconds = (ntp >> 32) as u32;
+    let fraction = (ntp & 0xFFFF_FFFF) as u32;
+    ntp_be_timestamp_to_utc(seconds, fraction)
+}
+
 fn ntp_be_timestamp_to_utc(seconds: u32, fraction: u32) -> Option<DateTime<Utc>> {
     let unix_secs = (seconds as i64).checked_sub(NTP_UNIX_OFFSET)?;
     let nanos = (((fraction as u64) * 1_000_000_000) >> 32) as u32;
@@ -316,6 +323,15 @@ mod tests {
         let unix = 1_000_000_000i64;
         let ntp_sec = (unix + NTP_UNIX_OFFSET) as u32;
         let dt = ntp_be_timestamp_to_utc(ntp_sec, 0).unwrap();
+        assert_eq!(dt.timestamp(), unix);
+    }
+
+    #[test]
+    fn ntp_u64_round_trip() {
+        let unix = 1_588_334_400i64;
+        let ntp_sec = (unix + NTP_UNIX_OFFSET) as u32;
+        let ntp = (ntp_sec as u64) << 32;
+        let dt = ntp_u64_to_utc(ntp).unwrap();
         assert_eq!(dt.timestamp(), unix);
     }
 

@@ -64,6 +64,13 @@ impl PlaybackLoopState {
         );
         let blacklist = SegmentBlacklist::new();
         let drm = Arc::new(AsyncMutex::new(drm));
+        let inband_prt_anchors: Arc<
+            Vec<Arc<Mutex<Option<super::resync::ProducerReferenceAnchor>>>>,
+        > = Arc::new(
+            (0..tracks.len())
+                .map(|_| Arc::new(Mutex::new(None)))
+                .collect(),
+        );
 
         let run_result: Result<(), PlayerError> = async {
             loop {
@@ -126,6 +133,11 @@ impl PlaybackLoopState {
                                 t.reset();
                             }
                         }
+                        for anchor in inband_prt_anchors.iter() {
+                            if let Ok(mut a) = anchor.lock() {
+                                *a = None;
+                            }
+                        }
                     }
                     last_period_idx = Some(current_window.idx);
 
@@ -168,6 +180,7 @@ impl PlaybackLoopState {
 
                     let since_ast_utc = manifest::since_availability_start_at(mpd_ref, wall_now)?;
                     let adaptation_sets = select_adaptation_sets(&period, &track_selection);
+                    let prt_reference_id = super::resync::latency_reference_id(mpd_ref);
 
                     let reference_since_ast = adaptation_sets
                         .first()
@@ -177,6 +190,9 @@ impl PlaybackLoopState {
                                 .representations
                                 .first()
                                 .and_then(|rep| {
+                                    let inband = inband_prt_anchors
+                                        .first()
+                                        .and_then(|a| a.lock().ok().and_then(|g| *g));
                                     super::resync::resync_corrected_since_ast(
                                         mpd_ref,
                                         wall_now,
@@ -184,6 +200,7 @@ impl PlaybackLoopState {
                                         period_start,
                                         selected.adaptation_set,
                                         rep,
+                                        inband,
                                     )
                                 })
                         })
@@ -207,6 +224,9 @@ impl PlaybackLoopState {
                         let rep = adaptation_set.representations.first();
                         let since_ast = rep
                             .and_then(|r| {
+                                let inband = inband_prt_anchors
+                                    .get(track_idx)
+                                    .and_then(|a| a.lock().ok().and_then(|g| *g));
                                 super::resync::resync_corrected_since_ast(
                                     mpd_ref,
                                     wall_now,
@@ -214,6 +234,7 @@ impl PlaybackLoopState {
                                     period_start,
                                     &adaptation_set,
                                     r,
+                                    inband,
                                 )
                             })
                             .or(since_ast_utc);
@@ -240,6 +261,8 @@ impl PlaybackLoopState {
                         let delivered = delivered[track_idx].clone();
                         let playback = playback.clone();
                         let abr_factory = abr_factory.clone();
+                        let inband_prt_anchor = inband_prt_anchors[track_idx].clone();
+                        let prt_reference_id = prt_reference_id.clone();
 
                         let period = period.clone();
                         streams.push(async move {
@@ -262,6 +285,8 @@ impl PlaybackLoopState {
                                 metrics,
                                 playback,
                                 abr_factory,
+                                inband_prt_anchor,
+                                prt_reference_id,
                             })
                             .await
                         });
@@ -273,7 +298,7 @@ impl PlaybackLoopState {
 
                     if playback.seek_generation() != seek_generation_at_start {
                         seek_interrupted = true;
-                        reset_for_seek(&have_init, &delivered);
+                        reset_for_seek(&have_init, &delivered, &inband_prt_anchors);
                         break;
                     }
                 }
@@ -331,6 +356,7 @@ fn send_playback_ended(tracks: &[super::types::PlayerTrack]) {
 fn reset_for_seek(
     have_init: &Arc<Vec<AtomicBool>>,
     delivered: &Arc<Vec<Arc<Mutex<DeliveredSegmentTracker>>>>,
+    inband_prt_anchors: &Arc<Vec<Arc<Mutex<Option<super::resync::ProducerReferenceAnchor>>>>>,
 ) {
     for flag in have_init.iter() {
         flag.store(false, Ordering::Release);
@@ -338,6 +364,11 @@ fn reset_for_seek(
     for tracker in delivered.iter() {
         if let Ok(mut t) = tracker.lock() {
             t.reset();
+        }
+    }
+    for anchor in inband_prt_anchors.iter() {
+        if let Ok(mut a) = anchor.lock() {
+            *a = None;
         }
     }
 }

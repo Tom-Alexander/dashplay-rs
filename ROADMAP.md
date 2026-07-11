@@ -96,7 +96,7 @@ These close the largest gaps between "delivers some streams" and "handles confor
 - [ ] **Additional DRM systems.** ClearKey
 - [x] **Low-Latency DASH.** `availabilityTimeComplete`, `ServiceDescription`, resync
   points, and chunked/partial segment transfer.
-- [ ] **In-band producer reference time.** Parse `prft` boxes for
+- [x] **In-band producer reference time.** Parse `prft` boxes for
   `ProducerReferenceTime@inband=true` clock correction.
 - [ ] **Mid-segment resync.** Use `Resync@type` 2/3 random-access points during seek
   and playback recovery.

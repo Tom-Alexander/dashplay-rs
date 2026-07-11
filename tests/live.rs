@@ -1,9 +1,10 @@
 mod common;
 
 use common::{
-    AdvancingLiveServer, FixtureServer, PartialLiveServer, ProducerReferenceLiveServer,
-    assert_no_duplicate_segments, has_end, init_payload, init_payloads, partial_segment_payloads,
-    play_single_track_live, segment_numbers, segment_payloads,
+    AdvancingLiveServer, FixtureServer, InbandProducerReferenceLiveServer, PartialLiveServer,
+    ProducerReferenceLiveServer, assert_no_duplicate_segments, has_end, init_payload,
+    init_payloads, partial_segment_payloads, play_single_track_live, segment_numbers,
+    segment_payloads,
 };
 
 const LIVE_TIMEOUT: std::time::Duration = std::time::Duration::from_millis(800);
@@ -172,6 +173,35 @@ async fn live_producer_reference_time_overrides_utc_timing_for_window() {
     );
     let numbers = segment_numbers(&events);
     assert_eq!(&numbers[..2], [1, 2]);
+    assert!(!has_end(&events));
+}
+
+#[tokio::test]
+async fn live_inband_prft_producer_reference_time_selects_correct_window() {
+    let server = InbandProducerReferenceLiveServer::spawn().await;
+    let events = play_single_track_live(&server.manifest_url, LIVE_TIMEOUT)
+        .await
+        .expect("playback");
+
+    assert_eq!(
+        init_payload(&events).as_deref(),
+        Some(b"dashplay-init-v1".as_ref())
+    );
+    let segments = segment_payloads(&events);
+    assert!(
+        segments.len() >= 2,
+        "expected live segments, got {segments:?}"
+    );
+    assert!(
+        segments[0].windows(4).any(|w| w == b"prft"),
+        "expected in-band prft box in segment payload"
+    );
+    let numbers = segment_numbers(&events);
+    assert_eq!(
+        &numbers[..2],
+        [1, 2],
+        "live window must follow in-band prft / ProducerReferenceTime, not UTCTiming alone"
+    );
     assert!(!has_end(&events));
 }
 

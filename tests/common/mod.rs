@@ -402,6 +402,148 @@ async fn serve_producer_reference_live_path(
 }
 
 #[derive(Clone)]
+struct InbandProducerReferenceLiveState {
+    files: Arc<HashMap<String, Vec<u8>>>,
+}
+
+/// Dynamic live server with `ProducerReferenceTime@inband=true` and matching `prft` boxes in segments.
+pub struct InbandProducerReferenceLiveServer {
+    pub manifest_url: Url,
+    shutdown: Option<oneshot::Sender<()>>,
+    handle: JoinHandle<()>,
+}
+
+impl InbandProducerReferenceLiveServer {
+    pub async fn spawn() -> Self {
+        let root = fixture_dir("live_duration");
+        let files = Arc::new(load_fixture_files(&root));
+        let state = InbandProducerReferenceLiveState { files };
+
+        let app = Router::new()
+            .route(
+                "/manifest.mpd",
+                get(serve_inband_producer_reference_live_manifest),
+            )
+            .route("/{*path}", get(serve_inband_producer_reference_live_path))
+            .with_state(state);
+
+        let listener = tokio::net::TcpListener::bind("127.0.0.1:0")
+            .await
+            .expect("bind test server");
+        let addr = listener.local_addr().expect("local addr");
+
+        let (shutdown_tx, shutdown_rx) = oneshot::channel();
+        let handle = tokio::spawn(async move {
+            axum::serve(listener, app)
+                .with_graceful_shutdown(async move {
+                    let _ = shutdown_rx.await;
+                })
+                .await
+                .expect("serve");
+        });
+
+        let manifest_url =
+            Url::parse(&format!("http://{addr}/manifest.mpd")).expect("manifest url");
+
+        Self {
+            manifest_url,
+            shutdown: Some(shutdown_tx),
+            handle,
+        }
+    }
+}
+
+impl Drop for InbandProducerReferenceLiveServer {
+    fn drop(&mut self) {
+        if let Some(tx) = self.shutdown.take() {
+            let _ = tx.send(());
+        }
+        self.handle.abort();
+    }
+}
+
+async fn serve_inband_producer_reference_live_manifest() -> Response {
+    let body = r#"<?xml version="1.0" encoding="UTF-8"?>
+<MPD xmlns="urn:mpeg:dash:schema:mpd:2011"
+     type="dynamic"
+     minimumUpdatePeriod="PT0.5S"
+     availabilityStartTime="2020-05-01T12:00:00Z"
+     timeShiftBufferDepth="PT20S"
+     suggestedPresentationDelay="PT4S"
+     minBufferTime="PT2S">
+  <UTCTiming schemeIdUri="urn:mpeg:dash:utc:direct:2014" value="2020-05-01T12:00:20Z"/>
+  <Period>
+    <AdaptationSet mimeType="video/mp4" contentType="video">
+      <SegmentTemplate timescale="1000" duration="4000" initialization="init.mp4" media="seg-$Number$.m4s" startNumber="1"/>
+      <Representation id="1" bandwidth="100000" codecs="avc1.42E01E" width="640" height="360"/>
+      <ProducerReferenceTime id="0" type="encoder" inband="true" wallClockTime="2020-05-01T12:00:20Z" presentationTime="4000"/>
+    </AdaptationSet>
+  </Period>
+</MPD>
+"#;
+
+    Response::builder()
+        .status(StatusCode::OK)
+        .header("Content-Type", "application/dash+xml")
+        .body(Body::from(body))
+        .unwrap_or_else(|_| StatusCode::INTERNAL_SERVER_ERROR.into_response())
+}
+
+async fn serve_inband_producer_reference_live_path(
+    State(state): State<InbandProducerReferenceLiveState>,
+    Path(path): Path<String>,
+    uri: Uri,
+    headers: axum::http::HeaderMap,
+) -> Response {
+    let url_path = uri.path().trim_end_matches('/').to_string();
+    if url_path.ends_with(".m4s") {
+        let segment_id = url_path.rsplit('/').next().unwrap_or("");
+        let key = format!("/{segment_id}");
+        let Some(raw) = state
+            .files
+            .get(&key)
+            .or_else(|| state.files.get(segment_id))
+        else {
+            return StatusCode::NOT_FOUND.into_response();
+        };
+        // prft anchor: 4s media at 2020-05-01T12:00:20Z (matches MPD PRT; diverges from UTCTiming).
+        let wrapped = wrap_segment_with_prft(raw, 4000, 1_588_334_420);
+        return Response::builder()
+            .status(StatusCode::OK)
+            .header("Content-Type", "video/iso.segment")
+            .body(Body::from(wrapped))
+            .unwrap_or_else(|_| StatusCode::INTERNAL_SERVER_ERROR.into_response());
+    }
+    serve_static_path(&state.files, &path, &uri, &headers)
+}
+
+const NTP_UNIX_OFFSET: i64 = 2_208_988_800;
+
+fn ntp_timestamp_from_unix(unix_secs: i64) -> u64 {
+    let ntp_sec = (unix_secs + NTP_UNIX_OFFSET) as u64;
+    ntp_sec << 32
+}
+
+fn build_prft_box(reference_track_id: u32, ntp_timestamp: u64, media_time: u64) -> Vec<u8> {
+    let mut payload = vec![0u8, 0, 0, 0]; // version 0, flags 0
+    payload.extend_from_slice(&reference_track_id.to_be_bytes());
+    payload.extend_from_slice(&ntp_timestamp.to_be_bytes());
+    payload.extend_from_slice(&(media_time as u32).to_be_bytes());
+    let size = (8 + payload.len()) as u32;
+    let mut out = Vec::with_capacity(size as usize);
+    out.extend_from_slice(&size.to_be_bytes());
+    out.extend_from_slice(b"prft");
+    out.extend_from_slice(&payload);
+    out
+}
+
+fn wrap_segment_with_prft(segment: &[u8], media_time: u64, wall_unix_secs: i64) -> Vec<u8> {
+    let mut out = build_prft_box(1, ntp_timestamp_from_unix(wall_unix_secs), media_time);
+    out.extend_from_slice(segment);
+    out
+}
+
+#[derive(Clone)]
 struct MultiPeriodLiveState {
     files: Arc<HashMap<String, Vec<u8>>>,
     fetch_count: Arc<AtomicUsize>,

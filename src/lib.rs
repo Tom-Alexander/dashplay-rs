@@ -59,6 +59,7 @@ mod mpd_patch;
 mod partial_segment;
 mod playback_control;
 mod player;
+mod prft;
 mod resync;
 mod segment_blacklist;
 mod segment_fetcher;

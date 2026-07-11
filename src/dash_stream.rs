@@ -705,7 +705,15 @@ async fn fetch_media_with_rep_fallback(
                 }
             }
         }
-        let template_vars = manifest::template_vars_for_representation(rep);
+        let base_vars = manifest::template_vars_for_representation(rep, env.adaptation_set);
+        let init_path = manifest::resolved_initialization_path(&rep_addressing, &base_vars);
+        let template_vars = manifest::TemplateVars {
+            number: Some(seg_for_fetch.number),
+            time: Some(seg_for_fetch.time),
+            sub_number: seg_for_fetch.sub_number,
+            initialization: init_path.as_deref(),
+            ..base_vars
+        };
         let seg_target = media_target_for_addressing(
             &rep_addressing,
             &seg_for_fetch,
@@ -746,7 +754,15 @@ async fn fetch_cmaf_media_with_rep_fallback(
         let rep_addressing =
             manifest::segment_addressing_for_representation(env.period, env.adaptation_set, rep)?;
         let seg_for_fetch = params.seg.clone();
-        let template_vars = manifest::template_vars_for_representation(rep);
+        let base_vars = manifest::template_vars_for_representation(rep, env.adaptation_set);
+        let init_path = manifest::resolved_initialization_path(&rep_addressing, &base_vars);
+        let template_vars = manifest::TemplateVars {
+            number: Some(seg_for_fetch.number),
+            time: Some(seg_for_fetch.time),
+            sub_number: seg_for_fetch.sub_number,
+            initialization: init_path.as_deref(),
+            ..base_vars
+        };
         let seg_target = media_target_for_addressing(
             &rep_addressing,
             &seg_for_fetch,
@@ -785,7 +801,7 @@ async fn ensure_init_for_rep(
         manifest::segment_bases_for_representation(env.segment_base_ctx, env.adaptation_set, rep)?;
     let rep_addressing =
         manifest::segment_addressing_for_representation(env.period, env.adaptation_set, rep)?;
-    let template_vars = manifest::template_vars_for_representation(rep);
+    let template_vars = manifest::template_vars_for_representation(rep, env.adaptation_set);
     let Some(init_target) = init_target_for_addressing(&rep_addressing, &template_vars)? else {
         encrypted_init_by_rep.insert(rep_id.to_string(), Bytes::new());
         return Ok(Bytes::new());
@@ -881,11 +897,10 @@ fn media_target_for_addressing(
                 path: manifest::interpolate_template(
                     media_tpl,
                     &manifest::TemplateVars {
-                        representation_id: vars.representation_id,
-                        bandwidth: vars.bandwidth,
                         number: Some(seg.number),
                         time: Some(seg.time),
                         sub_number: seg.sub_number,
+                        ..*vars
                     },
                 ),
                 range: None,

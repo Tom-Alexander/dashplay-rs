@@ -26,6 +26,24 @@ async fn vod_single_track_emits_init_segments_and_end() {
 }
 
 #[tokio::test]
+async fn vod_template_width_height_frame_rate_and_ext() {
+    let server = FixtureServer::spawn("vod_template_vars").await;
+    let events = play_single_track(&server.manifest_url, TIMEOUT)
+        .await
+        .expect("playback");
+
+    assert_eq!(
+        init_payload(&events).as_deref(),
+        Some(b"dashplay-init-v1".as_ref())
+    );
+    assert_eq!(
+        segment_payloads(&events),
+        vec![b"dashplay-seg-1".to_vec(), b"dashplay-seg-2".to_vec(),]
+    );
+    assert!(has_end(&events));
+}
+
+#[tokio::test]
 async fn vod_segment_list_playback() {
     let server = FixtureServer::spawn("vod_segment_list").await;
     let events = play_single_track(&server.manifest_url, TIMEOUT)

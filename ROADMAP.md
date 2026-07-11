@@ -134,7 +134,7 @@ These close the largest gaps between "delivers some streams" and "handles confor
 
 ## P6 — Segment addressing and MPD model (unsupported backlog)
 
-- [ ] **Remaining template variables.** `$Width$`, `$Height$`, `$FrameRate$`, `$Ext$`,
+- [x] **Remaining template variables.** `$Width$`, `$Height$`, `$FrameRate$`, `$Ext$`,
   `$Initialization$`.
 - [ ] **`SegmentTemplate@endNumber`.** Bound static `@duration` segment counts without
   relying solely on Period/MPD duration.

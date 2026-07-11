@@ -726,11 +726,10 @@ pub(crate) fn segment_base_media_target(
             interpolate_template(
                 s,
                 &TemplateVars {
-                    representation_id: vars.representation_id,
-                    bandwidth: vars.bandwidth,
                     number: Some(seg.number),
                     time: Some(seg.time),
                     sub_number: seg.sub_number,
+                    ..*vars
                 },
             )
         })
@@ -1037,13 +1036,45 @@ pub(crate) fn segment_template_for_representation(
 }
 
 /// Build template substitution values for one representation (init/media URL construction).
-pub(crate) fn template_vars_for_representation(rep: &Representation) -> TemplateVars<'_> {
+pub(crate) fn template_vars_for_representation<'a>(
+    rep: &'a Representation,
+    adaptation_set: &'a AdaptationSet,
+) -> TemplateVars<'a> {
     TemplateVars {
         representation_id: rep.id.as_deref().unwrap_or_default(),
         bandwidth: rep.bandwidth,
+        width: rep.width.or(adaptation_set.width),
+        height: rep.height.or(adaptation_set.height),
+        frame_rate: rep
+            .frameRate
+            .as_deref()
+            .or(adaptation_set.frameRate.as_deref()),
+        ext: Some(infer_template_ext(rep, adaptation_set)),
+        initialization: None,
         number: None,
         time: None,
         sub_number: None,
+    }
+}
+
+/// Resolve the initialization URL path for `$Initialization$` substitution in media templates.
+pub(crate) fn resolved_initialization_path(
+    addressing: &SegmentAddressing,
+    vars: &TemplateVars<'_>,
+) -> Option<String> {
+    match addressing {
+        SegmentAddressing::Template(st) => st
+            .initialization
+            .as_deref()
+            .map(|init_tpl| interpolate_template(init_tpl, vars)),
+        SegmentAddressing::List(sl) => segment_list_init_source(sl)
+            .ok()
+            .map(|init_src| interpolate_template(init_src, vars)),
+        SegmentAddressing::Base(sb) => sb
+            .Initialization
+            .as_ref()
+            .and_then(|init| init.sourceURL.as_deref())
+            .map(|init_src| interpolate_template(init_src, vars)),
     }
 }
 
@@ -1052,9 +1083,32 @@ pub(crate) fn template_vars_for_representation(rep: &Representation) -> Template
 pub(crate) struct TemplateVars<'a> {
     pub representation_id: &'a str,
     pub bandwidth: Option<u64>,
+    pub width: Option<u64>,
+    pub height: Option<u64>,
+    pub frame_rate: Option<&'a str>,
+    pub ext: Option<&'a str>,
+    pub initialization: Option<&'a str>,
     pub number: Option<u64>,
     pub time: Option<u64>,
     pub sub_number: Option<u64>,
+}
+
+#[allow(clippy::derivable_impls)] // `representation_id: &'a str` has no meaningful `Default`.
+impl<'a> Default for TemplateVars<'a> {
+    fn default() -> Self {
+        Self {
+            representation_id: "",
+            bandwidth: None,
+            width: None,
+            height: None,
+            frame_rate: None,
+            ext: None,
+            initialization: None,
+            number: None,
+            time: None,
+            sub_number: None,
+        }
+    }
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -1064,6 +1118,26 @@ enum TemplateIdent {
     Bandwidth,
     Time,
     SubNumber,
+    Width,
+    Height,
+    FrameRate,
+    Ext,
+    Initialization,
+}
+
+fn infer_template_ext(rep: &Representation, adaptation_set: &AdaptationSet) -> &'static str {
+    let mime = rep
+        .mimeType
+        .as_deref()
+        .or(adaptation_set.mimeType.as_deref())
+        .unwrap_or("");
+    if mime.eq_ignore_ascii_case("video/webm") || mime.contains("/webm") {
+        "webm"
+    } else if mime.contains("mp2t") {
+        "ts"
+    } else {
+        "m4s"
+    }
 }
 
 /// Parse `%0[width]d` width from a DASH format tag; defaults to 1 per spec when absent or invalid.
@@ -1096,9 +1170,21 @@ fn parse_template_ident(token: &str) -> Option<(TemplateIdent, Option<&str>)> {
         "Bandwidth" => TemplateIdent::Bandwidth,
         "Time" => TemplateIdent::Time,
         "SubNumber" => TemplateIdent::SubNumber,
+        "Width" => TemplateIdent::Width,
+        "Height" => TemplateIdent::Height,
+        "FrameRate" => TemplateIdent::FrameRate,
+        "Ext" => TemplateIdent::Ext,
+        "Initialization" => TemplateIdent::Initialization,
         _ => return None,
     };
-    if ident == TemplateIdent::RepId && format.is_some() {
+    if matches!(
+        ident,
+        TemplateIdent::RepId
+            | TemplateIdent::FrameRate
+            | TemplateIdent::Ext
+            | TemplateIdent::Initialization
+    ) && format.is_some()
+    {
         return None;
     }
     Some((ident, format))
@@ -1124,6 +1210,15 @@ fn resolve_template_ident(
             vars.sub_number.unwrap_or(1),
             dash_format_width(format),
         )),
+        TemplateIdent::Width => vars
+            .width
+            .map(|w| format_dash_integer(w, dash_format_width(format))),
+        TemplateIdent::Height => vars
+            .height
+            .map(|h| format_dash_integer(h, dash_format_width(format))),
+        TemplateIdent::FrameRate => vars.frame_rate.map(str::to_string),
+        TemplateIdent::Ext => vars.ext.map(str::to_string),
+        TemplateIdent::Initialization => vars.initialization.map(str::to_string),
     }
 }
 
@@ -1945,10 +2040,10 @@ mod timeline_tests {
     fn interpolate_template_subnumber() {
         let vars = TemplateVars {
             representation_id: "A",
-            bandwidth: None,
             number: Some(7),
             time: Some(42),
             sub_number: Some(3),
+            ..Default::default()
         };
         let out = interpolate_template(
             "v-$RepresentationID$-$Number$-$Time$-$SubNumber$.m4s",
@@ -1961,10 +2056,7 @@ mod timeline_tests {
     fn interpolate_template_subnumber_defaults_to_one() {
         let vars = TemplateVars {
             representation_id: "id",
-            bandwidth: None,
-            number: None,
-            time: None,
-            sub_number: None,
+            ..Default::default()
         };
         let out = interpolate_template("x-$SubNumber$.m4s", &vars);
         assert_eq!(out, "x-1.m4s");
@@ -1977,7 +2069,7 @@ mod timeline_tests {
             bandwidth: Some(1_100_000),
             number: Some(7),
             time: Some(42),
-            sub_number: None,
+            ..Default::default()
         };
         let out = interpolate_template(
             "chunk-$RepresentationID$-$Number%05d$-$Time%010d$-$Bandwidth%07d$.m4s",
@@ -1991,9 +2083,7 @@ mod timeline_tests {
         let vars = TemplateVars {
             representation_id: "v",
             bandwidth: Some(500_000),
-            number: None,
-            time: None,
-            sub_number: None,
+            ..Default::default()
         };
         let out = interpolate_template("seg-$Bandwidth$.m4s", &vars);
         assert_eq!(out, "seg-500000.m4s");
@@ -2003,10 +2093,8 @@ mod timeline_tests {
     fn interpolate_template_dollar_escape() {
         let vars = TemplateVars {
             representation_id: "id",
-            bandwidth: None,
             number: Some(1),
-            time: None,
-            sub_number: None,
+            ..Default::default()
         };
         let out = interpolate_template("pre$$-$Number$-post", &vars);
         assert_eq!(out, "pre$-1-post");
@@ -2016,13 +2104,84 @@ mod timeline_tests {
     fn interpolate_template_leaves_missing_number_unsubstituted() {
         let vars = TemplateVars {
             representation_id: "id",
-            bandwidth: None,
-            number: None,
-            time: None,
-            sub_number: None,
+            ..Default::default()
         };
         let out = interpolate_template("seg-$Number%05d$.m4s", &vars);
         assert_eq!(out, "seg-$Number%05d$.m4s");
+    }
+
+    #[test]
+    fn interpolate_template_width_height_frame_rate_and_ext() {
+        let vars = TemplateVars {
+            width: Some(1280),
+            height: Some(720),
+            frame_rate: Some("30000/1001"),
+            ext: Some("m4s"),
+            number: Some(3),
+            ..Default::default()
+        };
+        let out = interpolate_template("seg-$Width$x$Height$-$FrameRate$-$Number$.$Ext$", &vars);
+        assert_eq!(out, "seg-1280x720-30000/1001-3.m4s");
+    }
+
+    #[test]
+    fn interpolate_template_width_height_format_width() {
+        let vars = TemplateVars {
+            width: Some(640),
+            height: Some(360),
+            ..Default::default()
+        };
+        let out = interpolate_template("v$Width%04d$x$Height%03d$.mp4", &vars);
+        assert_eq!(out, "v0640x360.mp4");
+    }
+
+    #[test]
+    fn interpolate_template_initialization() {
+        let vars = TemplateVars {
+            initialization: Some("init-640x360.mp4"),
+            number: Some(2),
+            ext: Some("m4s"),
+            ..Default::default()
+        };
+        let out = interpolate_template("$Initialization$-chunk-$Number$.$Ext$", &vars);
+        assert_eq!(out, "init-640x360.mp4-chunk-2.m4s");
+    }
+
+    #[test]
+    fn interpolate_template_rejects_format_tag_on_string_identifiers() {
+        let vars = TemplateVars {
+            frame_rate: Some("24"),
+            ext: Some("m4s"),
+            ..Default::default()
+        };
+        assert_eq!(
+            interpolate_template("x-$FrameRate%02d$.m4s", &vars),
+            "x-$FrameRate%02d$.m4s"
+        );
+        assert_eq!(
+            interpolate_template("x-$Ext%02d$.m4s", &vars),
+            "x-$Ext%02d$.m4s"
+        );
+    }
+
+    #[test]
+    fn template_vars_for_representation_inherits_adaptation_set_dimensions() {
+        let adaptation_set = AdaptationSet {
+            width: Some(1920),
+            height: Some(1080),
+            frameRate: Some("25".into()),
+            mimeType: Some("video/mp4".into()),
+            ..Default::default()
+        };
+        let rep = Representation {
+            bandwidth: Some(1_000_000),
+            ..Default::default()
+        };
+        let vars = template_vars_for_representation(&rep, &adaptation_set);
+        assert_eq!(vars.width, Some(1920));
+        assert_eq!(vars.height, Some(1080));
+        assert_eq!(vars.frame_rate, Some("25"));
+        assert_eq!(vars.ext, Some("m4s"));
     }
 
     #[test]
@@ -2736,10 +2895,7 @@ mod manifest_logic_tests {
         };
         let vars = TemplateVars {
             representation_id: "1",
-            bandwidth: None,
-            number: None,
-            time: None,
-            sub_number: None,
+            ..Default::default()
         };
         let target = segment_base_init_target(&sb, &vars).unwrap();
         assert_eq!(target.path, "");

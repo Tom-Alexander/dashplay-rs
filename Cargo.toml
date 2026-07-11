@@ -29,6 +29,7 @@ num-traits = "0.2"
 pssh-box = "0.2.4"
 protobuf = "3.7"
 quick-xml = "0.39.2"
+roxmltree = "0.20"
 rand = "0.8"
 reqwest = { version = "0.13", default-features = false, features = ["rustls", "gzip", "cookies", "stream"] }
 rsa = "0.9.2"

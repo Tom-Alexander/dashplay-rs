@@ -252,6 +252,8 @@ pub(crate) struct SegmentBaseContext {
     pub manifest_uri: Url,
     pub mpd_base_urls: Vec<BaseURL>,
     pub period_base_urls: Vec<BaseURL>,
+    pub service_location_priority: Vec<String>,
+    pub default_service_location: Option<String>,
 }
 
 fn is_absolute_base(s: &str) -> bool {
@@ -320,7 +322,12 @@ pub(crate) fn segment_bases_for_representation(
     representation: &Representation,
 ) -> Result<Vec<Url>, PlayerError> {
     let mut bases = vec![ctx.manifest_uri.clone()];
-    bases = expand_base_layer(bases, &ctx.mpd_base_urls)?;
+    let mpd_base_urls = super::content_steering::order_base_urls_for_steering(
+        &ctx.mpd_base_urls,
+        &ctx.service_location_priority,
+        ctx.default_service_location.as_deref(),
+    );
+    bases = expand_base_layer(bases, &mpd_base_urls)?;
     bases = expand_base_layer(bases, &ctx.period_base_urls)?;
     bases = expand_base_layer(bases, &adaptation_set.BaseURL)?;
     bases = expand_base_layer(bases, &representation.BaseURL)?;
@@ -2012,6 +2019,8 @@ mod manifest_logic_tests {
                 base: "period/".into(),
                 ..Default::default()
             }],
+            service_location_priority: Vec::new(),
+            default_service_location: None,
         };
         let adaptation_set = AdaptationSet {
             BaseURL: vec![BaseURL {

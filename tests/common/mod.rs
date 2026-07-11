@@ -672,8 +672,17 @@ fn load_fixture_files(root: &FsPath) -> HashMap<String, Vec<u8>> {
     files
 }
 
-pub(crate) fn load_fixture_files_public(root: &FsPath) -> HashMap<String, Vec<u8>> {
+pub fn load_fixture_files_public(root: &FsPath) -> HashMap<String, Vec<u8>> {
     load_fixture_files(root)
+}
+
+pub fn serve_static_path_public(
+    files: &HashMap<String, Vec<u8>>,
+    path: &str,
+    uri: &Uri,
+    headers: &axum::http::HeaderMap,
+) -> Response {
+    serve_static_path(files, path, uri, headers)
 }
 
 fn collect_files(root: &FsPath, dir: &FsPath, out: &mut HashMap<String, Vec<u8>>) {

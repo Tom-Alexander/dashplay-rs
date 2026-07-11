@@ -16,8 +16,9 @@ use super::PlayerError;
 use super::abr::SharedAbrFactory;
 use super::dash_stream::{AdaptationStreamContext, run_adaptation_stream};
 use super::delivered_segments::DeliveredSegmentTracker;
-use super::http::{HttpRequest, SharedHttpClient};
+use super::http::SharedHttpClient;
 use super::manifest;
+use super::manifest_update;
 use super::media_events;
 use super::playback_control::{PlaybackController, PlaybackState};
 use super::segment_blacklist::SegmentBlacklist;
@@ -47,6 +48,8 @@ impl PlaybackLoopState {
 
         let mut manifest = None;
         let mut mpd_xml = None;
+        let mut manifest_session = manifest_update::ManifestSession::default();
+        manifest_session.initialize(manifest_uri.clone());
         let mut last_period_idx = None;
         let mut seek_target_override: Option<std::time::Duration> = None;
         let mut emitted_mpd_events: std::collections::HashSet<(String, u64, u64)> =
@@ -73,10 +76,11 @@ impl PlaybackLoopState {
 
                 playback.set_state(PlaybackState::LoadingManifest);
 
-                let resp = client.send(HttpRequest::get(manifest_uri.clone())).await?;
-                let text = resp.text()?;
-                manifest = Some(dash_mpd::parse(&text)?);
-                mpd_xml = Some(text);
+                manifest_session.refresh(&client, &manifest_uri).await?;
+                manifest_session.sync_steering(&client).await?;
+                manifest = Some(manifest_session.parsed.clone().expect("parsed"));
+                mpd_xml = Some(manifest_session.xml()?.to_string());
+                let active_manifest_uri = manifest_session.manifest_uri()?.clone();
 
                 let mpd_ref = manifest::mpd(&manifest)?;
                 let min_update = mpd_ref
@@ -92,7 +96,7 @@ impl PlaybackLoopState {
 
                 let is_dynamic = manifest::is_dynamic_mpd(mpd_ref);
                 let wall_now =
-                    utc_timing::wall_clock_utc(&client, mpd_ref, Some(&manifest_uri)).await;
+                    utc_timing::wall_clock_utc(&client, mpd_ref, Some(&active_manifest_uri)).await;
 
                 if let Some(seek) = playback.take_seek_target() {
                     seek_target_override = Some(seek);
@@ -150,10 +154,16 @@ impl PlaybackLoopState {
                         }
                     }
 
+                    let steering = &manifest_session.steering;
                     let segment_base_ctx = manifest::SegmentBaseContext {
-                        manifest_uri: manifest_uri.clone(),
+                        manifest_uri: active_manifest_uri.clone(),
                         mpd_base_urls: mpd_ref.base_url.clone(),
                         period_base_urls: period.BaseURL.clone(),
+                        service_location_priority: steering.service_location_priority().to_vec(),
+                        default_service_location: steering
+                            .config
+                            .as_ref()
+                            .and_then(|c| c.default_service_location.clone()),
                     };
 
                     let since_ast_utc = manifest::since_availability_start_at(mpd_ref, wall_now)?;

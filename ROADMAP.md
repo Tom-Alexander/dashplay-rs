@@ -103,7 +103,7 @@ These close the largest gaps between "delivers some streams" and "handles confor
 - [x] **Producer-reference integration coverage.** Test live-window selection when
   `ProducerReferenceTime` intentionally diverges from `UTCTiming`.
 - [x] **In-band and MPD events.** `EventStream`, `emsg`, and SCTE-35 ad markers.
-- [ ] **Content steering / MPD updates.** `Location`, content steering, and MPD patch
+- [x] **Content steering / MPD updates.** `Location`, content steering, and MPD patch
   (`urn:mpeg:dash:mpd-patch`) updates.
 - [ ] **CMCD / CMSD.** Common Media Client/Server Data request and response hints.
 

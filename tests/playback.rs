@@ -122,3 +122,54 @@ async fn player_rejects_invalid_manifest_url() {
         .expect("invalid url");
     assert!(matches!(err, dashplayrs::PlayerError::Url(_)));
 }
+
+#[tokio::test]
+async fn vod_time_template_addressing_playback() {
+    let server = FixtureServer::spawn("vod_time").await;
+    let events = play_single_track(&server.manifest_url, TIMEOUT)
+        .await
+        .expect("playback");
+
+    assert_eq!(
+        init_payload(&events).as_deref(),
+        Some(b"dashplay-init-v1".as_ref())
+    );
+    assert_eq!(
+        segment_payloads(&events),
+        vec![b"dashplay-time-0".to_vec(), b"dashplay-time-4000".to_vec(),]
+    );
+    assert!(has_end(&events));
+}
+
+#[tokio::test]
+async fn dashif_simple_segment_template_smoke_test() {
+    // Structure adapted from DASH-IF livesim2 testpic_2s Manifest_endNumber.mpd.
+    let server = FixtureServer::spawn("dashif_simple").await;
+    let events = play_single_track(&server.manifest_url, TIMEOUT)
+        .await
+        .expect("playback");
+
+    assert_eq!(
+        init_payload(&events).as_deref(),
+        Some(b"dashplay-dashif-init".as_ref())
+    );
+    assert_eq!(segment_payloads(&events).len(), 4);
+    assert!(has_end(&events));
+}
+
+#[tokio::test]
+async fn all_base_urls_fail_surfaces_segment_error() {
+    let server = FixtureServer::spawn_with_options("base_url_all_bad", &["/a", "/b"]).await;
+
+    let err = play_single_track(&server.manifest_url, TIMEOUT)
+        .await
+        .expect_err("expected all CDN bases to fail");
+
+    assert!(
+        matches!(
+            err,
+            dashplayrs::PlayerError::SegmentRequestFailed { status: 404, .. }
+        ),
+        "unexpected error: {err:?}"
+    );
+}

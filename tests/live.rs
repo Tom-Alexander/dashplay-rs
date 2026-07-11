@@ -1,8 +1,8 @@
 mod common;
 
 use common::{
-    AdvancingLiveServer, FixtureServer, has_end, init_payload, play_single_track_live,
-    segment_numbers, segment_payloads,
+    AdvancingLiveServer, FixtureServer, has_end, init_payload, init_payloads,
+    play_single_track_live, segment_numbers, segment_payloads,
 };
 
 const LIVE_TIMEOUT: std::time::Duration = std::time::Duration::from_millis(800);
@@ -86,6 +86,40 @@ async fn live_manifest_refresh_advances_playback_window() {
     assert!(
         numbers.iter().any(|&n| n >= 4),
         "expected live edge segments after refresh, got {numbers:?}"
+    );
+    assert!(!has_end(&events));
+}
+
+#[tokio::test]
+async fn live_multi_period_transition_re_emits_init() {
+    let server = common::MultiPeriodLiveServer::spawn().await;
+    let events = play_single_track_live(&server.manifest_url, std::time::Duration::from_secs(2))
+        .await
+        .expect("playback");
+
+    let inits = init_payloads(&events);
+    assert!(
+        inits.len() >= 2,
+        "expected init re-emission on period change, got {inits:?}"
+    );
+    assert_eq!(inits[0], b"dashplay-period1-init".to_vec());
+    assert!(
+        inits.iter().any(|init| init == b"dashplay-period2-init"),
+        "expected period-2 init after transition, got {inits:?}"
+    );
+
+    let segments = segment_payloads(&events);
+    assert!(
+        segments
+            .iter()
+            .any(|seg| seg.starts_with(b"dashplay-period1-seg-")),
+        "expected period-1 segments"
+    );
+    assert!(
+        segments
+            .iter()
+            .any(|seg| seg.starts_with(b"dashplay-period2-seg-")),
+        "expected period-2 segments after manifest refresh, got {segments:?}"
     );
     assert!(!has_end(&events));
 }

@@ -938,3 +938,182 @@ mod timeline_tests {
         assert_eq!(align_start_index_to_sap(&segs, 1, &aset), 1);
     }
 }
+
+#[cfg(test)]
+mod manifest_logic_tests {
+    use super::*;
+    use chrono::TimeZone;
+    use dash_mpd::{Period, SegmentTemplate};
+
+    #[test]
+    fn merge_base_url_relative_and_absolute() {
+        let base = Url::parse("https://cdn.example/vod/?token=abc").unwrap();
+        let rel = merge_base_url(&base, "segments/").unwrap();
+        assert_eq!(rel.as_str(), "https://cdn.example/vod/segments/?token=abc");
+
+        let abs = merge_base_url(&base, "https://alt.example/").unwrap();
+        assert_eq!(abs.as_str(), "https://alt.example/");
+    }
+
+    #[test]
+    fn segment_bases_expand_hierarchy_and_dedupe() {
+        let ctx = SegmentBaseContext {
+            manifest_uri: Url::parse("https://example.com/manifest.mpd?sig=1").unwrap(),
+            mpd_base_urls: vec![BaseURL {
+                base: "mpd/".into(),
+                ..Default::default()
+            }],
+            period_base_urls: vec![BaseURL {
+                base: "period/".into(),
+                ..Default::default()
+            }],
+        };
+        let adaptation_set = AdaptationSet {
+            BaseURL: vec![BaseURL {
+                base: "as/".into(),
+                ..Default::default()
+            }],
+            ..Default::default()
+        };
+        let representation = Representation {
+            BaseURL: vec![
+                BaseURL {
+                    base: "rep-a/".into(),
+                    ..Default::default()
+                },
+                BaseURL {
+                    base: "rep-a/".into(),
+                    ..Default::default()
+                },
+            ],
+            ..Default::default()
+        };
+
+        let bases =
+            segment_bases_for_representation(&ctx, &adaptation_set, &representation).unwrap();
+        assert_eq!(bases.len(), 1);
+        assert!(bases[0].as_str().contains("/rep-a"));
+        assert!(bases[0].as_str().contains("/as/"));
+        assert_eq!(bases[0].query(), Some("sig=1"));
+    }
+
+    #[test]
+    fn period_windows_chain_period_starts() {
+        let mpd = MPD {
+            periods: vec![
+                Period {
+                    duration: Some(Duration::from_secs(10)),
+                    ..Default::default()
+                },
+                Period {
+                    start: Some(Duration::from_secs(10)),
+                    duration: Some(Duration::from_secs(5)),
+                    ..Default::default()
+                },
+            ],
+            ..Default::default()
+        };
+
+        let windows = period_windows(&mpd).unwrap();
+        assert_eq!(windows.len(), 2);
+        assert_eq!(windows[0].start, Duration::ZERO);
+        assert_eq!(windows[0].end, Some(Duration::from_secs(10)));
+        assert_eq!(windows[1].start, Duration::from_secs(10));
+        assert_eq!(windows[1].end, Some(Duration::from_secs(15)));
+    }
+
+    #[test]
+    fn current_period_window_selects_by_availability_time() {
+        let ast = Utc.with_ymd_and_hms(2020, 5, 1, 12, 0, 0).unwrap();
+        let mpd = MPD {
+            availabilityStartTime: Some(ast),
+            periods: vec![
+                Period {
+                    duration: Some(Duration::from_secs(10)),
+                    ..Default::default()
+                },
+                Period {
+                    start: Some(Duration::from_secs(10)),
+                    ..Default::default()
+                },
+            ],
+            ..Default::default()
+        };
+
+        let in_first = Utc.with_ymd_and_hms(2020, 5, 1, 12, 0, 5).unwrap();
+        assert_eq!(current_period_window_at(&mpd, in_first).unwrap().idx, 0);
+
+        let in_second = Utc.with_ymd_and_hms(2020, 5, 1, 12, 0, 12).unwrap();
+        assert_eq!(current_period_window_at(&mpd, in_second).unwrap().idx, 1);
+    }
+
+    #[test]
+    fn target_presentation_time_applies_suggested_delay() {
+        let ast = Utc.with_ymd_and_hms(2020, 5, 1, 12, 0, 0).unwrap();
+        let mpd = MPD {
+            availabilityStartTime: Some(ast),
+            suggestedPresentationDelay: Some(Duration::from_secs(2)),
+            ..Default::default()
+        };
+        let now = Utc.with_ymd_and_hms(2020, 5, 1, 12, 0, 10).unwrap();
+        assert_eq!(
+            target_presentation_time_at(&mpd, now).unwrap(),
+            Some(Duration::from_secs(8))
+        );
+    }
+
+    #[test]
+    fn static_duration_template_emits_expected_segment_count() {
+        let st = SegmentTemplate {
+            timescale: Some(1000),
+            duration: Some(4000.0),
+            presentationTimeOffset: Some(0),
+            startNumber: Some(1),
+            ..Default::default()
+        };
+        let ctx = TimelineBuildContext {
+            is_dynamic: false,
+            period_window: PeriodWindow {
+                idx: 0,
+                start: Duration::ZERO,
+                end: Some(Duration::from_secs(8)),
+            },
+            period_duration: None,
+            media_presentation_duration: Some(Duration::from_secs(8)),
+            time_shift_buffer_depth: None,
+            since_availability_start: None,
+        };
+
+        let segs = timeline_segments(&st, &ctx).unwrap();
+        assert_eq!(segs.len(), 2);
+        assert_eq!(segs[0].number, 1);
+        assert_eq!(segs[1].number, 2);
+    }
+
+    #[test]
+    fn dynamic_duration_template_limits_window_to_time_shift_buffer() {
+        let st = SegmentTemplate {
+            timescale: Some(1000),
+            duration: Some(4000.0),
+            presentationTimeOffset: Some(0),
+            startNumber: Some(1),
+            ..Default::default()
+        };
+        let ctx = TimelineBuildContext {
+            is_dynamic: true,
+            period_window: PeriodWindow {
+                idx: 0,
+                start: Duration::ZERO,
+                end: None,
+            },
+            period_duration: None,
+            media_presentation_duration: None,
+            time_shift_buffer_depth: Some(Duration::from_secs(8)),
+            since_availability_start: Some(Duration::from_secs(20)),
+        };
+
+        let segs = timeline_segments(&st, &ctx).unwrap();
+        assert_eq!(segs.first().map(|s| s.number), Some(2));
+        assert_eq!(segs.last().map(|s| s.number), Some(6));
+    }
+}

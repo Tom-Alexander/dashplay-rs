@@ -14,6 +14,7 @@ use std::collections::{HashMap, HashSet};
 use std::path::{Path as FsPath, PathBuf};
 use std::sync::Arc;
 use std::sync::atomic::{AtomicUsize, Ordering};
+use std::time::Duration as StdDuration;
 use tokio::sync::oneshot;
 use tokio::task::JoinHandle;
 use url::Url;
@@ -22,6 +23,7 @@ use url::Url;
 struct AppState {
     files: Arc<HashMap<String, Vec<u8>>>,
     not_found_prefixes: Arc<HashSet<String>>,
+    delay_prefixes: Arc<HashSet<String>>,
 }
 
 pub struct FixtureServer {
@@ -37,6 +39,20 @@ impl FixtureServer {
 
     /// URL path prefixes (e.g. `"/bad"`) that always return HTTP 404.
     pub async fn spawn_with_options(fixture: &str, not_found_prefixes: &[&str]) -> Self {
+        Self::spawn_configured(fixture, not_found_prefixes, &[]).await
+    }
+
+    /// Like [`Self::spawn_with_options`], but adds an artificial delay before responding for
+    /// paths under the given prefixes (used to simulate slow high-bitrate downloads in ABR tests).
+    pub async fn spawn_with_delays(fixture: &str, delay_prefixes: &[&str]) -> Self {
+        Self::spawn_configured(fixture, &[], delay_prefixes).await
+    }
+
+    async fn spawn_configured(
+        fixture: &str,
+        not_found_prefixes: &[&str],
+        delay_prefixes: &[&str],
+    ) -> Self {
         let root = fixture_dir(fixture);
         let files = Arc::new(load_fixture_files(&root));
         let not_found_prefixes = Arc::new(
@@ -45,10 +61,17 @@ impl FixtureServer {
                 .map(|p| p.trim_end_matches('/').to_string())
                 .collect::<HashSet<_>>(),
         );
+        let delay_prefixes = Arc::new(
+            delay_prefixes
+                .iter()
+                .map(|p| p.trim_end_matches('/').to_string())
+                .collect::<HashSet<_>>(),
+        );
 
         let state = AppState {
             files,
             not_found_prefixes,
+            delay_prefixes,
         };
 
         let app = Router::new()
@@ -152,6 +175,114 @@ impl Drop for AdvancingLiveServer {
     }
 }
 
+#[derive(Clone)]
+struct MultiPeriodLiveState {
+    files: Arc<HashMap<String, Vec<u8>>>,
+    fetch_count: Arc<AtomicUsize>,
+}
+
+/// Dynamic live server that transitions from period 1 to period 2 as simulated wall clock advances.
+pub struct MultiPeriodLiveServer {
+    pub manifest_url: Url,
+    shutdown: Option<oneshot::Sender<()>>,
+    handle: JoinHandle<()>,
+}
+
+impl MultiPeriodLiveServer {
+    pub async fn spawn() -> Self {
+        let root = fixture_dir("live_multi_period");
+        let files = Arc::new(load_fixture_files(&root));
+        let state = MultiPeriodLiveState {
+            files,
+            fetch_count: Arc::new(AtomicUsize::new(0)),
+        };
+
+        let app = Router::new()
+            .route("/manifest.mpd", get(serve_multi_period_manifest))
+            .route("/{*path}", get(serve_multi_period_path))
+            .with_state(state);
+
+        let listener = tokio::net::TcpListener::bind("127.0.0.1:0")
+            .await
+            .expect("bind test server");
+        let addr = listener.local_addr().expect("local addr");
+
+        let (shutdown_tx, shutdown_rx) = oneshot::channel();
+        let handle = tokio::spawn(async move {
+            axum::serve(listener, app)
+                .with_graceful_shutdown(async move {
+                    let _ = shutdown_rx.await;
+                })
+                .await
+                .expect("serve");
+        });
+
+        let manifest_url =
+            Url::parse(&format!("http://{addr}/manifest.mpd")).expect("manifest url");
+
+        Self {
+            manifest_url,
+            shutdown: Some(shutdown_tx),
+            handle,
+        }
+    }
+}
+
+impl Drop for MultiPeriodLiveServer {
+    fn drop(&mut self) {
+        if let Some(tx) = self.shutdown.take() {
+            let _ = tx.send(());
+        }
+        self.handle.abort();
+    }
+}
+
+async fn serve_multi_period_manifest(State(state): State<MultiPeriodLiveState>) -> Response {
+    let fetch = state.fetch_count.fetch_add(1, Ordering::SeqCst);
+    // First manifest loads (MediaPlayer + initial loop pass) stay in period 1; later refresh enters period 2.
+    let elapsed_secs = if fetch < 2 { 5 } else { 12 };
+    let wall_now = format!("2020-05-01T12:00:{elapsed_secs:02}Z");
+    let body = format!(
+        r#"<?xml version="1.0" encoding="UTF-8"?>
+<MPD xmlns="urn:mpeg:dash:schema:mpd:2011"
+     type="dynamic"
+     minimumUpdatePeriod="PT0.5S"
+     availabilityStartTime="2020-05-01T12:00:00Z"
+     timeShiftBufferDepth="PT30S"
+     suggestedPresentationDelay="PT1S"
+     minBufferTime="PT2S">
+  <UTCTiming schemeIdUri="urn:mpeg:dash:utc:direct:2014" value="{wall_now}"/>
+  <Period id="p1" duration="PT10S">
+    <AdaptationSet mimeType="video/mp4" contentType="video">
+      <SegmentTemplate timescale="1000" duration="4000" initialization="p1-init.mp4" media="p1-seg-$Number$.m4s" startNumber="1"/>
+      <Representation id="1" bandwidth="100000" codecs="avc1.42E01E" width="640" height="360"/>
+    </AdaptationSet>
+  </Period>
+  <Period id="p2" start="PT10S">
+    <AdaptationSet mimeType="video/mp4" contentType="video">
+      <SegmentTemplate timescale="1000" duration="4000" initialization="p2-init.mp4" media="p2-seg-$Number$.m4s" startNumber="1"/>
+      <Representation id="1" bandwidth="100000" codecs="avc1.42E01E" width="640" height="360"/>
+    </AdaptationSet>
+  </Period>
+</MPD>
+"#
+    );
+
+    Response::builder()
+        .status(StatusCode::OK)
+        .header("Content-Type", "application/dash+xml")
+        .body(Body::from(body))
+        .unwrap_or_else(|_| StatusCode::INTERNAL_SERVER_ERROR.into_response())
+}
+
+async fn serve_multi_period_path(
+    State(state): State<MultiPeriodLiveState>,
+    Path(path): Path<String>,
+    uri: Uri,
+) -> Response {
+    serve_static_path(&state.files, &path, &uri)
+}
+
 async fn serve_advancing_manifest(State(state): State<AdvancingLiveState>) -> Response {
     let fetch = state.fetch_count.fetch_add(1, Ordering::SeqCst);
     // 12s base + 4s per manifest refresh simulates the live edge moving forward.
@@ -189,6 +320,10 @@ async fn serve_advancing_path(
     Path(path): Path<String>,
     uri: Uri,
 ) -> Response {
+    serve_static_path(&state.files, &path, &uri)
+}
+
+fn serve_static_path(files: &HashMap<String, Vec<u8>>, path: &str, uri: &Uri) -> Response {
     let url_path = uri.path().trim_end_matches('/').to_string();
     if url_path.is_empty() {
         return StatusCode::NOT_FOUND.into_response();
@@ -200,7 +335,7 @@ async fn serve_advancing_path(
         format!("/{path}")
     };
 
-    let Some(bytes) = state.files.get(&key) else {
+    let Some(bytes) = files.get(&key) else {
         return StatusCode::NOT_FOUND.into_response();
     };
 
@@ -208,6 +343,16 @@ async fn serve_advancing_path(
         .status(StatusCode::OK)
         .body(Body::from(bytes.clone()))
         .unwrap_or_else(|_| StatusCode::INTERNAL_SERVER_ERROR.into_response())
+}
+
+fn path_matches_prefix(url_path: &str, prefix: &str) -> bool {
+    url_path == prefix || url_path.starts_with(&format!("{prefix}/"))
+}
+
+fn path_has_prefix(url_path: &str, prefix: &str) -> bool {
+    url_path == prefix
+        || url_path.starts_with(&format!("{prefix}/"))
+        || url_path.starts_with(prefix)
 }
 
 pub fn fixture_dir(name: &str) -> PathBuf {
@@ -228,25 +373,19 @@ async fn serve_path(State(state): State<AppState>, Path(path): Path<String>, uri
     }
 
     for prefix in state.not_found_prefixes.iter() {
-        if url_path == *prefix || url_path.starts_with(&format!("{prefix}/")) {
+        if path_matches_prefix(&url_path, prefix) {
             return StatusCode::NOT_FOUND.into_response();
         }
     }
 
-    let key = if path.is_empty() {
-        url_path
-    } else {
-        format!("/{path}")
-    };
+    for prefix in state.delay_prefixes.iter() {
+        if path_has_prefix(&url_path, prefix) {
+            tokio::time::sleep(StdDuration::from_secs(11)).await;
+            break;
+        }
+    }
 
-    let Some(bytes) = state.files.get(&key) else {
-        return StatusCode::NOT_FOUND.into_response();
-    };
-
-    Response::builder()
-        .status(StatusCode::OK)
-        .body(Body::from(bytes.clone()))
-        .unwrap_or_else(|_| StatusCode::INTERNAL_SERVER_ERROR.into_response())
+    serve_static_path(&state.files, &path, &uri)
 }
 
 fn load_fixture_files(root: &FsPath) -> HashMap<String, Vec<u8>> {
@@ -361,10 +500,17 @@ pub async fn play_all_tracks(
 }
 
 pub fn init_payload(events: &[dashplayrs::PlayerEvent]) -> Option<Vec<u8>> {
-    events.iter().find_map(|ev| match ev {
-        dashplayrs::PlayerEvent::Init(data) => Some(trim_payload(data.as_ref())),
-        _ => None,
-    })
+    init_payloads(events).into_iter().next()
+}
+
+pub fn init_payloads(events: &[dashplayrs::PlayerEvent]) -> Vec<Vec<u8>> {
+    events
+        .iter()
+        .filter_map(|ev| match ev {
+            dashplayrs::PlayerEvent::Init(data) => Some(trim_payload(data.as_ref())),
+            _ => None,
+        })
+        .collect()
 }
 
 pub fn segment_payloads(events: &[dashplayrs::PlayerEvent]) -> Vec<Vec<u8>> {

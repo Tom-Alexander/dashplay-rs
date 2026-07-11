@@ -1,4 +1,6 @@
+use super::cdm::{CdmLicenseRequest, KeyType};
 use super::decrypt;
+use super::renewal::{RenewalState, schedule_from_license_message};
 use bytes::Bytes;
 use mp4decrypt::Ap4CencDecryptingProcessor;
 use pssh_box::{PsshBox, ToBytes};
@@ -6,7 +8,6 @@ use std::collections::HashMap;
 use std::sync::{Arc, RwLock};
 use std::time::Instant;
 use thiserror::Error;
-use widevine::{CdmLicenseRequest, Key, KeyType};
 
 #[derive(Clone, Debug, Eq, PartialEq, Hash)]
 pub struct WidevineSessionKey(Vec<u8>);
@@ -52,8 +53,23 @@ impl License {
         inner.request.challenge().map_err(LicenseError::Widevine)
     }
 
+    /// Build a renewal license challenge for the existing CDM session.
+    pub fn renewal_challenge(&self) -> Result<Vec<u8>, LicenseError> {
+        let inner = self.inner.read().map_err(|_| LicenseError::LockPoisoned)?;
+        inner
+            .request
+            .renewal_challenge()
+            .map_err(LicenseError::Widevine)
+    }
+
     /// Apply a license response; merge CONTENT keys into the decryptor.
     pub fn apply_license(&self, license_message: &[u8]) -> Result<(), LicenseError> {
+        let applied_at = Instant::now();
+        if let Ok(schedule) = schedule_from_license_message(license_message, applied_at) {
+            let mut inner = self.inner.write().map_err(|_| LicenseError::LockPoisoned)?;
+            inner.renewal.merge_schedule(schedule);
+        }
+
         let key_set = {
             let inner = self.inner.read().map_err(|_| LicenseError::LockPoisoned)?;
             inner
@@ -61,7 +77,7 @@ impl License {
                 .get_keys(license_message)
                 .map_err(LicenseError::Widevine)?
         };
-        self.integrate_key_set(key_set)
+        self.integrate_key_set(key_set, applied_at)
     }
 
     /// Merge CONTENT keys from a license response acquired via `source` into this session.
@@ -70,6 +86,12 @@ impl License {
         license_message: &[u8],
         source: &License,
     ) -> Result<(), LicenseError> {
+        let applied_at = Instant::now();
+        if let Ok(schedule) = schedule_from_license_message(license_message, applied_at) {
+            let mut inner = self.inner.write().map_err(|_| LicenseError::LockPoisoned)?;
+            inner.renewal.merge_schedule(schedule);
+        }
+
         let key_set = {
             let source_inner = source
                 .inner
@@ -80,14 +102,18 @@ impl License {
                 .get_keys(license_message)
                 .map_err(LicenseError::Widevine)?
         };
-        self.integrate_key_set(key_set)
+        self.integrate_key_set(key_set, applied_at)
     }
 
-    fn integrate_key_set(&self, key_set: widevine::KeySet) -> Result<(), LicenseError> {
+    fn integrate_key_set(
+        &self,
+        key_set: super::cdm::KeySet,
+        applied_at: Instant,
+    ) -> Result<(), LicenseError> {
         let mut inner = self.inner.write().map_err(|_| LicenseError::LockPoisoned)?;
 
         for key in key_set.of_type(KeyType::KEY_CONTROL) {
-            inner.renewal.update_from_key_control(key);
+            inner.renewal.update_from_key_control(key, applied_at);
         }
 
         let mut added = false;
@@ -127,6 +153,9 @@ impl License {
 
     pub fn decrypt(&self, ciphertext: &Bytes, init: Option<&Bytes>) -> Result<Bytes, LicenseError> {
         let inner = self.inner.read().map_err(|_| LicenseError::LockPoisoned)?;
+        if inner.renewal.is_expired(Instant::now()) {
+            return Err(LicenseError::RenewalExpired);
+        }
         let processor = inner
             .processor
             .as_ref()
@@ -156,9 +185,49 @@ impl License {
         Ok(inner.renewal.needs_renewal(now))
     }
 
+    pub(crate) fn renewal_can_renew(&self) -> Result<bool, LicenseError> {
+        let inner = self.inner.read().map_err(|_| LicenseError::LockPoisoned)?;
+        Ok(inner.renewal.can_renew())
+    }
+
+    pub(crate) fn renewal_server_url(&self) -> Result<Option<String>, LicenseError> {
+        let inner = self.inner.read().map_err(|_| LicenseError::LockPoisoned)?;
+        Ok(inner.renewal.renewal_server_url().map(str::to_owned))
+    }
+
+    pub(crate) fn renewal_is_expired(&self, now: Instant) -> Result<bool, LicenseError> {
+        let inner = self.inner.read().map_err(|_| LicenseError::LockPoisoned)?;
+        Ok(inner.renewal.is_expired(now))
+    }
+
     pub(crate) fn mark_renewal_attempt(&self, now: Instant) -> Result<(), LicenseError> {
         let mut inner = self.inner.write().map_err(|_| LicenseError::LockPoisoned)?;
-        inner.renewal.last_attempt = Some(now);
+        inner.renewal.mark_renewal_attempt(now);
+        Ok(())
+    }
+
+    pub(crate) fn mark_renewal_success(&self) -> Result<(), LicenseError> {
+        let mut inner = self.inner.write().map_err(|_| LicenseError::LockPoisoned)?;
+        inner.renewal.mark_renewal_success();
+        Ok(())
+    }
+
+    pub(crate) fn mark_renewal_failure(&self) -> Result<(), LicenseError> {
+        let mut inner = self.inner.write().map_err(|_| LicenseError::LockPoisoned)?;
+        inner.renewal.mark_renewal_failure();
+        Ok(())
+    }
+
+    #[cfg(test)]
+    pub(crate) fn test_force_renewal_due(&self, now: Instant) -> Result<(), LicenseError> {
+        let mut inner = self.inner.write().map_err(|_| LicenseError::LockPoisoned)?;
+        inner
+            .renewal
+            .merge_schedule(super::renewal::RenewalSchedule {
+                can_renew: true,
+                renew_after: Some(now),
+                ..super::renewal::RenewalSchedule::default()
+            });
         Ok(())
     }
 }
@@ -183,36 +252,20 @@ fn rebuild_processor(
     Ok(Arc::new(built))
 }
 
-#[derive(Default)]
-struct RenewalState {
-    /// Wall-clock instant before which renewal must complete (phase 3).
-    #[allow(dead_code)]
-    renew_after: Option<Instant>,
-    /// Last renewal attempt (backoff on failure).
-    last_attempt: Option<Instant>,
-}
-
-impl RenewalState {
-    fn update_from_key_control(&mut self, _key: &Key) {
-        // Phase 3: parse KEY_CONTROL block for renewal deadline.
-    }
-
-    fn needs_renewal(&self, _now: Instant) -> bool {
-        // Phase 3: renewal challenge generation is not yet exposed by the widevine crate.
-        false
-    }
-}
-
 #[derive(Error, Debug)]
 pub enum LicenseError {
     #[error("set the license before decrypting")]
     LicenseNotSet,
     #[error("Widevine returned no content keys")]
     WidevineNoContentKeys,
+    #[error("license renewal deadline passed")]
+    RenewalExpired,
+    #[error("license renewal parse: {0}")]
+    RenewalParse(String),
     #[error("license state lock poisoned")]
     LockPoisoned,
     #[error("Widevine: {0}")]
-    Widevine(#[from] widevine::Error),
+    Widevine(#[from] super::cdm::Error),
     #[error("create license request: {0}")]
     LicenseRequest(#[from] anyhow::Error),
     #[error("MP4 decrypt: {0}")]

@@ -66,7 +66,7 @@ These close the largest gaps between "delivers some streams" and "handles confor
   refreshes so live refresh cannot re-emit or skip fragments.
 - [x] **Static multi-period VOD.** Live multi-period is covered; add VOD multi-period
   handling and tests.
-- [ ] **License renewal / key rotation.** Handle Widevine key rotation and license
+- [x] **License renewal / key rotation.** Handle Widevine key rotation and license
   renewal during long live sessions.
 
 ## P2 — Track selection and auxiliary content

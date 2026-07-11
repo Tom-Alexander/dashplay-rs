@@ -9,24 +9,37 @@ categories = ["multimedia::video", "web-programming::http-client"]
 license = "MIT"
 
 [dependencies]
+aes = "0.8"
 anyhow = "1.0"
 base64 = "0.22"
+byteorder = "1.0"
 bytes = "1"
+cbc = { version = "0.1", features = ["alloc"] }
 chrono = { version = "0.4", features = ["serde"] }
+cmac = "0.7"
 dash-mpd = "0.20.2"
+data-encoding = "2.5"
 futures = "0.3"
 futures-util = "0.3"
 hex = "0.4"
+hmac = "0.12"
 mp4decrypt = "0.6.1"
+num-derive = "0.4"
+num-traits = "0.2"
 pssh-box = "0.2.4"
+protobuf = "3.7"
 quick-xml = "0.39.2"
+rand = "0.8"
 reqwest = { version = "0.13", default-features = false, features = ["rustls", "gzip", "cookies"] }
+rsa = "0.9.2"
+sha1 = "0.10"
+sha2 = "0.10"
 thiserror = "1.0"
 tokio = { version = "1", features = ["sync", "rt", "rt-multi-thread", "time", "macros", "net"] }
 tokio-stream = { version = "0.1", features = ["sync"] }
 tokio-util = { version = "0.7", features = ["io"] }
 url = "2.5"
-widevine = "0.1.0"
+widevine-proto = "0.1.0"
 
 [dev-dependencies]
 axum = "0.8"

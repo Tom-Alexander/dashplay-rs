@@ -36,6 +36,8 @@ pub struct DrmSessionCoordinator {
     adaptation_wv_sessions_by_rep: Vec<HashMap<String, Arc<License>>>,
     /// License URLs from the last MPD sync, indexed by adaptation-set position in DRM info.
     cached_as_license_urls: HashMap<usize, Vec<String>>,
+    /// License URLs used for each active PSSH session key.
+    session_license_urls: HashMap<WidevineSessionKey, Url>,
 }
 
 impl DrmSessionCoordinator {
@@ -52,6 +54,7 @@ impl DrmSessionCoordinator {
             adaptation_wv_sessions: Vec::new(),
             adaptation_wv_sessions_by_rep: Vec::new(),
             cached_as_license_urls: HashMap::new(),
+            session_license_urls: HashMap::new(),
         }
     }
 
@@ -213,28 +216,61 @@ impl DrmSessionCoordinator {
     /// Check active sessions for upcoming license renewal (phase 3).
     pub async fn poll_renewals(&mut self) -> Result<(), PlayerError> {
         let now = Instant::now();
-        for license in self.manager_sessions() {
-            if license.renewal_needs_action(now)? {
-                license.mark_renewal_attempt(now)?;
-                // Renewal challenge generation is not yet exposed by the widevine crate.
+        let sessions = self.manager_sessions_with_urls();
+        for (session_key, license) in sessions {
+            if !license.renewal_can_renew()? || !license.renewal_needs_action(now)? {
+                continue;
+            }
+
+            let license_url = license
+                .renewal_server_url()?
+                .and_then(|url| Url::parse(&url).ok())
+                .or_else(|| self.session_license_urls.get(&session_key).cloned())
+                .or_else(|| self.fallback_license_uri.clone())
+                .ok_or_else(|| {
+                    PlayerError::WidevineLicenseHttp(
+                        "license renewal required but no license URL is available".into(),
+                    )
+                })?;
+
+            license.mark_renewal_attempt(now)?;
+
+            let challenge = license.renewal_challenge().map_err(|err| {
+                let _ = license.mark_renewal_failure();
+                PlayerError::License(err)
+            })?;
+
+            match self.fetch_widevine_license(&license_url, challenge).await {
+                Ok(bytes) => {
+                    if let Err(err) = license.apply_license(bytes.as_ref()) {
+                        let _ = license.mark_renewal_failure();
+                        if license.renewal_is_expired(now)? {
+                            return Err(PlayerError::License(err));
+                        }
+                    } else {
+                        license.mark_renewal_success()?;
+                    }
+                }
+                Err(err) => {
+                    let _ = license.mark_renewal_failure();
+                    if license.renewal_is_expired(now)? {
+                        return Err(err);
+                    }
+                }
             }
         }
         Ok(())
     }
 
-    fn manager_sessions(&self) -> Vec<Arc<License>> {
-        let mut seen = HashMap::new();
-        for license in self.adaptation_wv_sessions.iter().flatten() {
-            let ptr = Arc::as_ptr(license) as usize;
-            seen.entry(ptr).or_insert_with(|| license.clone());
-        }
-        for map in &self.adaptation_wv_sessions_by_rep {
-            for license in map.values() {
-                let ptr = Arc::as_ptr(license) as usize;
-                seen.entry(ptr).or_insert_with(|| license.clone());
-            }
-        }
-        seen.into_values().collect()
+    fn manager_sessions_with_urls(&self) -> Vec<(WidevineSessionKey, Arc<License>)> {
+        self.session_license_urls
+            .iter()
+            .filter_map(|(session_key, _url)| {
+                self.manager
+                    .get(session_key)
+                    .map(|license| (session_key.clone(), license))
+            })
+            .collect()
     }
 
     async fn acquire_or_merge_session(
@@ -266,15 +302,17 @@ impl DrmSessionCoordinator {
         let arc = match accumulating {
             Some(existing) => {
                 existing.merge_keys_from_session(bytes.as_ref(), &new_session)?;
-                self.manager.insert_arc(session_key, existing.clone());
+                self.manager
+                    .insert_arc(session_key.clone(), existing.clone());
                 existing
             }
             None => {
                 new_session.apply_license(bytes.as_ref())?;
-                self.manager.insert_ready(session_key, new_session)
+                self.manager.insert_ready(session_key.clone(), new_session)
             }
         };
 
+        self.session_license_urls.insert(session_key, license_url);
         Ok(arc)
     }
 
@@ -299,6 +337,21 @@ impl DrmSessionCoordinator {
     }
 }
 
+#[cfg(test)]
+impl DrmSessionCoordinator {
+    fn test_register_session(
+        &mut self,
+        session_key: WidevineSessionKey,
+        license: License,
+        license_url: Url,
+    ) -> Arc<License> {
+        let arc = self.manager.insert_ready(session_key.clone(), license);
+        self.session_license_urls.insert(session_key, license_url);
+        self.adaptation_wv_sessions = vec![Some(arc.clone())];
+        arc
+    }
+}
+
 fn rep_sessions_mut(
     sessions: &mut Vec<HashMap<String, Arc<License>>>,
     aset_idx: usize,
@@ -313,6 +366,7 @@ fn rep_sessions_mut(
 mod tests {
     use super::*;
     use crate::drm::mpd::parse_mpd_drm_info;
+    use std::sync::atomic::{AtomicUsize, Ordering};
 
     fn read_fixture(name: &str, file: &str) -> String {
         let root = std::path::Path::new(env!("CARGO_MANIFEST_DIR"))
@@ -334,6 +388,58 @@ mod tests {
         assert_ne!(
             WidevineSessionKey::from_pssh(&pssh_v1),
             WidevineSessionKey::from_pssh(&pssh_v2)
+        );
+    }
+
+    #[tokio::test]
+    async fn poll_renewals_posts_renewal_challenge_when_due() {
+        let device_path = match std::env::var("DEVICE_PATH") {
+            Ok(v) if !v.is_empty() => v,
+            _ => return,
+        };
+        let _ = device_path;
+
+        let license_path = std::path::Path::new(env!("CARGO_MANIFEST_DIR"))
+            .join("tests/fixtures/dashif_drm_encrypted/license-response.bin");
+        if !license_path.exists() {
+            return;
+        }
+        let license_bytes = std::fs::read(&license_path).expect("read license");
+
+        let xml = read_fixture("drm_widevine", "manifest.mpd");
+        let drm = parse_mpd_drm_info(&xml).expect("parse drm");
+        let pssh = &drm.periods[0].adaptation_sets[0].effective.widevine_pssh[0];
+        let session_key = WidevineSessionKey::from_pssh(pssh);
+
+        let posts = Arc::new(AtomicUsize::new(0));
+        let counter = posts.clone();
+        let response = license_bytes.clone();
+        let fetcher: WidevineLicenseFetcher = Arc::new(move |_url, _challenge| {
+            let payload = Bytes::from(response.clone());
+            let counter = counter.clone();
+            Box::pin(async move {
+                counter.fetch_add(1, Ordering::Relaxed);
+                Ok(payload)
+            })
+        });
+
+        let license_url = Url::parse("https://license.example/wv").expect("license url");
+        let mut coordinator =
+            DrmSessionCoordinator::new(Client::new(), Some(license_url.clone()), Some(fetcher));
+
+        let license = License::new_from_pssh(pssh).expect("license");
+        license.apply_license(&license_bytes).expect("apply");
+        let license = coordinator.test_register_session(session_key, license, license_url);
+
+        license
+            .test_force_renewal_due(Instant::now())
+            .expect("force renewal");
+
+        coordinator.poll_renewals().await.expect("poll renewals");
+        assert_eq!(
+            posts.load(Ordering::Relaxed),
+            1,
+            "expected one renewal license POST"
         );
     }
 }

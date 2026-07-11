@@ -1,6 +1,7 @@
 use pssh_box::{PsshBox, ToBytes};
 use std::{env, fs::File, io::BufReader};
-use widevine::{Cdm, CdmLicenseRequest, Device, LicenseType, Pssh};
+
+use super::cdm::{Cdm, CdmLicenseRequest, Device, LicenseType, Pssh};
 
 pub fn get_cdm() -> anyhow::Result<Cdm> {
     let path = env::var("DEVICE_PATH").map_err(|_| anyhow::anyhow!("DEVICE_PATH is not set"))?;

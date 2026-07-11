@@ -614,26 +614,39 @@ dependencies = [
 name = "dashplayrs"
 version = "0.1.0"
 dependencies = [
+ "aes",
  "anyhow",
  "axum",
  "base64",
+ "byteorder",
  "bytes",
+ "cbc",
  "chrono",
+ "cmac",
  "dash-mpd",
+ "data-encoding",
  "futures",
  "futures-util",
  "hex",
+ "hmac",
  "mp4decrypt",
+ "num-derive",
+ "num-traits",
+ "protobuf",
  "pssh-box",
  "quick-xml 0.39.4",
+ "rand 0.8.6",
  "reqwest",
  "roxmltree",
+ "rsa",
+ "sha1",
+ "sha2",
  "thiserror 1.0.69",
  "tokio",
  "tokio-stream",
  "tokio-util",
  "url",
- "widevine",
+ "widevine-proto",
 ]
 
 [[package]]
@@ -3584,29 +3597,6 @@ dependencies = [
  "home",
  "once_cell",
  "rustix 0.38.44",
-]
-
-[[package]]
-name = "widevine"
-version = "0.1.0"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "2950b45a9bf46d800ab88712282e24e1eb0115fa498e4de770143d4bb1dfb649"
-dependencies = [
- "aes",
- "byteorder",
- "cbc",
- "cmac",
- "data-encoding",
- "hmac",
- "num-derive",
- "num-traits",
- "protobuf",
- "rand 0.8.6",
- "rsa",
- "sha1",
- "sha2",
- "thiserror 2.0.18",
- "widevine-proto",
 ]
 
 [[package]]

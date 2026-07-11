@@ -201,6 +201,28 @@ async fn in_band_init_pssh_acquires_widevine_license() {
     );
 }
 
+/// Renewal challenges use RequestType::RENEWAL and differ from the initial license request.
+#[test]
+fn renewal_challenge_differs_from_initial_challenge() {
+    let device_path = match std::env::var("DEVICE_PATH") {
+        Ok(v) if !v.is_empty() => v,
+        _ => return,
+    };
+    let _ = device_path;
+
+    let xml = read_fixture("drm_widevine", "manifest.mpd");
+    let info = parse_mpd_drm_info(&xml).expect("parse drm");
+    let pssh = &info.periods[0].adaptation_sets[0].effective.widevine_pssh[0];
+
+    let license = License::new_from_pssh(pssh).expect("license request");
+    let initial = license.challenge().expect("initial challenge");
+    let renewal = license.renewal_challenge().expect("renewal challenge");
+    assert_ne!(
+        initial, renewal,
+        "renewal challenge should differ from the initial NEW request"
+    );
+}
+
 /// Unchanged PSSH on manifest refresh must not trigger another license POST.
 #[tokio::test]
 async fn license_manager_reuses_session_on_unchanged_pssh() {

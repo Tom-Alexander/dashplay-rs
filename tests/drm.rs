@@ -29,12 +29,14 @@ fn parse_widevine_drm_from_mpd_fixture() {
 fn clear_vod_fixture_has_no_widevine_pssh() {
     let xml = read_fixture("vod_single", "manifest.mpd");
     let info = parse_mpd_drm_info(&xml).expect("parse drm");
-    assert!(info.periods.is_empty() || info.periods[0].adaptation_sets.is_empty() || {
-        info.periods[0].adaptation_sets[0]
-            .effective
-            .widevine_pssh
-            .is_empty()
-    });
+    assert!(
+        info.periods.is_empty() || info.periods[0].adaptation_sets.is_empty() || {
+            info.periods[0].adaptation_sets[0]
+                .effective
+                .widevine_pssh
+                .is_empty()
+        }
+    );
 }
 
 #[test]

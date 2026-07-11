@@ -1,6 +1,8 @@
 mod common;
 
-use common::{FixtureServer, has_end, init_payload, play_all_tracks, play_single_track, segment_payloads};
+use common::{
+    FixtureServer, has_end, init_payload, play_all_tracks, play_single_track, segment_payloads,
+};
 
 const TIMEOUT: std::time::Duration = std::time::Duration::from_secs(10);
 
@@ -11,7 +13,10 @@ async fn vod_single_track_emits_init_segments_and_end() {
         .await
         .expect("playback");
 
-    assert_eq!(init_payload(&events).as_deref(), Some(b"dashplay-init-v1".as_ref()));
+    assert_eq!(
+        init_payload(&events).as_deref(),
+        Some(b"dashplay-init-v1".as_ref())
+    );
     assert_eq!(
         segment_payloads(&events),
         vec![b"dashplay-seg-1".to_vec(), b"dashplay-seg-2".to_vec()]

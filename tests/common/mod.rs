@@ -13,6 +13,7 @@ use axum::{
 use std::collections::{HashMap, HashSet};
 use std::path::{Path as FsPath, PathBuf};
 use std::sync::Arc;
+use std::sync::atomic::{AtomicUsize, Ordering};
 use tokio::sync::oneshot;
 use tokio::task::JoinHandle;
 use url::Url;
@@ -69,7 +70,8 @@ impl FixtureServer {
                 .expect("serve");
         });
 
-        let manifest_url = Url::parse(&format!("http://{addr}/manifest.mpd")).expect("manifest url");
+        let manifest_url =
+            Url::parse(&format!("http://{addr}/manifest.mpd")).expect("manifest url");
 
         Self {
             manifest_url,
@@ -88,6 +90,126 @@ impl Drop for FixtureServer {
     }
 }
 
+#[derive(Clone)]
+struct AdvancingLiveState {
+    files: Arc<HashMap<String, Vec<u8>>>,
+    fetch_count: Arc<AtomicUsize>,
+}
+
+/// Serves a dynamic live MPD whose pinned `UTCTiming` advances on each manifest fetch.
+pub struct AdvancingLiveServer {
+    pub manifest_url: Url,
+    shutdown: Option<oneshot::Sender<()>>,
+    handle: JoinHandle<()>,
+}
+
+impl AdvancingLiveServer {
+    pub async fn spawn() -> Self {
+        let root = fixture_dir("live_refresh");
+        let files = Arc::new(load_fixture_files(&root));
+        let state = AdvancingLiveState {
+            files,
+            fetch_count: Arc::new(AtomicUsize::new(0)),
+        };
+
+        let app = Router::new()
+            .route("/manifest.mpd", get(serve_advancing_manifest))
+            .route("/{*path}", get(serve_advancing_path))
+            .with_state(state);
+
+        let listener = tokio::net::TcpListener::bind("127.0.0.1:0")
+            .await
+            .expect("bind test server");
+        let addr = listener.local_addr().expect("local addr");
+
+        let (shutdown_tx, shutdown_rx) = oneshot::channel();
+        let handle = tokio::spawn(async move {
+            axum::serve(listener, app)
+                .with_graceful_shutdown(async move {
+                    let _ = shutdown_rx.await;
+                })
+                .await
+                .expect("serve");
+        });
+
+        let manifest_url =
+            Url::parse(&format!("http://{addr}/manifest.mpd")).expect("manifest url");
+
+        Self {
+            manifest_url,
+            shutdown: Some(shutdown_tx),
+            handle,
+        }
+    }
+}
+
+impl Drop for AdvancingLiveServer {
+    fn drop(&mut self) {
+        if let Some(tx) = self.shutdown.take() {
+            let _ = tx.send(());
+        }
+        self.handle.abort();
+    }
+}
+
+async fn serve_advancing_manifest(State(state): State<AdvancingLiveState>) -> Response {
+    let fetch = state.fetch_count.fetch_add(1, Ordering::SeqCst);
+    // 12s base + 4s per manifest refresh simulates the live edge moving forward.
+    let elapsed_secs = 12 + fetch * 4;
+    let wall_now = format!("2020-05-01T12:00:{elapsed_secs:02}Z");
+    let body = format!(
+        r#"<?xml version="1.0" encoding="UTF-8"?>
+<MPD xmlns="urn:mpeg:dash:schema:mpd:2011"
+     type="dynamic"
+     minimumUpdatePeriod="PT0.5S"
+     availabilityStartTime="2020-05-01T12:00:00Z"
+     timeShiftBufferDepth="PT20S"
+     suggestedPresentationDelay="PT2S"
+     minBufferTime="PT2S">
+  <UTCTiming schemeIdUri="urn:mpeg:dash:utc:direct:2014" value="{wall_now}"/>
+  <Period>
+    <AdaptationSet mimeType="video/mp4" contentType="video">
+      <SegmentTemplate timescale="1000" duration="4000" initialization="init.mp4" media="seg-$Number$.m4s" startNumber="1"/>
+      <Representation id="1" bandwidth="100000" codecs="avc1.42E01E" width="640" height="360"/>
+    </AdaptationSet>
+  </Period>
+</MPD>
+"#
+    );
+
+    Response::builder()
+        .status(StatusCode::OK)
+        .header("Content-Type", "application/dash+xml")
+        .body(Body::from(body))
+        .unwrap_or_else(|_| StatusCode::INTERNAL_SERVER_ERROR.into_response())
+}
+
+async fn serve_advancing_path(
+    State(state): State<AdvancingLiveState>,
+    Path(path): Path<String>,
+    uri: Uri,
+) -> Response {
+    let url_path = uri.path().trim_end_matches('/').to_string();
+    if url_path.is_empty() {
+        return StatusCode::NOT_FOUND.into_response();
+    }
+
+    let key = if path.is_empty() {
+        url_path
+    } else {
+        format!("/{path}")
+    };
+
+    let Some(bytes) = state.files.get(&key) else {
+        return StatusCode::NOT_FOUND.into_response();
+    };
+
+    Response::builder()
+        .status(StatusCode::OK)
+        .body(Body::from(bytes.clone()))
+        .unwrap_or_else(|_| StatusCode::INTERNAL_SERVER_ERROR.into_response())
+}
+
 pub fn fixture_dir(name: &str) -> PathBuf {
     PathBuf::from(env!("CARGO_MANIFEST_DIR"))
         .join("tests/fixtures")
@@ -95,9 +217,8 @@ pub fn fixture_dir(name: &str) -> PathBuf {
 }
 
 pub fn read_fixture(name: &str, relative: &str) -> String {
-    std::fs::read_to_string(fixture_dir(name).join(relative)).unwrap_or_else(|e| {
-        panic!("read fixture {name}/{relative}: {e}")
-    })
+    std::fs::read_to_string(fixture_dir(name).join(relative))
+        .unwrap_or_else(|e| panic!("read fixture {name}/{relative}: {e}"))
 }
 
 async fn serve_path(State(state): State<AppState>, Path(path): Path<String>, uri: Uri) -> Response {
@@ -184,6 +305,23 @@ pub async fn play_single_track(
     manifest_url: &Url,
     timeout: std::time::Duration,
 ) -> Result<Vec<dashplayrs::PlayerEvent>, dashplayrs::PlayerError> {
+    play_single_track_with_options(manifest_url, timeout, false).await
+}
+
+/// Like [`play_single_track`], but drops the event receiver before awaiting the controller so
+/// dynamic live streams (long `minimumUpdatePeriod`) do not block test shutdown.
+pub async fn play_single_track_live(
+    manifest_url: &Url,
+    timeout: std::time::Duration,
+) -> Result<Vec<dashplayrs::PlayerEvent>, dashplayrs::PlayerError> {
+    play_single_track_with_options(manifest_url, timeout, true).await
+}
+
+async fn play_single_track_with_options(
+    manifest_url: &Url,
+    timeout: std::time::Duration,
+    drop_receiver_before_join: bool,
+) -> Result<Vec<dashplayrs::PlayerEvent>, dashplayrs::PlayerError> {
     let player = dashplayrs::Player::new(manifest_url.as_str(), None)?;
     let outputs = player.start_tracks().await?;
     let mut rx = outputs
@@ -193,6 +331,9 @@ pub async fn play_single_track(
         .expect("one track")
         .into_receiver();
     let events = collect_events(&mut rx, timeout).await;
+    if drop_receiver_before_join {
+        drop(rx);
+    }
     outputs.join.await.unwrap()?;
     Ok(events)
 }
@@ -249,4 +390,14 @@ pub fn has_end(events: &[dashplayrs::PlayerEvent]) -> bool {
     events
         .iter()
         .any(|ev| matches!(ev, dashplayrs::PlayerEvent::End))
+}
+
+pub fn segment_numbers(events: &[dashplayrs::PlayerEvent]) -> Vec<u64> {
+    events
+        .iter()
+        .filter_map(|ev| match ev {
+            dashplayrs::PlayerEvent::Segment { number, .. } => Some(*number),
+            _ => None,
+        })
+        .collect()
 }

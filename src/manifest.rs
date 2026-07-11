@@ -2,7 +2,7 @@ use std::collections::HashSet;
 use std::time::Duration;
 
 use chrono::{DateTime, Utc};
-use dash_mpd::{AdaptationSet, BaseURL, MPD, Period, Representation, SegmentTemplate};
+use dash_mpd::{AdaptationSet, BaseURL, MPD, Period, Representation, SegmentList, SegmentTemplate};
 use reqwest::Client;
 use url::Url;
 
@@ -62,7 +62,7 @@ impl TimelineBuildContext {
     }
 }
 
-#[derive(Debug, Clone, Copy)]
+#[derive(Debug, Clone)]
 pub(crate) struct TimelineSegment {
     pub number: u64,
     /// MPD anchor for `$Time$` (for `S@k`>1, earliest presentation time of the whole sequence).
@@ -75,6 +75,8 @@ pub(crate) struct TimelineSegment {
     pub presentation_time_s: f64,
     /// When `S@k`>1: 1-based index within the segment sequence (`$SubNumber$`). Otherwise `None`.
     pub sub_number: Option<u64>,
+    /// Explicit `SegmentURL@media` when using `SegmentList` addressing (may be rep-specific).
+    pub media_url: Option<String>,
 }
 
 /// Rewind a timeline index so playback begins at a DASH random-access point aligned with
@@ -375,6 +377,259 @@ pub(crate) fn segment_template_for_timeline(
     merged.ok_or(PlayerError::MissingSegmentTemplate)
 }
 
+/// Resolved segment addressing mode after Period → AdaptationSet → Representation inheritance.
+#[derive(Debug, Clone)]
+pub(crate) enum SegmentAddressing {
+    Template(SegmentTemplate),
+    List(SegmentList),
+}
+
+fn has_segment_list_in_chain(
+    period: &Period,
+    adaptation_set: &AdaptationSet,
+    representation: Option<&Representation>,
+) -> bool {
+    period.SegmentList.is_some()
+        || adaptation_set.SegmentList.is_some()
+        || representation.is_some_and(|r| r.SegmentList.is_some())
+}
+
+fn adaptation_set_uses_segment_list(period: &Period, adaptation_set: &AdaptationSet) -> bool {
+    period.SegmentList.is_some()
+        || adaptation_set.SegmentList.is_some()
+        || adaptation_set
+            .representations
+            .iter()
+            .any(|r| r.SegmentList.is_some())
+}
+
+/// Merge two `SegmentList` nodes: `child` attributes override `parent` when present.
+fn merge_segment_list(parent: &SegmentList, child: &SegmentList) -> SegmentList {
+    SegmentList {
+        duration: child.duration.or(parent.duration),
+        timescale: child.timescale.or(parent.timescale),
+        indexRange: child
+            .indexRange
+            .clone()
+            .or_else(|| parent.indexRange.clone()),
+        indexRangeExact: child.indexRangeExact.or(parent.indexRangeExact),
+        href: child.href.clone().or_else(|| parent.href.clone()),
+        actuate: child.actuate.clone().or_else(|| parent.actuate.clone()),
+        sltype: child.sltype.clone().or_else(|| parent.sltype.clone()),
+        show: child.show.clone().or_else(|| parent.show.clone()),
+        Initialization: child
+            .Initialization
+            .clone()
+            .or_else(|| parent.Initialization.clone()),
+        SegmentTimeline: child
+            .SegmentTimeline
+            .clone()
+            .or_else(|| parent.SegmentTimeline.clone()),
+        BitstreamSwitching: child
+            .BitstreamSwitching
+            .clone()
+            .or_else(|| parent.BitstreamSwitching.clone()),
+        segment_urls: if child.segment_urls.is_empty() {
+            parent.segment_urls.clone()
+        } else {
+            child.segment_urls.clone()
+        },
+    }
+}
+
+fn merge_segment_list_chain(lists: &[Option<&SegmentList>]) -> Option<SegmentList> {
+    lists.iter().filter_map(|sl| *sl).fold(None, |acc, sl| {
+        Some(match acc {
+            None => sl.clone(),
+            Some(parent) => merge_segment_list(&parent, sl),
+        })
+    })
+}
+
+fn segment_list_has_timeline_source(sl: &SegmentList) -> bool {
+    sl.SegmentTimeline.is_some() || sl.duration.is_some()
+}
+
+/// Effective `SegmentList` for timeline expansion on an adaptation set.
+pub(crate) fn segment_list_for_timeline(
+    period: &Period,
+    adaptation_set: &AdaptationSet,
+) -> Result<SegmentList, PlayerError> {
+    let mut merged = merge_segment_list_chain(&[
+        period.SegmentList.as_ref(),
+        adaptation_set.SegmentList.as_ref(),
+    ]);
+
+    if merged
+        .as_ref()
+        .is_none_or(|sl| !segment_list_has_timeline_source(sl))
+    {
+        for rep in &adaptation_set.representations {
+            if let Some(rep_sl) = &rep.SegmentList {
+                if segment_list_has_timeline_source(rep_sl) {
+                    merged = Some(match merged {
+                        None => rep_sl.clone(),
+                        Some(parent) => merge_segment_list(&parent, rep_sl),
+                    });
+                    break;
+                }
+            }
+        }
+    }
+
+    merged.ok_or(PlayerError::MissingSegmentList)
+}
+
+/// Effective `SegmentList` for fetching init/media of one representation.
+pub(crate) fn segment_list_for_representation(
+    period: &Period,
+    adaptation_set: &AdaptationSet,
+    representation: &Representation,
+) -> Result<SegmentList, PlayerError> {
+    merge_segment_list_chain(&[
+        period.SegmentList.as_ref(),
+        adaptation_set.SegmentList.as_ref(),
+        representation.SegmentList.as_ref(),
+    ])
+    .ok_or(PlayerError::MissingSegmentList)
+}
+
+/// Effective segment addressing for timeline expansion on an adaptation set.
+pub(crate) fn segment_addressing_for_timeline(
+    period: &Period,
+    adaptation_set: &AdaptationSet,
+) -> Result<SegmentAddressing, PlayerError> {
+    if adaptation_set_uses_segment_list(period, adaptation_set) {
+        return Ok(SegmentAddressing::List(segment_list_for_timeline(
+            period,
+            adaptation_set,
+        )?));
+    }
+    Ok(SegmentAddressing::Template(segment_template_for_timeline(
+        period,
+        adaptation_set,
+    )?))
+}
+
+/// Effective segment addressing for fetching init/media of one representation.
+pub(crate) fn segment_addressing_for_representation(
+    period: &Period,
+    adaptation_set: &AdaptationSet,
+    representation: &Representation,
+) -> Result<SegmentAddressing, PlayerError> {
+    if has_segment_list_in_chain(period, adaptation_set, Some(representation)) {
+        return Ok(SegmentAddressing::List(segment_list_for_representation(
+            period,
+            adaptation_set,
+            representation,
+        )?));
+    }
+    Ok(SegmentAddressing::Template(
+        segment_template_for_representation(period, adaptation_set, representation)?,
+    ))
+}
+
+/// `SegmentList@Initialization@sourceURL` for the effective merged list.
+pub(crate) fn segment_list_init_source(sl: &SegmentList) -> Result<&str, PlayerError> {
+    sl.Initialization
+        .as_ref()
+        .and_then(|init| init.sourceURL.as_deref())
+        .ok_or(PlayerError::MissingInitializationTemplate)
+}
+
+/// Media path for a segment index under `SegmentList` addressing (1-based segment number).
+pub(crate) fn segment_list_media_for_index(
+    sl: &SegmentList,
+    segment_index: usize,
+) -> Result<&str, PlayerError> {
+    let su = sl
+        .segment_urls
+        .get(segment_index)
+        .ok_or(PlayerError::EmptySegmentList)?;
+    su.media.as_deref().ok_or(PlayerError::MissingMediaTemplate)
+}
+
+pub(crate) fn timeline_segments_for_addressing(
+    addressing: &SegmentAddressing,
+    ctx: &TimelineBuildContext,
+) -> Result<Vec<TimelineSegment>, PlayerError> {
+    match addressing {
+        SegmentAddressing::Template(st) => timeline_segments(st, ctx),
+        SegmentAddressing::List(sl) => timeline_segments_from_list(sl, ctx),
+    }
+}
+
+fn timeline_segments_from_list(
+    sl: &SegmentList,
+    ctx: &TimelineBuildContext,
+) -> Result<Vec<TimelineSegment>, PlayerError> {
+    let segments = if let Some(timeline) = sl.SegmentTimeline.as_ref() {
+        segments_from_list_timeline(sl, timeline, ctx)?
+    } else if !sl.segment_urls.is_empty() {
+        segments_from_list_urls(sl)?
+    } else {
+        return Err(PlayerError::EmptySegmentList);
+    };
+
+    if ctx.is_dynamic && sl.SegmentTimeline.is_some() {
+        filter_explicit_timeline_for_dynamic_window(segments, ctx)
+    } else {
+        Ok(segments)
+    }
+}
+
+fn segments_from_list_timeline(
+    sl: &SegmentList,
+    timeline: &dash_mpd::SegmentTimeline,
+    ctx: &TimelineBuildContext,
+) -> Result<Vec<TimelineSegment>, PlayerError> {
+    let pseudo_st = SegmentTemplate {
+        timescale: sl.timescale,
+        presentationTimeOffset: Some(0),
+        startNumber: Some(1),
+        SegmentTimeline: Some(timeline.clone()),
+        ..Default::default()
+    };
+    let mut segments = segments_from_explicit_timeline(&pseudo_st, timeline, ctx)?;
+
+    if !sl.segment_urls.is_empty() && sl.segment_urls.len() != segments.len() {
+        return Err(PlayerError::SegmentListUrlTimelineMismatch);
+    }
+
+    for (seg, su) in segments.iter_mut().zip(sl.segment_urls.iter()) {
+        seg.media_url = su.media.clone();
+    }
+
+    Ok(segments)
+}
+
+fn segments_from_list_urls(sl: &SegmentList) -> Result<Vec<TimelineSegment>, PlayerError> {
+    let duration_ticks = sl
+        .duration
+        .filter(|d| *d > 0)
+        .ok_or(PlayerError::MissingSegmentDuration)?;
+    let timescale = sl.timescale.unwrap_or(1);
+    if timescale == 0 {
+        return Err(PlayerError::ZeroTimescale);
+    }
+    let duration_s = duration_ticks as f64 / timescale as f64;
+
+    Ok(sl
+        .segment_urls
+        .iter()
+        .enumerate()
+        .map(|(i, su)| TimelineSegment {
+            number: (i as u64).saturating_add(1),
+            time: (i as u64).saturating_mul(duration_ticks),
+            duration: duration_ticks,
+            duration_s,
+            presentation_time_s: i as f64 * duration_s,
+            sub_number: None,
+            media_url: su.media.clone(),
+        })
+        .collect())
+}
+
 /// Effective `SegmentTemplate` for fetching init/media of one representation.
 pub(crate) fn segment_template_for_representation(
     period: &Period,
@@ -559,6 +814,7 @@ fn emit_segment_sequence(
             duration_s,
             presentation_time_s,
             sub_number: if k > 1 { Some(sub) } else { None },
+            media_url: None,
         });
     }
     Ok(())
@@ -678,6 +934,7 @@ fn segments_from_duration_template(
                 duration_s,
                 presentation_time_s,
                 sub_number: None,
+                media_url: None,
             });
         }
         Ok(segments)
@@ -700,6 +957,7 @@ fn segments_from_duration_template(
                 duration_s,
                 presentation_time_s,
                 sub_number: None,
+                media_url: None,
             });
         }
         Ok(segments)
@@ -1002,6 +1260,7 @@ mod timeline_tests {
                 duration_s: 1.0,
                 presentation_time_s: 0.0,
                 sub_number: Some(1),
+                media_url: None,
             },
             TimelineSegment {
                 number: 1,
@@ -1010,6 +1269,7 @@ mod timeline_tests {
                 duration_s: 1.0,
                 presentation_time_s: 1.0,
                 sub_number: Some(2),
+                media_url: None,
             },
             TimelineSegment {
                 number: 1,
@@ -1018,6 +1278,7 @@ mod timeline_tests {
                 duration_s: 1.0,
                 presentation_time_s: 2.0,
                 sub_number: Some(3),
+                media_url: None,
             },
         ];
         assert_eq!(align_start_index_to_sap(&segs, 2, &aset), 0);
@@ -1038,6 +1299,7 @@ mod timeline_tests {
                 duration_s: 1.0,
                 presentation_time_s: 0.0,
                 sub_number: Some(1),
+                media_url: None,
             },
             TimelineSegment {
                 number: 1,
@@ -1046,6 +1308,7 @@ mod timeline_tests {
                 duration_s: 1.0,
                 presentation_time_s: 1.0,
                 sub_number: Some(2),
+                media_url: None,
             },
         ];
         assert_eq!(align_start_index_to_sap(&segs, 1, &aset), 1);
@@ -1056,7 +1319,9 @@ mod timeline_tests {
 mod manifest_logic_tests {
     use super::*;
     use chrono::TimeZone;
-    use dash_mpd::{Period, Representation, SegmentTemplate};
+    use dash_mpd::{
+        AdaptationSet, Period, Representation, SegmentList, SegmentTemplate, SegmentURL,
+    };
 
     #[test]
     fn merge_base_url_relative_and_absolute() {
@@ -1296,5 +1561,122 @@ mod manifest_logic_tests {
         let segs = timeline_segments(&st, &ctx).unwrap();
         assert_eq!(segs.first().map(|s| s.number), Some(2));
         assert_eq!(segs.last().map(|s| s.number), Some(6));
+    }
+
+    #[test]
+    fn segment_list_explicit_urls_builds_timeline() {
+        let sl = SegmentList {
+            timescale: Some(1000),
+            duration: Some(4000),
+            Initialization: Some(dash_mpd::Initialization {
+                sourceURL: Some("init.mp4".into()),
+                ..Default::default()
+            }),
+            segment_urls: vec![
+                SegmentURL {
+                    media: Some("seg-1.m4s".into()),
+                    ..Default::default()
+                },
+                SegmentURL {
+                    media: Some("seg-2.m4s".into()),
+                    ..Default::default()
+                },
+            ],
+            ..Default::default()
+        };
+        let ctx = TimelineBuildContext {
+            is_dynamic: false,
+            period_window: PeriodWindow {
+                idx: 0,
+                start: Duration::ZERO,
+                end: Some(Duration::from_secs(8)),
+            },
+            period_duration: None,
+            media_presentation_duration: Some(Duration::from_secs(8)),
+            time_shift_buffer_depth: None,
+            since_availability_start: None,
+        };
+
+        let segs = timeline_segments_from_list(&sl, &ctx).unwrap();
+        assert_eq!(segs.len(), 2);
+        assert_eq!(segs[0].media_url.as_deref(), Some("seg-1.m4s"));
+        assert_eq!(segs[1].media_url.as_deref(), Some("seg-2.m4s"));
+        assert!((segs[0].duration_s - 4.0).abs() < 1e-9);
+        assert!((segs[1].presentation_time_s - 4.0).abs() < 1e-9);
+    }
+
+    #[test]
+    fn segment_list_inheritance_merges_period_and_representation() {
+        let period = Period {
+            SegmentList: Some(SegmentList {
+                timescale: Some(1000),
+                duration: Some(2000),
+                ..Default::default()
+            }),
+            ..Default::default()
+        };
+        let adaptation_set = AdaptationSet {
+            representations: vec![Representation {
+                SegmentList: Some(SegmentList {
+                    Initialization: Some(dash_mpd::Initialization {
+                        sourceURL: Some("rep-init.mp4".into()),
+                        ..Default::default()
+                    }),
+                    segment_urls: vec![SegmentURL {
+                        media: Some("seg.m4s".into()),
+                        ..Default::default()
+                    }],
+                    ..Default::default()
+                }),
+                ..Default::default()
+            }],
+            ..Default::default()
+        };
+
+        let rep = &adaptation_set.representations[0];
+        let merged = segment_list_for_representation(&period, &adaptation_set, rep).unwrap();
+        assert_eq!(merged.timescale, Some(1000));
+        assert_eq!(merged.duration, Some(2000));
+        assert_eq!(
+            merged.Initialization.as_ref().unwrap().sourceURL.as_deref(),
+            Some("rep-init.mp4")
+        );
+        assert_eq!(merged.segment_urls.len(), 1);
+
+        let addressing =
+            segment_addressing_for_representation(&period, &adaptation_set, rep).unwrap();
+        assert!(matches!(addressing, SegmentAddressing::List(_)));
+    }
+
+    #[test]
+    fn segment_addressing_prefers_list_over_template() {
+        let period = Period::default();
+        let adaptation_set = AdaptationSet {
+            SegmentTemplate: Some(SegmentTemplate {
+                media: Some("tpl-$Number$.m4s".into()),
+                ..Default::default()
+            }),
+            representations: vec![Representation {
+                SegmentList: Some(SegmentList {
+                    duration: Some(1000),
+                    segment_urls: vec![SegmentURL {
+                        media: Some("list.m4s".into()),
+                        ..Default::default()
+                    }],
+                    ..Default::default()
+                }),
+                ..Default::default()
+            }],
+            ..Default::default()
+        };
+        let rep = &adaptation_set.representations[0];
+        let addressing =
+            segment_addressing_for_representation(&period, &adaptation_set, rep).unwrap();
+        match addressing {
+            SegmentAddressing::List(sl) => {
+                assert_eq!(sl.segment_urls[0].media.as_deref(), Some("list.m4s"));
+            }
+            SegmentAddressing::Template(_) => panic!("expected SegmentList addressing"),
+        }
     }
 }

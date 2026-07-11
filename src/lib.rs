@@ -69,6 +69,12 @@ pub enum PlayerError {
     NoPeriod,
     #[error("missing SegmentTemplate")]
     MissingSegmentTemplate,
+    #[error("missing SegmentList")]
+    MissingSegmentList,
+    #[error("SegmentList SegmentURL count does not match expanded timeline")]
+    SegmentListUrlTimelineMismatch,
+    #[error("SegmentList has no SegmentURL entries")]
+    EmptySegmentList,
     #[error("missing SegmentTemplate@initialization")]
     MissingInitializationTemplate,
     #[error("missing SegmentTemplate@media")]

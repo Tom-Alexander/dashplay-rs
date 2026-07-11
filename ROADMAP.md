@@ -26,7 +26,7 @@ Status legend: `[ ]` not started · `[~]` partial · `[x]` done.
 | ABR (BOLA) | `[~]` | Works, but drives off a synthetic buffer estimate |
 | DRM | `[~]` | Widevine only; requires external CDM device |
 | Track selection | `[~]` | MIME type only (`audio/mp4`, `video/mp4`) |
-| Segment addressing | `[~]` | `SegmentTemplate` only |
+| Segment addressing | `[~]` | `SegmentTemplate` and `SegmentList` / `SegmentURL` |
 | Playback control (seek/pause/stop) | `[ ]` | Not implemented |
 | Demux / decode | `[ ]` | Out of scope (bytes only) |
 | Metrics / rich events | `[ ]` | Only `Init`/`Segment`/`End` |
@@ -41,7 +41,7 @@ These close the largest gaps between "delivers some streams" and "handles confor
 - [x] **SegmentTemplate inheritance flattening.** Resolve `SegmentTemplate` declared at
   `Period` and `MPD` level, not just on the `AdaptationSet`. Today `dash_stream.rs`
   hard-requires `AdaptationSet@SegmentTemplate` and errors otherwise.
-- [ ] **SegmentList addressing.** Support explicit `SegmentList` / `SegmentURL` media
+- [x] **SegmentList addressing.** Support explicit `SegmentList` / `SegmentURL` media
   addressing.
 - [ ] **SegmentBase + byte ranges.** Support `SegmentBase`, `Initialization@range`, and
   `indexRange` (single-file `sidx`-indexed representations).

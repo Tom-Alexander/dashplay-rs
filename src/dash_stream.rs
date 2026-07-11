@@ -54,15 +54,15 @@ pub(crate) async fn run_adaptation_stream(ctx: AdaptationStreamContext) -> Resul
         wv_by_rep,
     } = ctx;
 
-    let st = manifest::segment_template_for_timeline(&period, &adaptation_set)?;
+    let addressing = manifest::segment_addressing_for_timeline(&period, &adaptation_set)?;
 
-    let segments_all = manifest::timeline_segments(&st, &timeline_ctx)?;
+    let segments_all = manifest::timeline_segments_for_addressing(&addressing, &timeline_ctx)?;
 
     // Align every adaptation set to the same media instant: pick the first segment whose
     // interval (in MPD time) still contains instants after `target`. Using "last segment with
     // start <= target" breaks A/V sync when audio and video use different segment durations
     // (e.g. 6s audio vs 2s video): each track would start at a different segment start time.
-    let segments: Vec<manifest::TimelineSegment> = if let Some(target) = target_time {
+    let (segments, segment_start_index) = if let Some(target) = target_time {
         let target_s = target.as_secs_f64();
         let p0 = period_start.as_secs_f64();
         let start_idx = segments_all
@@ -71,10 +71,10 @@ pub(crate) async fn run_adaptation_stream(ctx: AdaptationStreamContext) -> Resul
             .unwrap_or(0);
         let start_idx =
             manifest::align_start_index_to_sap(&segments_all, start_idx, &adaptation_set);
-        segments_all[start_idx..].to_vec()
+        (segments_all[start_idx..].to_vec(), start_idx)
     } else {
         let start_idx = manifest::align_start_index_to_sap(&segments_all, 0, &adaptation_set);
-        segments_all[start_idx..].to_vec()
+        (segments_all[start_idx..].to_vec(), start_idx)
     };
 
     let Some(mut abr) = AbrController::from_adaptation_set(&adaptation_set, 0.3) else {
@@ -102,13 +102,9 @@ pub(crate) async fn run_adaptation_stream(ctx: AdaptationStreamContext) -> Resul
             )?;
             let rep_id = rep.id.as_deref().unwrap_or_default();
             let rep_license = wv_by_rep.get(rep_id).cloned().or_else(|| license.clone());
-            let rep_st =
-                manifest::segment_template_for_representation(&period, &adaptation_set, rep)?;
-            let init_tpl = rep_st
-                .initialization
-                .as_deref()
-                .ok_or(PlayerError::MissingInitializationTemplate)?;
-            let init_path = manifest::interpolate_template(init_tpl, rep_id, None, None, None);
+            let rep_addressing =
+                manifest::segment_addressing_for_representation(&period, &adaptation_set, rep)?;
+            let init_path = init_path_for_addressing(&rep_addressing, rep_id)?;
             let bytes =
                 fetch_bytes_with_base_failover(&client, &bases, &init_path, &blacklist).await?;
             let init_bytes = Bytes::from(bytes);
@@ -132,7 +128,7 @@ pub(crate) async fn run_adaptation_stream(ctx: AdaptationStreamContext) -> Resul
 
     let mut buffer_s = abr.buffer_s();
 
-    for seg in segments {
+    for (local_idx, seg) in segments.into_iter().enumerate() {
         let decision = abr.decide();
         let rep_idx = abr.representation_index_for_quality_index(decision.quality_index);
         let rep = &adaptation_set.representations[rep_idx];
@@ -144,13 +140,9 @@ pub(crate) async fn run_adaptation_stream(ctx: AdaptationStreamContext) -> Resul
 
         // If ABR switched reps (or init was never fetched for this rep), fetch init for this rep.
         if active_rep_id.as_deref() != Some(rep_id) || !encrypted_init_by_rep.contains_key(rep_id) {
-            let rep_st =
-                manifest::segment_template_for_representation(&period, &adaptation_set, rep)?;
-            let init_tpl = rep_st
-                .initialization
-                .as_deref()
-                .ok_or(PlayerError::MissingInitializationTemplate)?;
-            let init_path = manifest::interpolate_template(init_tpl, rep_id, None, None, None);
+            let rep_addressing =
+                manifest::segment_addressing_for_representation(&period, &adaptation_set, rep)?;
+            let init_path = init_path_for_addressing(&rep_addressing, rep_id)?;
             let init_bytes =
                 fetch_bytes_with_base_failover(&client, &bases, &init_path, &blacklist)
                     .await
@@ -170,18 +162,10 @@ pub(crate) async fn run_adaptation_stream(ctx: AdaptationStreamContext) -> Resul
 
         // We only decrypt if we have both a license and a cached encrypted init for this rep.
         let init_for_decrypt = encrypted_init_by_rep.get(rep_id);
-        let rep_st = manifest::segment_template_for_representation(&period, &adaptation_set, rep)?;
-        let media_tpl = rep_st
-            .media
-            .as_deref()
-            .ok_or(PlayerError::MissingMediaTemplate)?;
-        let seg_path = manifest::interpolate_template(
-            media_tpl,
-            rep_id,
-            Some(seg.number),
-            Some(seg.time),
-            seg.sub_number,
-        );
+        let rep_addressing =
+            manifest::segment_addressing_for_representation(&period, &adaptation_set, rep)?;
+        let list_idx = segment_start_index + local_idx;
+        let seg_path = media_path_for_addressing(&rep_addressing, &seg, list_idx, rep_id)?;
         let t0 = Instant::now();
         let bytes = fetch_bytes_with_base_failover(&client, &bases, &seg_path, &blacklist).await?;
         let elapsed_s = t0.elapsed().as_secs_f64().max(1e-6);
@@ -216,4 +200,57 @@ pub(crate) async fn run_adaptation_stream(ctx: AdaptationStreamContext) -> Resul
     }
 
     Ok(())
+}
+
+fn init_path_for_addressing(
+    addressing: &manifest::SegmentAddressing,
+    rep_id: &str,
+) -> Result<String, PlayerError> {
+    match addressing {
+        manifest::SegmentAddressing::Template(st) => {
+            let init_tpl = st
+                .initialization
+                .as_deref()
+                .ok_or(PlayerError::MissingInitializationTemplate)?;
+            Ok(manifest::interpolate_template(
+                init_tpl, rep_id, None, None, None,
+            ))
+        }
+        manifest::SegmentAddressing::List(sl) => {
+            let init_src = manifest::segment_list_init_source(sl)?;
+            Ok(manifest::interpolate_template(
+                init_src, rep_id, None, None, None,
+            ))
+        }
+    }
+}
+
+fn media_path_for_addressing(
+    addressing: &manifest::SegmentAddressing,
+    seg: &manifest::TimelineSegment,
+    list_idx: usize,
+    rep_id: &str,
+) -> Result<String, PlayerError> {
+    match addressing {
+        manifest::SegmentAddressing::Template(st) => {
+            let media_tpl = st
+                .media
+                .as_deref()
+                .ok_or(PlayerError::MissingMediaTemplate)?;
+            Ok(manifest::interpolate_template(
+                media_tpl,
+                rep_id,
+                Some(seg.number),
+                Some(seg.time),
+                seg.sub_number,
+            ))
+        }
+        manifest::SegmentAddressing::List(sl) => {
+            if let Some(url) = seg.media_url.as_deref() {
+                Ok(url.to_string())
+            } else {
+                Ok(manifest::segment_list_media_for_index(sl, list_idx)?.to_string())
+            }
+        }
+    }
 }

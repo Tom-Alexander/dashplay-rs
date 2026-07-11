@@ -24,7 +24,8 @@
 //!             PlayerEvent::BufferUpdated { .. }
 //!             | PlayerEvent::BitrateChanged { .. }
 //!             | PlayerEvent::ManifestLoaded { .. }
-//!             | PlayerEvent::PlaybackStarted => {}
+//!             | PlayerEvent::PlaybackStarted
+//!             | PlayerEvent::MediaEvent(_) => {}
 //!             PlayerEvent::End | PlayerEvent::PlaybackEnded | PlayerEvent::Error(_) => break,
 //!         }
 //!     }
@@ -48,6 +49,7 @@ mod descriptors;
 pub mod drm;
 pub mod http;
 mod manifest;
+mod media_events;
 mod media_player;
 mod metrics;
 mod playback_control;
@@ -63,6 +65,7 @@ pub use http::{
     HttpClient, HttpError, HttpMethod, HttpRequest, HttpResponse, ReqwestClient, SharedHttpClient,
     shared,
 };
+pub use media_events::{MediaEvent, MediaEventSource, Scte35Cue};
 pub use media_player::{MediaPlayer, WidevineLicenseFetcher};
 pub use metrics::{
     BitrateSwitch, BufferSample, RebufferEvent, ThroughputSample, TrackMetrics,

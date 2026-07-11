@@ -17,7 +17,7 @@ A pure Rust implementation of an MPEG-DASH player library.
 - **Modular API** — High-level [`Player`](#player) wrapper or lower-level [`MediaPlayer`](#mediaplayer) for finer control
 - **Playback control** — `seek`, `pause`, `resume`, `stop`, and a [`PlaybackState`](#playbackstate) lifecycle machine
 - **Async delivery** — Tokio-based fragment delivery via broadcast channels (`Init`, `Segment`, `End` events)
-- **Rich event model** — Lifecycle and observability events (`ManifestLoaded`, `BufferUpdated`, `BitrateChanged`, `PlaybackStarted`/`PlaybackEnded`, `Error`) alongside fragment events
+- **Rich event model** — Lifecycle and observability events (`ManifestLoaded`, `BufferUpdated`, `BitrateChanged`, `PlaybackStarted`/`PlaybackEnded`, `Error`) plus MPD/in-band timed events (`MediaEvent`, including SCTE-35 ad markers) alongside fragment events
 - **Metrics API** — Per-track throughput, buffer level, startup delay, rebuffer events, and bitrate-switch history via [`TrackMetrics`](#metrics)
 
 ## Usage
@@ -208,7 +208,9 @@ controller. Clone handles (`outputs.playback.clone()`) share one session.
 |------|-------------|
 | [`Player`](#player) | High-level playback entry point |
 | [`MediaPlayer`](#mediaplayer) | Lower-level DASH coordinator |
-| [`PlayerEvent`](#playerevent) | Fragment, lifecycle, and observability events on a track stream |
+| [`PlayerEvent`](#playerevent) | Fragment, lifecycle, observability, and timed media events on a track stream |
+| [`MediaEvent`](#mediaevent) | MPD `EventStream` or in-band `emsg` timed event |
+| [`MediaEventSource`](#mediaevent) / [`Scte35Cue`](#mediaevent) | Event origin and SCTE-35 binary payload helper |
 | [`PlayerEventError`](#playerevent) | Error message delivered via [`PlayerEvent::Error`](#playerevent) |
 | [`PlayerTrack`](#playertrack) | One adaptation-set broadcast channel |
 | [`PlayerOutputs`](#playeroutputs) | Tracks and playback controller from [`MediaPlayer::start`](#mediaplayer) |
@@ -337,6 +339,7 @@ Events emitted on a single adaptation-set stream. **Fragment** events carry medi
 | `PlaybackStarted` | Lifecycle | First media segment delivered for this adaptation set |
 | `PlaybackEnded` | Lifecycle | Playback finished (VOD end, stop, or bounded window); precedes `End` |
 | `Error(PlayerEventError)` | Lifecycle | Pipeline failed; the full [`PlayerError`](#playererror) is still returned by `join` |
+| `MediaEvent(MediaEvent)` | Timed event | MPD `EventStream` or in-band `emsg` (including SCTE-35 ad markers) |
 | `End` | Fragment | No more fragments for this adaptation set (VOD / bounded window) |
 
 Helper methods classify events without matching every variant:
@@ -348,6 +351,28 @@ Helper methods classify events without matching every variant:
 
 `PlayerEventError` is a clone-friendly wrapper around the error message string (`PlayerEventError(pub String)`),
 so track events remain `Clone` even though [`PlayerError`](#playererror) is not.
+
+---
+
+### `MediaEvent`
+
+Timed events from MPD `EventStream` elements (emitted on manifest/period load) and in-band
+`emsg` boxes (emitted when a matching media segment is delivered). In-band events are filtered
+by `InbandEventStream` descriptors on the active adaptation set or representation when present.
+
+| Field | Description |
+|-------|-------------|
+| `source` | [`MediaEventSource::Mpd`] or [`MediaEventSource::InBand`] with segment coordinates |
+| `scheme_id_uri` | DASH event scheme (e.g. SCTE-35 `urn:scte:scte35:2014:xml+bin`) |
+| `value` | Optional scheme-specific value |
+| `timescale` | Presentation-time timescale |
+| `presentation_time` | Event instant in `timescale` ticks |
+| `duration` | Optional event duration in `timescale` ticks |
+| `id` | Optional event identifier |
+| `message_data` | Raw event payload (MPD message or `emsg` message data) |
+
+[`MediaEvent::is_scte35()`](#mediaevent) detects SCTE-35 schemes; [`MediaEvent::scte35_cue()`](#mediaevent)
+returns decoded splice-info bytes when present.
 
 ---
 

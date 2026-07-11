@@ -29,7 +29,7 @@ Status legend: `[ ]` not started · `[~]` partial · `[x]` done.
 | Segment addressing | `[~]` | `SegmentTemplate`, `SegmentList` / `SegmentURL`, `SegmentBase` + byte ranges |
 | Playback control (seek/pause/stop) | `[x]` | `PlaybackController` with state machine |
 | Demux / decode | `[ ]` | Out of scope (bytes only) |
-| Metrics / rich events | `[~]` | Per-track [`TrackMetrics`]; fragment events only |
+| Metrics / rich events | `[~]` | Per-track [`TrackMetrics`]; fragment + [`MediaEvent`] events |
 | Pluggable networking / ABR | `[~]` | HTTP client trait + `ReqwestClient`; ABR still BOLA-only |
 
 ---
@@ -96,7 +96,7 @@ These close the largest gaps between "delivers some streams" and "handles confor
 - [ ] **Additional DRM systems.** ClearKey
 - [ ] **Low-Latency DASH.** `availabilityTimeComplete`, `ServiceDescription`, resync
   points, and chunked/partial segment transfer.
-- [ ] **In-band and MPD events.** `EventStream`, `emsg`, and SCTE-35 ad markers.
+- [x] **In-band and MPD events.** `EventStream`, `emsg`, and SCTE-35 ad markers.
 - [ ] **Content steering / MPD updates.** `Location`, content steering, and MPD patch
   (`urn:mpeg:dash:mpd-patch`) updates.
 - [ ] **CMCD / CMSD.** Common Media Client/Server Data request and response hints.

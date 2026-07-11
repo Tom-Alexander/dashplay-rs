@@ -100,6 +100,8 @@ pub enum PlayerEvent {
     PlaybackEnded,
     /// The playback pipeline failed; see the background task join result for the full error.
     Error(PlayerEventError),
+    /// MPD `EventStream` or in-band `emsg` timed event (including SCTE-35 ad markers).
+    MediaEvent(super::media_events::MediaEvent),
     /// Initialization segment (`ftyp` + `moov`).
     Init(Bytes),
     Segment {

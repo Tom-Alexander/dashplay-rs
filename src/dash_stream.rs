@@ -15,6 +15,7 @@ use super::drm::License;
 use super::drm::coordinator::DrmSessionCoordinator;
 use super::http::SharedHttpClient;
 use super::manifest::{self, TimelineBuildContext};
+use super::media_events;
 use super::metrics::TrackMetrics;
 use super::playback_control::{PlaybackController, PlaybackState};
 use super::segment_blacklist::SegmentBlacklist;
@@ -275,6 +276,18 @@ pub(crate) async fn run_adaptation_stream(ctx: AdaptationStreamContext) -> Resul
         }
         if playback.is_paused() {
             continue;
+        }
+
+        let inband_filters =
+            media_events::inband_event_streams_for_representation(&adaptation_set, rep);
+        for event in media_events::inband_events_from_segment(
+            data.as_ref(),
+            &inband_filters,
+            seg_for_fetch.number,
+            seg_for_fetch.time,
+            seg_for_fetch.sub_number,
+        ) {
+            let _ = tx.send(PlayerEvent::MediaEvent(event));
         }
 
         let _ = tx.send(PlayerEvent::Segment {

@@ -17,6 +17,7 @@ use super::dash_stream::{AdaptationStreamContext, run_adaptation_stream};
 use super::delivered_segments::DeliveredSegmentTracker;
 use super::http::{HttpRequest, SharedHttpClient};
 use super::manifest;
+use super::media_events;
 use super::playback_control::{PlaybackController, PlaybackState};
 use super::segment_blacklist::SegmentBlacklist;
 use super::track_selection::{TrackSelection, select_adaptation_sets};
@@ -45,6 +46,8 @@ impl PlaybackLoopState {
         let mut mpd_xml = None;
         let mut last_period_idx = None;
         let mut seek_target_override: Option<std::time::Duration> = None;
+        let mut emitted_mpd_events: std::collections::HashSet<(String, u64, u64)> =
+            std::collections::HashSet::new();
 
         let have_init: Arc<Vec<AtomicBool>> =
             Arc::new((0..tracks.len()).map(|_| AtomicBool::new(false)).collect());
@@ -135,6 +138,21 @@ impl PlaybackLoopState {
 
                     let period_start = current_window.start;
                     let period = mpd_ref.periods[current_window.idx].clone();
+                    let mpd_events = media_events::mpd_events_for_period(&period);
+                    for event in mpd_events {
+                        let key = (
+                            event.scheme_id_uri.clone(),
+                            event.presentation_time,
+                            event.id.unwrap_or(0),
+                        );
+                        if !emitted_mpd_events.insert(key) {
+                            continue;
+                        }
+                        for t in &tracks {
+                            let _ = t.tx.send(PlayerEvent::MediaEvent(event.clone()));
+                        }
+                    }
+
                     let segment_base_ctx = manifest::SegmentBaseContext {
                         manifest_uri: manifest_uri.clone(),
                         mpd_base_urls: mpd_ref.base_url.clone(),

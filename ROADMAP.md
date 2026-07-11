@@ -11,7 +11,9 @@ broadcast channels. It is not yet a complete player framework.
 Priorities follow the project ordering: **correctness → standards compliance →
 reliability → maintainability → performance → API ergonomics**.
 
-Status legend: `[ ]` not started · `[~]` partial · `[x]` done.
+Status legend: `[ ]` not started · `[~]` partial · `[x]` done · `[—]` out of scope.
+
+Detailed rationale and spec references for backlog items are in [`UNSUPPORTED.md`](UNSUPPORTED.md).
 
 ---
 
@@ -28,9 +30,13 @@ Status legend: `[ ]` not started · `[~]` partial · `[x]` done.
 | Track selection | `[~]` | MIME type + language/role/codec/accessibility; text, trick-play, and image tracks opt-in |
 | Segment addressing | `[~]` | `SegmentTemplate`, `SegmentList` / `SegmentURL`, `SegmentBase` + byte ranges |
 | Playback control (seek/pause/stop) | `[x]` | `PlaybackController` with state machine |
-| Demux / decode | `[ ]` | Out of scope (bytes only) |
+| Demux / decode | `[—]` | Out of scope (bytes only) |
 | Metrics / rich events | `[~]` | Per-track [`TrackMetrics`]; fragment + [`MediaEvent`] events |
 | Pluggable networking / ABR | `[x]` | HTTP client trait + `ReqwestClient`; ABR trait + `BolaAbrFactory` |
+| MPD model / remote documents | `[ ]` | xlink, Preselection, metadata elements |
+| Buffer-target scheduling | `[ ]` | Downloads not throttled by buffer or `minBufferTime` |
+| Bitstream / AS switching | `[ ]` | Init always re-emitted; no cross-AS switch |
+| Containers beyond fMP4/CMAF | `[ ]` | mp2t, WebM, additional image MIME types |
 
 ---
 
@@ -93,18 +99,24 @@ These close the largest gaps between "delivers some streams" and "handles confor
 
 ## P4 — Additional DRM and advanced DASH
 
-- [ ] **Additional DRM systems.** ClearKey
-- [x] **Low-Latency DASH.** `availabilityTimeComplete`, `ServiceDescription`, resync
-  points, and chunked/partial segment transfer.
+- [ ] **Additional DRM systems.** ClearKey, PlayReady, FairPlay, and other
+  `ContentProtection` schemes beyond Widevine.
+- [~] **Low-Latency DASH.** `availabilityTimeComplete`, `ServiceDescription`, resync
+  points, and chunked/partial segment transfer are done; remaining: `Resync@type` 0/1
+  recovery, non-`Latency` `ServiceDescription` elements, player-side target-latency control.
 - [x] **In-band producer reference time.** Parse `prft` boxes for
   `ProducerReferenceTime@inband=true` clock correction.
 - [x] **Mid-segment resync.** Use `Resync@type` 2/3 random-access points during seek
   and playback recovery.
 - [x] **Producer-reference integration coverage.** Test live-window selection when
   `ProducerReferenceTime` intentionally diverges from `UTCTiming`.
-- [x] **In-band and MPD events.** `EventStream`, `emsg`, and SCTE-35 ad markers.
-- [x] **Content steering / MPD updates.** `Location`, content steering, and MPD patch
-  (`urn:mpeg:dash:mpd-patch`) updates.
+- [~] **In-band and MPD events.** `EventStream`, `emsg`, and SCTE-35 ad markers are done;
+  remaining: AdaptationSet/Representation MPD `EventStream`, SCTE-35 splice decode, other
+  binary `Event@messageData` schemes.
+- [~] **Content steering / MPD updates.** `Location`, content steering, and MPD patch
+  (`urn:mpeg:dash:mpd-patch`) updates are done; remaining: `PatchLocation@ttl`, multiple
+  patch locations, patch failure surfacing, conditional GET, DCSM TTL-driven reload,
+  steering beyond BaseURL reorder.
 - [ ] **CMCD / CMSD.** Common Media Client/Server Data request and response hints.
 
 ## P5 — Conformance and quality
@@ -119,3 +131,104 @@ These close the largest gaps between "delivers some streams" and "handles confor
 - [x] **API surface cleanup.** Public helpers (`start_merged`, `into_async_read`, track
   subscription helpers) are exported from the crate root and covered by integration tests;
   stale `#[allow(dead_code)]` attributes removed.
+
+---
+
+## P6 — Segment addressing and MPD model (unsupported backlog)
+
+- [ ] **Remaining template variables.** `$Width$`, `$Height$`, `$FrameRate$`, `$Ext$`,
+  `$Initialization$`.
+- [ ] **`SegmentTemplate@endNumber`.** Bound static `@duration` segment counts without
+  relying solely on Period/MPD duration.
+- [~] **`SegmentTemplate@index` (sidecar index).** Inherited in the model; fetch and use
+  separate index documents.
+- [ ] **`SegmentTemplate@maxDuration`.** Validate or bound segment durations.
+- [ ] **Bitstream switching.** Honour `SegmentTemplate@bitstreamSwitching` /
+  `BitstreamSwitching` — skip init fetch/re-emit when switching representations.
+- [~] **`SegmentList` byte ranges.** `SegmentURL@mediaRange` HTTP Range fetch; byte-range-only
+  list addressing without timeline.
+- [ ] **Hierarchical `sidx`.** `reference_type ≠ 0` index references.
+- [~] **Whole-file `SegmentBase`.** Single-segment and `@presentationDuration` progressive
+  paths without `@indexRange`.
+- [~] **`@indexRangeExact`.** Distinct semantics from `@indexRange`.
+- [ ] **Addressing-mode validation.** Enforce mutual exclusivity of `SegmentTemplate` /
+  `SegmentList` / `SegmentBase` at the same hierarchy level.
+- [ ] **Remote MPD documents.** `MPD@xlink:href`, `Period@xlink:href`, and
+  `urn:mpeg:dash:resolve-to-zero:2013` period placeholders.
+- [ ] **`Preselection`.** Preselected adaptation-set bundles.
+- [ ] **`SubRepresentation`.** Sub-track selection and template inheritance.
+- [~] **`EssentialProperty` breadth.** Accept common codec/compatibility schemes instead of
+  excluding adaptation sets with unknown essential properties.
+- [~] **`SupplementalProperty` playback semantics.** Execute adaptation-set switching and
+  other supplemental signalling beyond metadata collection.
+- [ ] **`AdaptationSet/Switching` and `RandomAccess`.** Seamless AS switch and explicit
+  random-access hints beyond SAP-aligned seek.
+- [ ] **MPD metadata elements.** `ProgramInformation`, `Metrics` (DASH reporting
+  descriptors), `AssetIdentifier`, `Rating`, `Period/Label`, `Representation/Label`.
+- [~] **`MPD@minBufferTime` and `@maxSegmentDuration`.** Use for startup delay, buffer
+  targets, scheduling validation.
+- [~] **Profile-specific playback.** `mp2t-main`, `mp2t-simple`, DVB, HbbTV, AC-4, MHA1,
+  VP9, VP9-HDR paths beyond conformance validation.
+- [~] **AdaptationSet range attributes.** Enforce `@minBandwidth` / `@maxBandwidth` /
+  `@minWidth` / `@maxWidth` / `@minHeight` / `@maxHeight` / `@minFrameRate` /
+  `@maxFrameRate` against representations and ABR.
+- [~] **Period `EventStream` scope.** Collect AdaptationSet- and Representation-level MPD
+  `EventStream` events, not only Period-level.
+- [~] **Period gaps.** Surface explicit gap / discontinuity signalling between periods.
+
+## P7 — Scheduling, ABR, and playback semantics (unsupported backlog)
+
+- [ ] **Buffer-target scheduling.** Throttle downloads when consumer buffer is full;
+  honour `MPD@minBufferTime` for startup and rebuffer recovery.
+- [ ] **Manifest-derived BOLA parameters.** Derive segment duration and buffer limits from
+  MPD segment durations instead of hardcoded 4 s / 25 s assumptions.
+- [ ] **Parallel segment prefetch.** Concurrent segment downloads per track.
+- [ ] **ABR inputs.** Playback rate and dropped-frame signals per `ARCHITECTURE.md`.
+- [ ] **User quality constraints.** Max/min bitrate cap, fixed quality rung, data-saver mode.
+- [ ] **Mid-playback track switching.** Change audio language or subtitles without
+  restarting (`TrackSelection` is fixed at `MediaPlayer::start`).
+- [ ] **Runtime adaptation-set switching.** `urn:mpeg:dash:adaptation-set-switching:2016`
+  seamless cross-AS switch.
+- [ ] **Playback rate / fast-forward.** `@maxPlayoutRate` and `@codingDependency` on main
+  video.
+- [ ] **Automatic stall detection.** Detect rebuffer without requiring consumer
+  `BufferFeedback::report`.
+- [~] **Pause semantics.** Buffer drain signalling; optional in-flight download cancellation.
+- [ ] **Playhead API.** Track and expose current presentation time.
+- [~] **Live DVR seek.** Expand seek bounds and window handling beyond resolved timeline.
+- [ ] **Dynamic MPD static-duration semantics.** `@type="dynamic"` with static presentation
+  duration behaviour.
+- [ ] **Multi-period overlap / sync buffer.** Handling beyond init re-emission.
+- [~] **LL-DASH target latency control.** Adjust consumption rate to chase
+  `ServiceDescription/Latency@target`.
+
+## P8 — Networking, platform, and containers (unsupported backlog)
+
+- [ ] **HTTP retry with backoff.** Transient manifest/segment failures (failover only today).
+- [ ] **Conditional manifest fetch.** `If-None-Match` / `304 Not Modified` on live refresh.
+- [ ] **Shipped WASM / browser `HttpClient`.** Reference fetch backend for WASM targets.
+- [~] **`BaseURL@availabilityTimeOffset`.** Use BaseURL-level ATO, not only segment-level.
+- [ ] **DVB and other namespace BaseURL extensions.** e.g. `@dvb:priority` beyond deserialize.
+- [ ] **Steering beyond BaseURL reorder.** DCSM features past `SERVICE-LOCATION-PRIORITY`.
+- [ ] **MPEG-2 Transport Stream.** `mp2t-main` and `mp2t-simple` profile playback.
+- [ ] **WebM / Matroska.** `video/webm`, `audio/webm` segment delivery.
+- [ ] **Additional image MIME types.** `image/png`, `image/bmp`, and other thumbnail schemes.
+- [~] **Progressive MP4.** Non-fragmented whole-file playback via `SegmentBase`.
+- [ ] **Multiplexed A+V.** Single adaptation set carrying multiplexed audio and video.
+- [ ] **`UTCTiming` WebSocket scheme.** `urn:mpeg:dash:utc:websocket`.
+- [ ] **Other `UTCTiming` schemes.** Any scheme not explicitly handled today.
+- [~] **CBCS / pattern encryption.** Document and test non-CTR CENC modes.
+- [ ] **Hardware security level and HDCP policy.** Output-protection enforcement.
+
+## P9 — Out of scope (not planned)
+
+These MPEG-DASH-adjacent capabilities are intentionally excluded. Consumers or
+higher-level frameworks should provide them.
+
+- [—] **Media demultiplexing** beyond `emsg`, `prft`, PSSH, and LL-DASH chunk boundaries.
+- [—] **Sample extraction** — access-unit or timestamped sample output.
+- [—] **Decoding** — video, audio, subtitle, or image decode.
+- [—] **Rendering / presentation** — UI, A/V sync, compositing.
+- [—] **SCTE-35 splice command parsing** — cue bytes are exposed; splice semantics are not decoded.
+- [—] **Non-DASH protocols** — HLS, MSS, RTSP, etc.
+- [—] **Cookie / credential policy** — callers attach headers via [`HttpRequest`](src/http/request.rs).

@@ -815,6 +815,9 @@ License::decrypt(ciphertext, init) -> Result<Bytes, LicenseError>
 
 Requires Rust stable.
 
+See [`ROADMAP.md`](ROADMAP.md) for planned work (including the unsupported-feature backlog
+in P6–P9) and [`UNSUPPORTED.md`](UNSUPPORTED.md) for spec references and rationale.
+
 Build:
 
 ```bash

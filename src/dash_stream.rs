@@ -134,7 +134,8 @@ pub(crate) async fn run_adaptation_stream(ctx: AdaptationStreamContext) -> Resul
             let rep_license = wv_by_rep.get(rep_id).cloned().or_else(|| license.clone());
             let rep_addressing =
                 manifest::segment_addressing_for_representation(&period, &adaptation_set, rep)?;
-            let init_target = init_target_for_addressing(&rep_addressing, rep_id)?;
+            let template_vars = manifest::template_vars_for_representation(rep);
+            let init_target = init_target_for_addressing(&rep_addressing, &template_vars)?;
             let bytes = fetch_segment_target(&client, &bases, &init_target, &blacklist).await?;
             let init_bytes = Bytes::from(bytes);
             encrypted_init_by_rep.insert(rep_id.to_string(), init_bytes.clone());
@@ -172,7 +173,8 @@ pub(crate) async fn run_adaptation_stream(ctx: AdaptationStreamContext) -> Resul
         if active_rep_id.as_deref() != Some(rep_id) || !encrypted_init_by_rep.contains_key(rep_id) {
             let rep_addressing =
                 manifest::segment_addressing_for_representation(&period, &adaptation_set, rep)?;
-            let init_target = init_target_for_addressing(&rep_addressing, rep_id)?;
+            let template_vars = manifest::template_vars_for_representation(rep);
+            let init_target = init_target_for_addressing(&rep_addressing, &template_vars)?;
             let init_bytes = fetch_segment_target(&client, &bases, &init_target, &blacklist)
                 .await
                 .map(Bytes::from)?;
@@ -212,8 +214,9 @@ pub(crate) async fn run_adaptation_stream(ctx: AdaptationStreamContext) -> Resul
                 }
             }
         }
+        let template_vars = manifest::template_vars_for_representation(rep);
         let seg_target =
-            media_target_for_addressing(&rep_addressing, &seg_for_fetch, list_idx, rep_id)?;
+            media_target_for_addressing(&rep_addressing, &seg_for_fetch, list_idx, &template_vars)?;
         let t0 = Instant::now();
         let bytes = fetch_segment_target(&client, &bases, &seg_target, &blacklist).await?;
         let elapsed_s = t0.elapsed().as_secs_f64().max(1e-6);
@@ -252,7 +255,7 @@ pub(crate) async fn run_adaptation_stream(ctx: AdaptationStreamContext) -> Resul
 
 fn init_target_for_addressing(
     addressing: &manifest::SegmentAddressing,
-    rep_id: &str,
+    vars: &manifest::TemplateVars<'_>,
 ) -> Result<manifest::SegmentFetchTarget, PlayerError> {
     match addressing {
         manifest::SegmentAddressing::Template(st) => {
@@ -261,18 +264,18 @@ fn init_target_for_addressing(
                 .as_deref()
                 .ok_or(PlayerError::MissingInitializationTemplate)?;
             Ok(manifest::SegmentFetchTarget {
-                path: manifest::interpolate_template(init_tpl, rep_id, None, None, None),
+                path: manifest::interpolate_template(init_tpl, vars),
                 range: None,
             })
         }
         manifest::SegmentAddressing::List(sl) => {
             let init_src = manifest::segment_list_init_source(sl)?;
             Ok(manifest::SegmentFetchTarget {
-                path: manifest::interpolate_template(init_src, rep_id, None, None, None),
+                path: manifest::interpolate_template(init_src, vars),
                 range: None,
             })
         }
-        manifest::SegmentAddressing::Base(sb) => manifest::segment_base_init_target(sb, rep_id),
+        manifest::SegmentAddressing::Base(sb) => manifest::segment_base_init_target(sb, vars),
     }
 }
 
@@ -280,7 +283,7 @@ fn media_target_for_addressing(
     addressing: &manifest::SegmentAddressing,
     seg: &manifest::TimelineSegment,
     list_idx: usize,
-    rep_id: &str,
+    vars: &manifest::TemplateVars<'_>,
 ) -> Result<manifest::SegmentFetchTarget, PlayerError> {
     match addressing {
         manifest::SegmentAddressing::Template(st) => {
@@ -291,10 +294,13 @@ fn media_target_for_addressing(
             Ok(manifest::SegmentFetchTarget {
                 path: manifest::interpolate_template(
                     media_tpl,
-                    rep_id,
-                    Some(seg.number),
-                    Some(seg.time),
-                    seg.sub_number,
+                    &manifest::TemplateVars {
+                        representation_id: vars.representation_id,
+                        bandwidth: vars.bandwidth,
+                        number: Some(seg.number),
+                        time: Some(seg.time),
+                        sub_number: seg.sub_number,
+                    },
                 ),
                 range: None,
             })
@@ -307,9 +313,7 @@ fn media_target_for_addressing(
             };
             Ok(manifest::SegmentFetchTarget { path, range: None })
         }
-        manifest::SegmentAddressing::Base(sb) => {
-            manifest::segment_base_media_target(sb, seg, rep_id)
-        }
+        manifest::SegmentAddressing::Base(sb) => manifest::segment_base_media_target(sb, seg, vars),
     }
 }
 

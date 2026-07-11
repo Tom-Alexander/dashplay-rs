@@ -45,7 +45,7 @@ These close the largest gaps between "delivers some streams" and "handles confor
   addressing.
 - [x] **SegmentBase + byte ranges.** Support `SegmentBase`, `Initialization@range`, and
   `indexRange` (single-file `sidx`-indexed representations).
-- [ ] **Full template variable set.** `$Bandwidth$` and width/format specifiers such as
+- [x] **Full template variable set.** `$Bandwidth$` and width/format specifiers such as
   `$Number%05d$` / `$Time%0Nd$`.
 - [ ] **Real buffer feedback for ABR.** Replace the synthetic `abr.update_buffer(10.0)`
   seed with a buffer level reported by the consumer, so ABR reflects actual playback

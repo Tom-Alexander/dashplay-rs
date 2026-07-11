@@ -620,7 +620,7 @@ pub(crate) fn parse_sidx_index(
 /// Init fetch target for merged `SegmentBase` addressing.
 pub(crate) fn segment_base_init_target(
     sb: &SegmentBase,
-    rep_id: &str,
+    vars: &TemplateVars<'_>,
 ) -> Result<SegmentFetchTarget, PlayerError> {
     let init = sb
         .Initialization
@@ -629,7 +629,7 @@ pub(crate) fn segment_base_init_target(
     let path = init
         .sourceURL
         .as_deref()
-        .map(|s| interpolate_template(s, rep_id, None, None, None))
+        .map(|s| interpolate_template(s, vars))
         .unwrap_or_default();
     let range = init.range.as_deref().map(parse_byte_range).transpose()?;
     Ok(SegmentFetchTarget { path, range })
@@ -639,12 +639,23 @@ pub(crate) fn segment_base_init_target(
 pub(crate) fn segment_base_media_target(
     _sb: &SegmentBase,
     seg: &TimelineSegment,
-    rep_id: &str,
+    vars: &TemplateVars<'_>,
 ) -> Result<SegmentFetchTarget, PlayerError> {
     let path = seg
         .media_url
         .as_deref()
-        .map(|s| interpolate_template(s, rep_id, Some(seg.number), Some(seg.time), seg.sub_number))
+        .map(|s| {
+            interpolate_template(
+                s,
+                &TemplateVars {
+                    representation_id: vars.representation_id,
+                    bandwidth: vars.bandwidth,
+                    number: Some(seg.number),
+                    time: Some(seg.time),
+                    sub_number: seg.sub_number,
+                },
+            )
+        })
         .unwrap_or_default();
     Ok(SegmentFetchTarget {
         path,
@@ -945,28 +956,134 @@ pub(crate) fn segment_template_for_representation(
     .ok_or(PlayerError::MissingSegmentTemplate)
 }
 
-/// Very small subset of DASH `$...$` template interpolation (incl. `$SubNumber$` for §5.3.9.6.5).
-pub(crate) fn interpolate_template(
-    template: &str,
-    representation_id: &str,
-    number: Option<u64>,
-    time: Option<u64>,
-    sub_number: Option<u64>,
-) -> String {
-    let mut out = template.replace("$RepresentationID$", representation_id);
-    if let Some(n) = number {
-        out = out.replace("$Number$", &n.to_string());
+/// Build template substitution values for one representation (init/media URL construction).
+pub(crate) fn template_vars_for_representation(rep: &Representation) -> TemplateVars<'_> {
+    TemplateVars {
+        representation_id: rep.id.as_deref().unwrap_or_default(),
+        bandwidth: rep.bandwidth,
+        number: None,
+        time: None,
+        sub_number: None,
     }
-    if let Some(t) = time {
-        out = out.replace("$Time$", &t.to_string());
-    }
-    if let Some(sn) = sub_number {
-        out = out.replace("$SubNumber$", &sn.to_string());
-    } else if out.contains("$SubNumber$") {
-        // §5.3.9.6.5: first chunk in a sequence is 1; single-chunk sequences use k=1.
-        out = out.replace("$SubNumber$", "1");
-    }
+}
 
+/// Substitution values for DASH `SegmentTemplate` URL identifiers (ISO 23009-1 §5.3.9.4.4).
+#[derive(Debug, Clone, Copy)]
+pub(crate) struct TemplateVars<'a> {
+    pub representation_id: &'a str,
+    pub bandwidth: Option<u64>,
+    pub number: Option<u64>,
+    pub time: Option<u64>,
+    pub sub_number: Option<u64>,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum TemplateIdent {
+    RepId,
+    Number,
+    Bandwidth,
+    Time,
+    SubNumber,
+}
+
+/// Parse `%0[width]d` width from a DASH format tag; defaults to 1 per spec when absent or invalid.
+fn dash_format_width(format: Option<&str>) -> usize {
+    let Some(fmt) = format else {
+        return 1;
+    };
+    if !fmt.starts_with("%0") || !fmt.ends_with('d') || fmt.len() < 4 {
+        return 1;
+    }
+    let width_str = &fmt[2..fmt.len() - 1];
+    if width_str.is_empty() {
+        return 1;
+    }
+    width_str.parse::<usize>().unwrap_or(1).max(1)
+}
+
+fn format_dash_integer(value: u64, width: usize) -> String {
+    format!("{:0width$}", value, width = width.max(1))
+}
+
+fn parse_template_ident(token: &str) -> Option<(TemplateIdent, Option<&str>)> {
+    let (name, format) = match token.find('%') {
+        Some(pos) => (&token[..pos], Some(&token[pos..])),
+        None => (token, None),
+    };
+    let ident = match name {
+        "RepresentationID" => TemplateIdent::RepId,
+        "Number" => TemplateIdent::Number,
+        "Bandwidth" => TemplateIdent::Bandwidth,
+        "Time" => TemplateIdent::Time,
+        "SubNumber" => TemplateIdent::SubNumber,
+        _ => return None,
+    };
+    if ident == TemplateIdent::RepId && format.is_some() {
+        return None;
+    }
+    Some((ident, format))
+}
+
+fn resolve_template_ident(
+    ident: TemplateIdent,
+    format: Option<&str>,
+    vars: &TemplateVars<'_>,
+) -> Option<String> {
+    match ident {
+        TemplateIdent::RepId => Some(vars.representation_id.to_string()),
+        TemplateIdent::Number => vars
+            .number
+            .map(|n| format_dash_integer(n, dash_format_width(format))),
+        TemplateIdent::Bandwidth => vars
+            .bandwidth
+            .map(|bw| format_dash_integer(bw, dash_format_width(format))),
+        TemplateIdent::Time => vars
+            .time
+            .map(|t| format_dash_integer(t, dash_format_width(format))),
+        TemplateIdent::SubNumber => Some(format_dash_integer(
+            vars.sub_number.unwrap_or(1),
+            dash_format_width(format),
+        )),
+    }
+}
+
+/// DASH `$...$` template interpolation (§5.3.9.4.4), including `$SubNumber$` (§5.3.9.6.5).
+pub(crate) fn interpolate_template(template: &str, vars: &TemplateVars<'_>) -> String {
+    let mut out = String::with_capacity(template.len());
+    let mut rest = template;
+    while !rest.is_empty() {
+        let Some(dollar_pos) = rest.find('$') else {
+            out.push_str(rest);
+            break;
+        };
+        out.push_str(&rest[..dollar_pos]);
+        rest = &rest[dollar_pos..];
+
+        if rest.starts_with("$$") {
+            out.push('$');
+            rest = &rest[2..];
+            continue;
+        }
+
+        let Some(close) = rest[1..].find('$') else {
+            out.push('$');
+            rest = &rest[1..];
+            continue;
+        };
+
+        let token = &rest[1..=close];
+        let consumed = close + 2;
+        if let Some((ident, format)) = parse_template_ident(token) {
+            if let Some(value) = resolve_template_ident(ident, format, vars) {
+                out.push_str(&value);
+                rest = &rest[consumed..];
+                continue;
+            }
+        }
+
+        out.push('$');
+        rest = &rest[1..];
+    }
     out
 }
 
@@ -1534,20 +1651,86 @@ mod timeline_tests {
 
     #[test]
     fn interpolate_template_subnumber() {
+        let vars = TemplateVars {
+            representation_id: "A",
+            bandwidth: None,
+            number: Some(7),
+            time: Some(42),
+            sub_number: Some(3),
+        };
         let out = interpolate_template(
             "v-$RepresentationID$-$Number$-$Time$-$SubNumber$.m4s",
-            "A",
-            Some(7),
-            Some(42),
-            Some(3),
+            &vars,
         );
         assert_eq!(out, "v-A-7-42-3.m4s");
     }
 
     #[test]
     fn interpolate_template_subnumber_defaults_to_one() {
-        let out = interpolate_template("x-$SubNumber$.m4s", "id", None, None, None);
+        let vars = TemplateVars {
+            representation_id: "id",
+            bandwidth: None,
+            number: None,
+            time: None,
+            sub_number: None,
+        };
+        let out = interpolate_template("x-$SubNumber$.m4s", &vars);
         assert_eq!(out, "x-1.m4s");
+    }
+
+    #[test]
+    fn interpolate_template_number_and_time_format_width() {
+        let vars = TemplateVars {
+            representation_id: "1",
+            bandwidth: Some(1_100_000),
+            number: Some(7),
+            time: Some(42),
+            sub_number: None,
+        };
+        let out = interpolate_template(
+            "chunk-$RepresentationID$-$Number%05d$-$Time%010d$-$Bandwidth%07d$.m4s",
+            &vars,
+        );
+        assert_eq!(out, "chunk-1-00007-0000000042-1100000.m4s");
+    }
+
+    #[test]
+    fn interpolate_template_bandwidth_without_format() {
+        let vars = TemplateVars {
+            representation_id: "v",
+            bandwidth: Some(500_000),
+            number: None,
+            time: None,
+            sub_number: None,
+        };
+        let out = interpolate_template("seg-$Bandwidth$.m4s", &vars);
+        assert_eq!(out, "seg-500000.m4s");
+    }
+
+    #[test]
+    fn interpolate_template_dollar_escape() {
+        let vars = TemplateVars {
+            representation_id: "id",
+            bandwidth: None,
+            number: Some(1),
+            time: None,
+            sub_number: None,
+        };
+        let out = interpolate_template("pre$$-$Number$-post", &vars);
+        assert_eq!(out, "pre$-1-post");
+    }
+
+    #[test]
+    fn interpolate_template_leaves_missing_number_unsubstituted() {
+        let vars = TemplateVars {
+            representation_id: "id",
+            bandwidth: None,
+            number: None,
+            time: None,
+            sub_number: None,
+        };
+        let out = interpolate_template("seg-$Number%05d$.m4s", &vars);
+        assert_eq!(out, "seg-$Number%05d$.m4s");
     }
 
     #[test]
@@ -2037,7 +2220,14 @@ mod manifest_logic_tests {
             }),
             ..Default::default()
         };
-        let target = segment_base_init_target(&sb, "1").unwrap();
+        let vars = TemplateVars {
+            representation_id: "1",
+            bandwidth: None,
+            number: None,
+            time: None,
+            sub_number: None,
+        };
+        let target = segment_base_init_target(&sb, &vars).unwrap();
         assert_eq!(target.path, "");
         assert_eq!(target.range, Some(ByteRange { start: 0, end: 6 }));
     }

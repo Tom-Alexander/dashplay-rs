@@ -68,7 +68,7 @@ impl MediaPlayer {
         self
     }
 
-    /// Configure deterministic audio and video adaptation-set selection.
+    /// Configure deterministic audio, video, and text adaptation-set selection.
     pub fn with_track_selection(mut self, selection: TrackSelection) -> Self {
         self.track_selection = selection;
         self

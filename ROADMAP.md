@@ -25,7 +25,7 @@ Status legend: `[ ]` not started · `[~]` partial · `[x]` done.
 | Multi-period (live + VOD) | `[x]` | Init re-emission on period transition |
 | ABR (BOLA) | `[x]` | Consumer-reported buffer via [`BufferFeedback`] |
 | DRM | `[~]` | Widevine only; requires external CDM device |
-| Track selection | `[~]` | MIME type only (`audio/mp4`, `video/mp4`) |
+| Track selection | `[~]` | MIME type + language/role/codec/accessibility; text tracks opt-in |
 | Segment addressing | `[~]` | `SegmentTemplate`, `SegmentList` / `SegmentURL`, `SegmentBase` + byte ranges |
 | Playback control (seek/pause/stop) | `[x]` | `PlaybackController` with state machine |
 | Demux / decode | `[ ]` | Out of scope (bytes only) |
@@ -74,7 +74,7 @@ These close the largest gaps between "delivers some streams" and "handles confor
 
 - [x] **Rich track selection.** Select by language, role, codecs, and accessibility;
   allow user preferences and multiple audio tracks. Today selection is MIME-type only.
-- [ ] **Subtitles / captions.** `text/vtt`, TTML, and in-band caption tracks.
+- [x] **Subtitles / captions.** `text/vtt`, TTML, and in-band caption tracks (`stpp`, `wvtt`, `c608`).
 - [ ] **Thumbnails / trick-play.** Image adaptation sets (`image/jpeg`) and trick-play
   tracks.
 - [x] **EssentialProperty / SupplementalProperty.** Respect descriptors for codec/scheme

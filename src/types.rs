@@ -130,7 +130,7 @@ impl PlayerEvent {
     }
 }
 
-/// One DASH adaptation set (audio or video) exposed as a broadcast stream.
+/// One DASH adaptation set (audio, video, or text) exposed as a broadcast stream.
 #[derive(Clone)]
 pub struct PlayerTrack {
     /// `AdaptationSet@mimeType` when present (e.g. `video/mp4`, `audio/mp4`).
@@ -168,7 +168,7 @@ impl PlayerTrack {
 /// [`MediaPlayer::start`](crate::MediaPlayer::start) does not spawn tasks. Call [`Self::run`] on
 /// the current async task, or [`Self::spawn`] when a separate Tokio task is desired.
 pub struct PlayerOutputs {
-    /// One channel per selected AdaptationSet (audio/video filtered).
+    /// One channel per selected AdaptationSet (audio/video/text filtered by [`TrackSelection`]).
     pub tracks: Vec<PlayerTrack>,
     /// Seek, pause, resume, stop, and lifecycle state for this session.
     pub playback: PlaybackController,

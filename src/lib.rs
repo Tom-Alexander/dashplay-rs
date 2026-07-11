@@ -61,6 +61,7 @@ mod track_selection;
 mod types;
 mod utc_timing;
 
+pub use dash_mpd::SubtitleType;
 pub use http::{
     HttpClient, HttpError, HttpMethod, HttpRequest, HttpResponse, ReqwestClient, SharedHttpClient,
     shared,

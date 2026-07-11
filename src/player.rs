@@ -35,7 +35,7 @@ impl Player {
         }
     }
 
-    /// Configure deterministic audio and video adaptation-set selection.
+    /// Configure deterministic audio, video, and text adaptation-set selection.
     pub fn with_track_selection(self, selection: TrackSelection) -> Self {
         Self {
             media_player: self.media_player.with_track_selection(selection),

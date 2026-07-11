@@ -11,6 +11,8 @@ pub enum TrackKind {
     Audio,
     /// A video adaptation set.
     Video,
+    /// A subtitle or caption adaptation set (`text/vtt`, TTML, or in-band fMP4 text tracks).
+    Text,
 }
 
 /// A DASH descriptor used for track metadata and accessibility matching.
@@ -90,16 +92,29 @@ impl TrackPreference {
     }
 }
 
-/// User preferences for selecting audio and video adaptation sets.
+/// User preferences for selecting audio, video, and text adaptation sets.
 ///
-/// The default retains all audio and video tracks, preserving the library's existing behavior.
-#[derive(Debug, Clone, Default, PartialEq, Eq)]
+/// The default retains all audio and video tracks and **no** text tracks. Use
+/// [`TrackPreference::max_tracks`] on [`Self::text`] to enable subtitle or caption delivery.
+#[derive(Debug, Clone, PartialEq, Eq)]
 pub struct TrackSelection {
     /// Audio-track preferences. Set `max_tracks` above one to retain multiple preferred languages
     /// or roles.
     pub audio: TrackPreference,
     /// Video-track preferences.
     pub video: TrackPreference,
+    /// Subtitle and caption preferences. Disabled by default (`max_tracks(0)`).
+    pub text: TrackPreference,
+}
+
+impl Default for TrackSelection {
+    fn default() -> Self {
+        Self {
+            audio: TrackPreference::default(),
+            video: TrackPreference::default(),
+            text: TrackPreference::default().max_tracks(0),
+        }
+    }
 }
 
 impl TrackSelection {
@@ -114,6 +129,12 @@ impl TrackSelection {
         self.video = video;
         self
     }
+
+    /// Replace subtitle and caption preferences.
+    pub fn with_text(mut self, text: TrackPreference) -> Self {
+        self.text = text;
+        self
+    }
 }
 
 /// Public metadata for one selected adaptation-set track.
@@ -123,8 +144,10 @@ pub struct TrackInfo {
     pub period_adaptation_index: usize,
     /// `AdaptationSet@id`, when present.
     pub id: Option<String>,
-    /// Whether this is an audio or video track.
+    /// Whether this is an audio, video, or text track.
     pub kind: TrackKind,
+    /// Subtitle or caption format when [`Self::kind`] is [`TrackKind::Text`].
+    pub subtitle_type: Option<dash_mpd::SubtitleType>,
     /// Effective MIME type from the adaptation set or one of its representations.
     pub mime_type: Option<String>,
     /// Effective RFC 5646 language from the adaptation set, content component, or representation.
@@ -152,6 +175,9 @@ fn track_kind(adaptation_set: &AdaptationSet) -> Option<TrackKind> {
     }
     if dash_mpd::is_video_adaptation(&adaptation_set) {
         return Some(TrackKind::Video);
+    }
+    if dash_mpd::is_subtitle_adaptation(&adaptation_set) {
+        return Some(TrackKind::Text);
     }
     None
 }
@@ -234,6 +260,10 @@ fn role_values(adaptation_set: &AdaptationSet, supplemental_roles: &[String]) ->
     roles
 }
 
+fn subtitle_type_for(adaptation_set: &AdaptationSet) -> dash_mpd::SubtitleType {
+    dash_mpd::subtitle_type(&adaptation_set)
+}
+
 fn track_info(
     adaptation_set: &AdaptationSet,
     period_adaptation_index: usize,
@@ -246,6 +276,7 @@ fn track_info(
         period_adaptation_index,
         id: adaptation_set.id.clone(),
         kind,
+        subtitle_type: (kind == TrackKind::Text).then(|| subtitle_type_for(adaptation_set)),
         mime_type: effective_mime_type(adaptation_set),
         language: effective_language(adaptation_set),
         roles: role_values(adaptation_set, &supplemental_roles),
@@ -358,6 +389,7 @@ pub(crate) fn select_adaptation_sets<'a>(
 ) -> Vec<SelectedAdaptationSet<'a>> {
     let mut audio = Vec::new();
     let mut video = Vec::new();
+    let mut text = Vec::new();
 
     for (document_index, adaptation_set) in period.adaptations.iter().enumerate() {
         if !is_playback_adaptation_set(adaptation_set) {
@@ -374,13 +406,15 @@ pub(crate) fn select_adaptation_sets<'a>(
         match kind {
             TrackKind::Audio => audio.push(candidate),
             TrackKind::Video => video.push(candidate),
+            TrackKind::Text => text.push(candidate),
         }
     }
 
     select_kind(&mut audio, &selection.audio);
     select_kind(&mut video, &selection.video);
+    select_kind(&mut text, &selection.text);
 
-    let mut selected: Vec<_> = audio.into_iter().chain(video).collect();
+    let mut selected: Vec<_> = audio.into_iter().chain(video).chain(text).collect();
     selected.sort_by_key(|(document_index, _, _)| *document_index);
     selected
         .into_iter()
@@ -476,6 +510,93 @@ mod tests {
                 .map(|track| track.info.id.as_deref())
                 .collect::<Vec<_>>(),
             vec![Some("fr"), Some("en")]
+        );
+    }
+
+    #[test]
+    fn text_tracks_are_excluded_by_default() {
+        let period = period(
+            r#"<MPD><Period>
+                <AdaptationSet id="sub" contentType="text" mimeType="application/ttml+xml" lang="en"/>
+                <AdaptationSet id="video" contentType="video" mimeType="video/mp4"/>
+            </Period></MPD>"#,
+        );
+
+        let selected = select_adaptation_sets(&period, &TrackSelection::default());
+        assert_eq!(selected.len(), 1);
+        assert_eq!(selected[0].info.kind, TrackKind::Video);
+    }
+
+    #[test]
+    fn text_tracks_are_selected_when_preferences_enable_them() {
+        let period = period(
+            r#"<MPD><Period>
+                <AdaptationSet id="sub" contentType="text" mimeType="application/ttml+xml" lang="en"/>
+                <AdaptationSet id="video" contentType="video" mimeType="video/mp4"/>
+            </Period></MPD>"#,
+        );
+        let selection = TrackSelection::default().with_text(
+            TrackPreference::default()
+                .language("en")
+                .role("subtitle")
+                .max_tracks(1),
+        );
+
+        let selected = select_adaptation_sets(&period, &selection);
+        assert_eq!(
+            selected
+                .iter()
+                .map(|track| track.info.id.as_deref())
+                .collect::<Vec<_>>(),
+            vec![Some("sub"), Some("video")]
+        );
+        assert_eq!(selected[0].info.kind, TrackKind::Text);
+        assert_eq!(
+            selected[0].info.subtitle_type,
+            Some(dash_mpd::SubtitleType::Ttml)
+        );
+        assert_eq!(
+            selected[0].info.mime_type.as_deref(),
+            Some("application/ttml+xml")
+        );
+    }
+
+    #[test]
+    fn inband_stpp_codec_is_classified_as_text() {
+        let period = period(
+            r#"<MPD><Period>
+                <AdaptationSet id="cc" contentType="text" mimeType="application/mp4">
+                  <Representation id="1" bandwidth="100" codecs="stpp.ttml.im1t"/>
+                </AdaptationSet>
+            </Period></MPD>"#,
+        );
+        let selection =
+            TrackSelection::default().with_text(TrackPreference::default().max_tracks(1));
+
+        let selected = select_adaptation_sets(&period, &selection);
+        assert_eq!(selected.len(), 1);
+        assert_eq!(selected[0].info.kind, TrackKind::Text);
+        assert_eq!(
+            selected[0].info.subtitle_type,
+            Some(dash_mpd::SubtitleType::Stpp)
+        );
+    }
+
+    #[test]
+    fn text_vtt_mime_type_is_classified_as_text() {
+        let period = period(
+            r#"<MPD><Period>
+                <AdaptationSet id="vtt" mimeType="text/vtt" lang="en"/>
+            </Period></MPD>"#,
+        );
+        let selection =
+            TrackSelection::default().with_text(TrackPreference::default().max_tracks(1));
+
+        let selected = select_adaptation_sets(&period, &selection);
+        assert_eq!(selected.len(), 1);
+        assert_eq!(
+            selected[0].info.subtitle_type,
+            Some(dash_mpd::SubtitleType::Vtt)
         );
     }
 

@@ -480,7 +480,10 @@ async fn ensure_init_for_rep(
     let rep_addressing =
         manifest::segment_addressing_for_representation(env.period, env.adaptation_set, rep)?;
     let template_vars = manifest::template_vars_for_representation(rep);
-    let init_target = init_target_for_addressing(&rep_addressing, &template_vars)?;
+    let Some(init_target) = init_target_for_addressing(&rep_addressing, &template_vars)? else {
+        encrypted_init_by_rep.insert(rep_id.to_string(), Bytes::new());
+        return Ok(Bytes::new());
+    };
     let bytes = fetch_segment_target(env.client, &bases, &init_target, env.blacklist).await?;
     let init_bytes = Bytes::from(bytes);
     encrypted_init_by_rep.insert(rep_id.to_string(), init_bytes.clone());
@@ -533,26 +536,23 @@ fn latest_buffer_s(buffer_rx: &watch::Receiver<f64>) -> f64 {
 fn init_target_for_addressing(
     addressing: &manifest::SegmentAddressing,
     vars: &manifest::TemplateVars<'_>,
-) -> Result<manifest::SegmentFetchTarget, PlayerError> {
+) -> Result<Option<manifest::SegmentFetchTarget>, PlayerError> {
     match addressing {
-        manifest::SegmentAddressing::Template(st) => {
-            let init_tpl = st
-                .initialization
-                .as_deref()
-                .ok_or(PlayerError::MissingInitializationTemplate)?;
-            Ok(manifest::SegmentFetchTarget {
+        manifest::SegmentAddressing::Template(st) => Ok(st.initialization.as_deref().map(|init_tpl| {
+            manifest::SegmentFetchTarget {
                 path: manifest::interpolate_template(init_tpl, vars),
                 range: None,
-            })
-        }
-        manifest::SegmentAddressing::List(sl) => {
-            let init_src = manifest::segment_list_init_source(sl)?;
-            Ok(manifest::SegmentFetchTarget {
+            }
+        })),
+        manifest::SegmentAddressing::List(sl) => Ok(manifest::segment_list_init_source(sl).ok().map(
+            |init_src| manifest::SegmentFetchTarget {
                 path: manifest::interpolate_template(init_src, vars),
                 range: None,
-            })
+            },
+        )),
+        manifest::SegmentAddressing::Base(sb) => {
+            manifest::segment_base_init_target(sb, vars).map(Some)
         }
-        manifest::SegmentAddressing::Base(sb) => manifest::segment_base_init_target(sb, vars),
     }
 }
 

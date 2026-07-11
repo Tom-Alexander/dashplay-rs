@@ -483,3 +483,187 @@ async fn richer_lifecycle_events_are_emitted() {
 
     outputs.join.await.unwrap().expect("join");
 }
+
+fn text_track_selection() -> dashplayrs::TrackSelection {
+    dashplayrs::TrackSelection::default()
+        .with_video(dashplayrs::TrackPreference::default().max_tracks(0))
+        .with_text(
+            dashplayrs::TrackPreference::default()
+                .language("en")
+                .max_tracks(1),
+        )
+}
+
+#[tokio::test]
+async fn ttml_subtitle_track_delivers_init_and_segments() {
+    let server = FixtureServer::spawn("subtitle_ttml").await;
+    let player = dashplayrs::Player::new(server.manifest_url.as_str(), None)
+        .expect("player")
+        .with_track_selection(text_track_selection());
+    let outputs = player.start_tracks().await.expect("start");
+
+    assert_eq!(outputs.track_count(), 1);
+    assert_eq!(outputs.tracks[0].info.kind, dashplayrs::TrackKind::Text);
+    assert_eq!(
+        outputs.tracks[0].info.subtitle_type,
+        Some(dashplayrs::SubtitleType::Ttml)
+    );
+
+    let mut rx = outputs
+        .tracks
+        .into_iter()
+        .next()
+        .expect("text track")
+        .into_receiver();
+    let events = common::collect_events(&mut rx, TIMEOUT).await;
+    outputs.join.await.unwrap().expect("join");
+
+    assert_eq!(
+        init_payload(&events).as_deref(),
+        Some(b"dashplay-ttml-init".as_ref())
+    );
+    assert_eq!(
+        segment_payloads(&events),
+        vec![
+            b"dashplay-ttml-seg-1".to_vec(),
+            b"dashplay-ttml-seg-2".to_vec()
+        ]
+    );
+    assert!(has_end(&events));
+}
+
+#[tokio::test]
+async fn vtt_subtitle_track_delivers_segments_without_init() {
+    let server = FixtureServer::spawn("subtitle_vtt").await;
+    let player = dashplayrs::Player::new(server.manifest_url.as_str(), None)
+        .expect("player")
+        .with_track_selection(text_track_selection());
+    let outputs = player.start_tracks().await.expect("start");
+
+    assert_eq!(
+        outputs.tracks[0].info.subtitle_type,
+        Some(dashplayrs::SubtitleType::Vtt)
+    );
+
+    let mut rx = outputs
+        .tracks
+        .into_iter()
+        .next()
+        .expect("text track")
+        .into_receiver();
+    let events = common::collect_events(&mut rx, TIMEOUT).await;
+    outputs.join.await.unwrap().expect("join");
+
+    assert!(init_payload(&events).is_none());
+    assert_eq!(
+        segment_payloads(&events),
+        vec![
+            b"dashplay-vtt-seg-1".to_vec(),
+            b"dashplay-vtt-seg-2".to_vec()
+        ]
+    );
+    assert!(has_end(&events));
+}
+
+#[tokio::test]
+async fn inband_stpp_subtitle_track_delivers_fragments() {
+    let server = FixtureServer::spawn("subtitle_inband_stpp").await;
+    let player = dashplayrs::Player::new(server.manifest_url.as_str(), None)
+        .expect("player")
+        .with_track_selection(text_track_selection());
+    let outputs = player.start_tracks().await.expect("start");
+
+    assert_eq!(
+        outputs.tracks[0].info.subtitle_type,
+        Some(dashplayrs::SubtitleType::Stpp)
+    );
+    assert_eq!(
+        outputs.tracks[0].info.mime_type.as_deref(),
+        Some("application/mp4")
+    );
+
+    let mut rx = outputs
+        .tracks
+        .into_iter()
+        .next()
+        .expect("text track")
+        .into_receiver();
+    let events = common::collect_events(&mut rx, TIMEOUT).await;
+    outputs.join.await.unwrap().expect("join");
+
+    assert_eq!(
+        init_payload(&events).as_deref(),
+        Some(b"dashplay-stpp-init".as_ref())
+    );
+    assert_eq!(
+        segment_payloads(&events),
+        vec![
+            b"dashplay-stpp-seg-1".to_vec(),
+            b"dashplay-stpp-seg-2".to_vec()
+        ]
+    );
+    assert!(has_end(&events));
+}
+
+#[tokio::test]
+async fn subtitle_and_video_tracks_play_in_parallel() {
+    let server = FixtureServer::spawn("subtitle_ttml").await;
+    let selection = dashplayrs::TrackSelection::default().with_text(
+        dashplayrs::TrackPreference::default()
+            .language("en")
+            .max_tracks(1),
+    );
+    let player = dashplayrs::Player::new(server.manifest_url.as_str(), None)
+        .expect("player")
+        .with_track_selection(selection);
+    let outputs = player.start_tracks().await.expect("start");
+
+    assert_eq!(outputs.track_count(), 2);
+    assert_eq!(outputs.tracks[0].info.kind, dashplayrs::TrackKind::Text);
+    assert_eq!(outputs.tracks[1].info.kind, dashplayrs::TrackKind::Video);
+
+    let all = play_all_tracks_with_outputs(outputs, TIMEOUT)
+        .await
+        .expect("playback");
+    let text = &all[0];
+    let video = &all[1];
+
+    assert_eq!(
+        init_payload(text).as_deref(),
+        Some(b"dashplay-ttml-init".as_ref())
+    );
+    assert_eq!(
+        init_payload(video).as_deref(),
+        Some(b"dashplay-init-v1".as_ref())
+    );
+    assert!(has_end(text));
+    assert!(has_end(video));
+}
+
+async fn play_all_tracks_with_outputs(
+    outputs: dashplayrs::PlayerTrackOutputs,
+    timeout: std::time::Duration,
+) -> Result<Vec<Vec<dashplayrs::PlayerEvent>>, dashplayrs::PlayerError> {
+    let track_count = outputs.track_count();
+    let mut drains = Vec::with_capacity(track_count);
+    for i in 0..track_count {
+        if let Some(feedback) = outputs.buffer_feedback(i) {
+            drains.push(common::spawn_playback_buffer_simulation(feedback, 25.0));
+        }
+    }
+    let mut receivers: Vec<_> = outputs
+        .tracks
+        .into_iter()
+        .map(|t| t.into_receiver())
+        .collect();
+
+    let mut all_events = Vec::with_capacity(track_count);
+    for rx in &mut receivers {
+        all_events.push(common::collect_events(rx, timeout).await);
+    }
+    for drain in drains {
+        drain.abort();
+    }
+    outputs.join.await.unwrap()?;
+    Ok(all_events)
+}

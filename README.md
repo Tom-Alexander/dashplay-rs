@@ -6,8 +6,8 @@ A pure Rust implementation of an MPEG-DASH player library.
 
 - **MPEG-DASH playback** — VOD and live streams with `SegmentTemplate` addressing (number, time, and duration) and `SegmentTimeline` support, including segment sequences (`S@k`)
 - **Live streaming** — Dynamic manifests, time-shift buffer windows, periodic manifest refresh, and multi-period transitions with init re-emission
-- **Multi-track output** — Separate audio and video adaptation sets, or a single merged byte stream
-- **Track selection** — Ordered language, role, codec, and accessibility preferences with per-kind output limits
+- **Multi-track output** — Separate audio, video, and text adaptation sets, or a single merged byte stream
+- **Track selection** — Ordered language, role, codec, and accessibility preferences with per-kind output limits (audio, video, and opt-in subtitles/captions)
 - **Adaptive bitrate** — BOLA (Buffer Occupancy based Lyapunov Algorithm) with automatic representation switching and init re-emission on quality changes
 - **Widevine DRM** — PSSH and license URL parsing from the MPD, license acquisition, and in-pipeline segment decryption
 - **Custom license handling** — Pluggable async license fetcher for custom headers, cookies, or proxies
@@ -64,7 +64,8 @@ handling, use [`Player::with_http_client`](#http-client).
 ### Track selection
 
 Use ordered fallback preferences and per-kind limits to choose adaptation sets. The default
-retains every audio and video track.
+retains every audio and video track. **Text tracks (subtitles and captions) are disabled by
+default** — enable them with [`TrackSelection::with_text`](#subtitles-and-captions).
 
 ```rust
 use dashplayrs::{Player, TrackDescriptor, TrackPreference, TrackSelection};
@@ -97,9 +98,66 @@ let outputs = Player::new("https://example.com/manifest.mpd", None)?
 # }
 ```
 
-Selected tracks expose `TrackInfo` metadata including language, roles, codecs, and accessibility
-descriptors. Preferences rank candidates; unmatched tracks are fallback candidates. Use
-`max_tracks(0)` to disable a media kind.
+Selected tracks expose `TrackInfo` metadata including language, roles, codecs, accessibility
+descriptors, and (for text tracks) `subtitle_type` ([`SubtitleType`](#subtitles-and-captions)).
+Preferences rank candidates; unmatched tracks are fallback candidates. Use `max_tracks(0)` to
+disable a media kind.
+
+### Subtitles and captions
+
+Subtitle and caption adaptation sets are delivered on the same fragment pipeline as audio and
+video: [`PlayerEvent::Init`](#playerevent) (when the manifest declares one) followed by
+[`PlayerEvent::Segment`](#playerevent) bytes. The library does not parse or render captions —
+feed the payloads to your WebVTT, TTML, or fMP4 text decoder.
+
+**Supported formats** (detected via `dash_mpd` and exposed as [`SubtitleType`](#subtitles-and-captions)):
+
+| Format | Typical signals |
+|--------|-----------------|
+| WebVTT (`text/vtt`) | Standalone `.vtt` segments; init is often omitted |
+| TTML (`application/ttml+xml`) | Standalone XML segments with optional init |
+| In-band fMP4 text | `application/mp4` with `stpp`, `wvtt`, `c608`, or `tx3g` codecs |
+
+Enable delivery with [`TrackSelection::with_text`](#subtitles-and-captions). Text tracks use the
+same [`TrackPreference`](#track-selection) fields as audio (language, role, codec, accessibility,
+`max_tracks`). `TrackKind::Text` marks a selected text track; `TrackInfo::subtitle_type` reports
+the detected format.
+
+```rust
+use dashplayrs::{Player, TrackKind, TrackPreference, TrackSelection};
+
+# async fn example() -> Result<(), dashplayrs::PlayerError> {
+let selection = TrackSelection::default()
+    .with_text(
+        TrackPreference::default()
+            .language("en")
+            .role("subtitle") // or "caption"
+            .max_tracks(1),
+    );
+
+let outputs = Player::new("https://example.com/manifest.mpd", None)?
+    .with_track_selection(selection)
+    .start_tracks()
+    .await?;
+
+for track in &outputs.tracks {
+    match track.info.kind {
+        TrackKind::Text => {
+            println!(
+                "subtitle {:?} ({:?})",
+                track.info.language,
+                track.info.subtitle_type
+            );
+            // subscribe and decode Init/Segment payloads for this track
+        }
+        _ => {}
+    }
+}
+# outputs.stop()?;
+# outputs.join.await.unwrap()?;
+# Ok(())
+# }
+```
 
 ### Custom HTTP client
 
@@ -224,8 +282,9 @@ controller. Clone handles (`outputs.playback.clone()`) share one session.
 | [`TrackMetrics`](#metrics) | Per-track playback metrics collector |
 | [`TrackMetricsSnapshot`](#metrics) | Point-in-time metrics view (throughput, buffer, switches, rebuffers) |
 | [`ThroughputSample`](#metrics) / [`BufferSample`](#metrics) / [`BitrateSwitch`](#metrics) / [`RebufferEvent`](#metrics) | Individual metric samples |
-| `TrackSelection` / `TrackPreference` | Ordered adaptation-set preferences and per-kind limits |
-| `TrackInfo` / `TrackKind` | Metadata and media kind for a selected track |
+| `TrackSelection` / `TrackPreference` | Ordered adaptation-set preferences and per-kind limits (audio, video, text) |
+| `TrackInfo` / `TrackKind` | Metadata and media kind (`Audio`, `Video`, `Text`) for a selected track |
+| `SubtitleType` | Detected subtitle/caption format for text tracks |
 | `TrackDescriptor` | Accessibility descriptor scheme/value matcher and metadata |
 | [`WidevineLicenseFetcher`](#widevinelicensefetcher) | Custom async Widevine license HTTP handler |
 | [`HttpClient`](#http-client) / [`ReqwestClient`](#http-client) | Pluggable HTTP transport for manifest, segment, and clock-sync requests |
@@ -262,9 +321,10 @@ segment, and `UTCTiming` requests.
 Player::start_tracks(self) -> Result<PlayerTrackOutputs, PlayerError>
 ```
 
-Fetch the manifest, start playback, and return one output handle per audio/video adaptation set.
-Each track emits [`PlayerEvent::Init`](#playerevent) followed by
-[`PlayerEvent::Segment`](#playerevent) fragments (decrypted when DRM is present).
+Fetch the manifest, start playback, and return one output handle per selected adaptation set
+(audio, video, and/or text). Each track emits [`PlayerEvent::Init`](#playerevent) when the
+manifest declares an initialization segment, then [`PlayerEvent::Segment`](#playerevent)
+fragments (decrypted when DRM is present).
 
 This convenience API spawns one background Tokio task for the stream controller and returns its
 [`JoinHandle`](https://docs.rs/tokio/latest/tokio/task/struct.JoinHandle.html) as `join`. For
@@ -286,7 +346,7 @@ Player::start_merged(self) -> Result<PlayerMergedOutput, PlayerError>
 ```
 
 Same as `start_tracks`, but merges all track fragments into a single byte stream in arrival
-order. Use when you do not need separate audio and video inputs.
+order. Use when you do not need per-track separation (e.g. a single combined A/V pipe).
 
 ---
 
@@ -331,7 +391,7 @@ Events emitted on a single adaptation-set stream. **Fragment** events carry medi
 
 | Variant | Kind | Payload / meaning |
 |---------|------|-------------------|
-| `Init(Bytes)` | Fragment | Initialization segment (`ftyp` + `moov`) |
+| `Init(Bytes)` | Fragment | Initialization segment when declared (`ftyp` + `moov`, TTML header, fMP4 text init, etc.) |
 | `Segment { number, time, sub_number, data }` | Fragment | Media segment; `sub_number` is set when `SegmentTimeline/S@k` > 1 |
 | `ManifestLoaded { is_dynamic, media_presentation_duration }` | Lifecycle | An MPD was fetched and parsed (initial load or live refresh) |
 | `BufferUpdated { buffer_s }` | Observability | Consumer-reported buffer occupancy changed (emitted by [`BufferFeedback::report`](#bufferfeedback)) |
@@ -382,8 +442,8 @@ One DASH adaptation set exposed as a `tokio::sync::broadcast` channel.
 
 | Field / method | Description |
 |----------------|-------------|
-| `mime_type` | `AdaptationSet@mimeType` when present (e.g. `video/mp4`) |
-| `info` | Selected-track language, roles, codecs, accessibility, ID, and media kind |
+| `mime_type` | `AdaptationSet@mimeType` when present (e.g. `video/mp4`, `text/vtt`) |
+| `info` | Selected-track language, roles, codecs, accessibility, subtitle format, ID, and media kind |
 | `subscribe()` | Create a new event receiver |
 | `receiver_count()` | Number of active subscribers |
 | `buffer_feedback()` | Report playback buffer occupancy for ABR |
@@ -487,7 +547,7 @@ Returned by [`MediaPlayer::start`](#mediaplayer):
 
 | Field / method | Description |
 |----------------|-------------|
-| `tracks` | One [`PlayerTrack`](#playertrack) per selected audio/video adaptation set |
+| `tracks` | One [`PlayerTrack`](#playertrack) per selected adaptation set |
 | `playback` | [`PlaybackController`](#playbackcontroller) for this session |
 | `run()` | Run the stream controller on the current async task (no spawn) |
 | `spawn()` | Spawn the stream controller as a separate Tokio task |

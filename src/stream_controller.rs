@@ -63,7 +63,7 @@ impl PlaybackLoopState {
             }
             self.last_period_idx = Some(current_window.idx);
             let period_start = current_window.start;
-            let period = &mpd_ref.periods[current_window.idx];
+            let period = mpd_ref.periods[current_window.idx].clone();
             let segment_base_ctx = manifest::SegmentBaseContext {
                 manifest_uri: self.manifest_uri.clone(),
                 mpd_base_urls: mpd_ref.base_url.clone(),
@@ -115,12 +115,14 @@ impl PlaybackLoopState {
                     .cloned()
                     .unwrap_or_default();
 
+                let period = period.clone();
                 tasks.push(tokio::spawn(async move {
                     run_adaptation_stream(AdaptationStreamContext {
                         client,
                         segment_base_ctx,
                         target_time,
                         period_start,
+                        period,
                         timeline_ctx,
                         adaptation_set,
                         aset_idx,

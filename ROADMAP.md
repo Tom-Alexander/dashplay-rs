@@ -19,7 +19,7 @@ Status legend: `[ ]` not started · `[~]` partial · `[x]` done.
 
 | Area | Status | Notes |
 |------|:------:|-------|
-| MPD parse (`dash-mpd`) | `[~]` | Parsed; not fully processed (no template inheritance flattening) |
+| MPD parse (`dash-mpd`) | `[x]` | Parsed; SegmentTemplate inheritance flattened at Period/AS/Rep |
 | Timeline / live edge | `[x]` | SegmentTemplate + SegmentTimeline, UTCTiming, TSBD filtering |
 | Segment fetch + BaseURL failover | `[x]` | Blacklisting on failure |
 | Multi-period (live) | `[x]` | Init re-emission on transition |
@@ -38,7 +38,7 @@ Status legend: `[ ]` not started · `[~]` partial · `[x]` done.
 
 These close the largest gaps between "delivers some streams" and "handles conformant DASH".
 
-- [ ] **SegmentTemplate inheritance flattening.** Resolve `SegmentTemplate` declared at
+- [x] **SegmentTemplate inheritance flattening.** Resolve `SegmentTemplate` declared at
   `Period` and `MPD` level, not just on the `AdaptationSet`. Today `dash_stream.rs`
   hard-requires `AdaptationSet@SegmentTemplate` and errors otherwise.
 - [ ] **SegmentList addressing.** Support explicit `SegmentList` / `SegmentURL` media

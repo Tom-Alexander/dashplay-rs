@@ -15,7 +15,7 @@ use super::segment_blacklist::SegmentBlacklist;
 use super::segment_fetcher::fetch_bytes_with_base_failover;
 use super::types::PlayerEvent;
 use bytes::Bytes;
-use dash_mpd::AdaptationSet;
+use dash_mpd::{AdaptationSet, Period};
 use reqwest::Client;
 use tokio::sync::broadcast;
 
@@ -24,6 +24,7 @@ pub(crate) struct AdaptationStreamContext {
     pub segment_base_ctx: manifest::SegmentBaseContext,
     pub target_time: Option<Duration>,
     pub period_start: Duration,
+    pub period: Period,
     pub timeline_ctx: TimelineBuildContext,
     pub adaptation_set: AdaptationSet,
     pub aset_idx: usize,
@@ -42,6 +43,7 @@ pub(crate) async fn run_adaptation_stream(ctx: AdaptationStreamContext) -> Resul
         segment_base_ctx,
         target_time,
         period_start,
+        period,
         timeline_ctx,
         adaptation_set,
         aset_idx,
@@ -52,21 +54,9 @@ pub(crate) async fn run_adaptation_stream(ctx: AdaptationStreamContext) -> Resul
         wv_by_rep,
     } = ctx;
 
-    let st = adaptation_set
-        .SegmentTemplate
-        .as_ref()
-        .ok_or(PlayerError::MissingSegmentTemplate)?;
+    let st = manifest::segment_template_for_timeline(&period, &adaptation_set)?;
 
-    let init_tpl = st
-        .initialization
-        .as_deref()
-        .ok_or(PlayerError::MissingInitializationTemplate)?;
-    let media_tpl = st
-        .media
-        .as_deref()
-        .ok_or(PlayerError::MissingMediaTemplate)?;
-
-    let segments_all = manifest::timeline_segments(st, &timeline_ctx)?;
+    let segments_all = manifest::timeline_segments(&st, &timeline_ctx)?;
 
     // Align every adaptation set to the same media instant: pick the first segment whose
     // interval (in MPD time) still contains instants after `target`. Using "last segment with
@@ -112,6 +102,12 @@ pub(crate) async fn run_adaptation_stream(ctx: AdaptationStreamContext) -> Resul
             )?;
             let rep_id = rep.id.as_deref().unwrap_or_default();
             let rep_license = wv_by_rep.get(rep_id).cloned().or_else(|| license.clone());
+            let rep_st =
+                manifest::segment_template_for_representation(&period, &adaptation_set, rep)?;
+            let init_tpl = rep_st
+                .initialization
+                .as_deref()
+                .ok_or(PlayerError::MissingInitializationTemplate)?;
             let init_path = manifest::interpolate_template(init_tpl, rep_id, None, None, None);
             let bytes =
                 fetch_bytes_with_base_failover(&client, &bases, &init_path, &blacklist).await?;
@@ -148,6 +144,12 @@ pub(crate) async fn run_adaptation_stream(ctx: AdaptationStreamContext) -> Resul
 
         // If ABR switched reps (or init was never fetched for this rep), fetch init for this rep.
         if active_rep_id.as_deref() != Some(rep_id) || !encrypted_init_by_rep.contains_key(rep_id) {
+            let rep_st =
+                manifest::segment_template_for_representation(&period, &adaptation_set, rep)?;
+            let init_tpl = rep_st
+                .initialization
+                .as_deref()
+                .ok_or(PlayerError::MissingInitializationTemplate)?;
             let init_path = manifest::interpolate_template(init_tpl, rep_id, None, None, None);
             let init_bytes =
                 fetch_bytes_with_base_failover(&client, &bases, &init_path, &blacklist)
@@ -168,6 +170,11 @@ pub(crate) async fn run_adaptation_stream(ctx: AdaptationStreamContext) -> Resul
 
         // We only decrypt if we have both a license and a cached encrypted init for this rep.
         let init_for_decrypt = encrypted_init_by_rep.get(rep_id);
+        let rep_st = manifest::segment_template_for_representation(&period, &adaptation_set, rep)?;
+        let media_tpl = rep_st
+            .media
+            .as_deref()
+            .ok_or(PlayerError::MissingMediaTemplate)?;
         let seg_path = manifest::interpolate_template(
             media_tpl,
             rep_id,

@@ -2,7 +2,7 @@ use std::collections::HashSet;
 use std::time::Duration;
 
 use chrono::{DateTime, Utc};
-use dash_mpd::{AdaptationSet, BaseURL, MPD, Representation};
+use dash_mpd::{AdaptationSet, BaseURL, MPD, Period, Representation, SegmentTemplate};
 use reqwest::Client;
 use url::Url;
 
@@ -274,6 +274,119 @@ pub(crate) fn segment_bases_for_representation(
     bases = expand_base_layer(bases, &adaptation_set.BaseURL)?;
     bases = expand_base_layer(bases, &representation.BaseURL)?;
     Ok(dedupe_urls(bases))
+}
+
+/// Merge two `SegmentTemplate` nodes: `child` attributes override `parent` when present.
+fn merge_segment_template(parent: &SegmentTemplate, child: &SegmentTemplate) -> SegmentTemplate {
+    SegmentTemplate {
+        media: child.media.clone().or_else(|| parent.media.clone()),
+        index: child.index.clone().or_else(|| parent.index.clone()),
+        initialization: child
+            .initialization
+            .clone()
+            .or_else(|| parent.initialization.clone()),
+        bitstreamSwitching: child
+            .bitstreamSwitching
+            .clone()
+            .or_else(|| parent.bitstreamSwitching.clone()),
+        indexRange: child
+            .indexRange
+            .clone()
+            .or_else(|| parent.indexRange.clone()),
+        indexRangeExact: child.indexRangeExact.or(parent.indexRangeExact),
+        startNumber: child.startNumber.or(parent.startNumber),
+        duration: child.duration.or(parent.duration),
+        timescale: child.timescale.or(parent.timescale),
+        eptDelta: child.eptDelta.or(parent.eptDelta),
+        pbDelta: child.pbDelta.or(parent.pbDelta),
+        presentationTimeOffset: child
+            .presentationTimeOffset
+            .or(parent.presentationTimeOffset),
+        availabilityTimeOffset: child
+            .availabilityTimeOffset
+            .or(parent.availabilityTimeOffset),
+        availabilityTimeComplete: child
+            .availabilityTimeComplete
+            .or(parent.availabilityTimeComplete),
+        Initialization: child
+            .Initialization
+            .clone()
+            .or_else(|| parent.Initialization.clone()),
+        representation_index: child
+            .representation_index
+            .clone()
+            .or_else(|| parent.representation_index.clone()),
+        failover_content: child
+            .failover_content
+            .clone()
+            .or_else(|| parent.failover_content.clone()),
+        SegmentTimeline: child
+            .SegmentTimeline
+            .clone()
+            .or_else(|| parent.SegmentTimeline.clone()),
+        BitstreamSwitching: child
+            .BitstreamSwitching
+            .clone()
+            .or_else(|| parent.BitstreamSwitching.clone()),
+    }
+}
+
+fn merge_segment_template_chain(templates: &[Option<&SegmentTemplate>]) -> Option<SegmentTemplate> {
+    templates.iter().filter_map(|t| *t).fold(None, |acc, st| {
+        Some(match acc {
+            None => st.clone(),
+            Some(parent) => merge_segment_template(&parent, st),
+        })
+    })
+}
+
+fn segment_template_has_timeline_source(st: &SegmentTemplate) -> bool {
+    st.SegmentTimeline.is_some() || st.duration.is_some()
+}
+
+/// Effective `SegmentTemplate` for timeline expansion on an adaptation set (Period → AdaptationSet,
+/// supplementing from the first representation that carries timeline or duration when needed).
+pub(crate) fn segment_template_for_timeline(
+    period: &Period,
+    adaptation_set: &AdaptationSet,
+) -> Result<SegmentTemplate, PlayerError> {
+    let mut merged = merge_segment_template_chain(&[
+        period.SegmentTemplate.as_ref(),
+        adaptation_set.SegmentTemplate.as_ref(),
+    ]);
+
+    if merged
+        .as_ref()
+        .is_none_or(|st| !segment_template_has_timeline_source(st))
+    {
+        for rep in &adaptation_set.representations {
+            if let Some(rep_st) = &rep.SegmentTemplate {
+                if segment_template_has_timeline_source(rep_st) {
+                    merged = Some(match merged {
+                        None => rep_st.clone(),
+                        Some(parent) => merge_segment_template(&parent, rep_st),
+                    });
+                    break;
+                }
+            }
+        }
+    }
+
+    merged.ok_or(PlayerError::MissingSegmentTemplate)
+}
+
+/// Effective `SegmentTemplate` for fetching init/media of one representation.
+pub(crate) fn segment_template_for_representation(
+    period: &Period,
+    adaptation_set: &AdaptationSet,
+    representation: &Representation,
+) -> Result<SegmentTemplate, PlayerError> {
+    merge_segment_template_chain(&[
+        period.SegmentTemplate.as_ref(),
+        adaptation_set.SegmentTemplate.as_ref(),
+        representation.SegmentTemplate.as_ref(),
+    ])
+    .ok_or(PlayerError::MissingSegmentTemplate)
 }
 
 /// Very small subset of DASH `$...$` template interpolation (incl. `$SubNumber$` for §5.3.9.6.5).
@@ -943,7 +1056,7 @@ mod timeline_tests {
 mod manifest_logic_tests {
     use super::*;
     use chrono::TimeZone;
-    use dash_mpd::{Period, SegmentTemplate};
+    use dash_mpd::{Period, Representation, SegmentTemplate};
 
     #[test]
     fn merge_base_url_relative_and_absolute() {
@@ -1060,6 +1173,74 @@ mod manifest_logic_tests {
             target_presentation_time_at(&mpd, now).unwrap(),
             Some(Duration::from_secs(8))
         );
+    }
+
+    #[test]
+    fn segment_template_inheritance_merges_period_and_adaptation_set() {
+        let period = Period {
+            SegmentTemplate: Some(SegmentTemplate {
+                timescale: Some(1000),
+                duration: Some(4000.0),
+                startNumber: Some(1),
+                ..Default::default()
+            }),
+            ..Default::default()
+        };
+        let adaptation_set = AdaptationSet {
+            SegmentTemplate: Some(SegmentTemplate {
+                initialization: Some("init.mp4".into()),
+                media: Some("seg-$Number$.m4s".into()),
+                ..Default::default()
+            }),
+            ..Default::default()
+        };
+
+        let timeline = segment_template_for_timeline(&period, &adaptation_set).unwrap();
+        assert_eq!(timeline.timescale, Some(1000));
+        assert_eq!(timeline.duration, Some(4000.0));
+        assert_eq!(timeline.startNumber, Some(1));
+        assert_eq!(timeline.initialization.as_deref(), Some("init.mp4"));
+        assert_eq!(timeline.media.as_deref(), Some("seg-$Number$.m4s"));
+    }
+
+    #[test]
+    fn segment_template_inheritance_supplements_timeline_from_representation() {
+        let period = Period {
+            SegmentTemplate: Some(SegmentTemplate {
+                timescale: Some(90000),
+                startNumber: Some(1),
+                ..Default::default()
+            }),
+            ..Default::default()
+        };
+        let adaptation_set = AdaptationSet {
+            representations: vec![Representation {
+                SegmentTemplate: Some(SegmentTemplate {
+                    initialization: Some("i.mp4".into()),
+                    media: Some("m$Number$.mp4".into()),
+                    SegmentTimeline: Some(dash_mpd::SegmentTimeline {
+                        segments: vec![dash_mpd::S {
+                            t: Some(0),
+                            d: 180000,
+                            r: Some(1),
+                            ..Default::default()
+                        }],
+                    }),
+                    ..Default::default()
+                }),
+                ..Default::default()
+            }],
+            ..Default::default()
+        };
+
+        let timeline = segment_template_for_timeline(&period, &adaptation_set).unwrap();
+        assert_eq!(timeline.timescale, Some(90000));
+        assert!(timeline.SegmentTimeline.is_some());
+        assert_eq!(timeline.initialization.as_deref(), Some("i.mp4"));
+
+        let rep = &adaptation_set.representations[0];
+        let rep_tpl = segment_template_for_representation(&period, &adaptation_set, rep).unwrap();
+        assert_eq!(rep_tpl.media.as_deref(), Some("m$Number$.mp4"));
     }
 
     #[test]

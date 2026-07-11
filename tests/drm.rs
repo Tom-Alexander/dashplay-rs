@@ -160,6 +160,47 @@ async fn live_key_rotation_mpd_refresh_acquires_both_pssh_sessions() {
     );
 }
 
+#[test]
+fn in_band_init_fixture_exposes_widevine_pssh() {
+    let init = common::read_fixture_bytes("drm_in_band_init", "init.mp4");
+    let info = dashplayrs::drm::mp4::extract_in_band_drm(&init, None).expect("parse init");
+    assert_eq!(info.widevine_pssh.len(), 1);
+}
+
+/// In-band init PSSH triggers license acquisition when the MPD carries no ContentProtection.
+#[tokio::test]
+async fn in_band_init_pssh_acquires_widevine_license() {
+    let device_path = match std::env::var("DEVICE_PATH") {
+        Ok(v) if !v.is_empty() => v,
+        _ => return,
+    };
+    let _ = device_path;
+
+    let license_path = common::fixture_dir("dashif_drm_encrypted").join("license-response.bin");
+    if !license_path.exists() {
+        return;
+    }
+    let license_bytes = std::fs::read(&license_path).expect("read license");
+
+    let counter = std::sync::Arc::new(std::sync::atomic::AtomicUsize::new(0));
+    let fetcher = counting_license_fetcher(license_bytes, counter.clone());
+    let server = common::FixtureServer::spawn("drm_in_band_init").await;
+
+    let _events = play_single_track_with_license_fetcher(
+        &server.manifest_url,
+        std::time::Duration::from_secs(3),
+        fetcher,
+    )
+    .await
+    .expect("in-band init playback");
+
+    assert_eq!(
+        counter.load(std::sync::atomic::Ordering::Relaxed),
+        1,
+        "expected license POST from in-band init PSSH"
+    );
+}
+
 /// Unchanged PSSH on manifest refresh must not trigger another license POST.
 #[tokio::test]
 async fn license_manager_reuses_session_on_unchanged_pssh() {

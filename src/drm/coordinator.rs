@@ -9,6 +9,7 @@ use std::sync::Arc;
 use std::time::Instant;
 use url::Url;
 
+use super::mp4::{InBandDrmInfo, extract_in_band_drm};
 use super::mpd::{MpdDrmInfo, parse_mpd_drm_info};
 use super::widevine::{License, WidevineLicenseManager, WidevineSessionKey};
 use crate::PlayerError;
@@ -33,6 +34,8 @@ pub struct DrmSessionCoordinator {
     license_fetch: Option<WidevineLicenseFetcher>,
     adaptation_wv_sessions: Vec<Option<Arc<License>>>,
     adaptation_wv_sessions_by_rep: Vec<HashMap<String, Arc<License>>>,
+    /// License URLs from the last MPD sync, indexed by adaptation-set position in DRM info.
+    cached_as_license_urls: HashMap<usize, Vec<String>>,
 }
 
 impl DrmSessionCoordinator {
@@ -48,7 +51,21 @@ impl DrmSessionCoordinator {
             license_fetch,
             adaptation_wv_sessions: Vec::new(),
             adaptation_wv_sessions_by_rep: Vec::new(),
+            cached_as_license_urls: HashMap::new(),
         }
+    }
+
+    pub fn license_for_adaptation(&self, aset_idx: usize) -> Option<Arc<License>> {
+        self.adaptation_wv_sessions
+            .get(aset_idx)
+            .and_then(|session| session.clone())
+    }
+
+    pub fn license_for_rep(&self, aset_idx: usize, rep_id: &str) -> Option<Arc<License>> {
+        self.adaptation_wv_sessions_by_rep
+            .get(aset_idx)
+            .and_then(|map| map.get(rep_id).cloned())
+            .or_else(|| self.license_for_adaptation(aset_idx))
     }
 
     pub fn adaptation_sessions(&self) -> AdaptationLicenseSessions<'_> {
@@ -87,6 +104,9 @@ impl DrmSessionCoordinator {
         }
 
         for (idx, aset) in period.adaptation_sets.iter().enumerate() {
+            self.cached_as_license_urls
+                .insert(idx, aset.effective.license_urls.clone());
+
             if let Some(pssh) = aset.effective.widevine_pssh.first() {
                 let session = self
                     .acquire_or_merge_session(
@@ -118,6 +138,76 @@ impl DrmSessionCoordinator {
         }
 
         Ok(())
+    }
+
+    /// Acquire licenses for Widevine PSSH discovered in-band (init segment or `emsg`).
+    pub async fn ensure_in_band_drm(
+        &mut self,
+        aset_idx: usize,
+        rep_id: &str,
+        info: &InBandDrmInfo,
+    ) -> Result<Option<Arc<License>>, PlayerError> {
+        if !info.has_widevine_pssh() {
+            return Ok(None);
+        }
+
+        let license_urls = self
+            .cached_as_license_urls
+            .get(&aset_idx)
+            .cloned()
+            .unwrap_or_default();
+        let mut updated = None;
+
+        if self.adaptation_wv_sessions.len() <= aset_idx {
+            self.adaptation_wv_sessions.resize(aset_idx + 1, None);
+            self.adaptation_wv_sessions_by_rep
+                .resize(aset_idx + 1, HashMap::new());
+        }
+
+        for pssh in info.all_widevine_pssh() {
+            let session_key = WidevineSessionKey::from_pssh(pssh);
+            if let Some(existing) = self.manager.get(&session_key) {
+                self.adaptation_wv_sessions[aset_idx] = Some(existing.clone());
+                rep_sessions_mut(&mut self.adaptation_wv_sessions_by_rep, aset_idx)
+                    .insert(rep_id.to_string(), existing.clone());
+                updated = Some(existing);
+                continue;
+            }
+            let accumulating = self.adaptation_wv_sessions[aset_idx].clone();
+            let session = self
+                .acquire_or_merge_session(pssh, &license_urls, accumulating)
+                .await?;
+            self.adaptation_wv_sessions[aset_idx] = Some(session.clone());
+            rep_sessions_mut(&mut self.adaptation_wv_sessions_by_rep, aset_idx)
+                .insert(rep_id.to_string(), session.clone());
+            updated = Some(session);
+        }
+
+        Ok(updated)
+    }
+
+    /// Parse fragment bytes and acquire any newly discovered in-band Widevine PSSH.
+    pub async fn ensure_from_fragments(
+        &mut self,
+        aset_idx: usize,
+        rep_id: &str,
+        init: &[u8],
+        media: Option<&[u8]>,
+    ) -> Result<Option<Arc<License>>, PlayerError> {
+        let info = extract_in_band_drm(init, media).map_err(PlayerError::InBandDrm)?;
+        self.ensure_in_band_drm(aset_idx, rep_id, &info).await
+    }
+
+    /// On decrypt failure, scan init/media for new PSSH and retry key acquisition.
+    pub async fn recover_from_decrypt_failure(
+        &mut self,
+        aset_idx: usize,
+        rep_id: &str,
+        init: &[u8],
+        media: &[u8],
+    ) -> Result<Option<Arc<License>>, PlayerError> {
+        self.ensure_from_fragments(aset_idx, rep_id, init, Some(media))
+            .await
     }
 
     /// Check active sessions for upcoming license renewal (phase 3).
@@ -207,6 +297,16 @@ impl DrmSessionCoordinator {
         let resp = resp.error_for_status()?;
         Ok(resp.bytes().await?)
     }
+}
+
+fn rep_sessions_mut(
+    sessions: &mut Vec<HashMap<String, Arc<License>>>,
+    aset_idx: usize,
+) -> &mut HashMap<String, Arc<License>> {
+    if sessions.len() <= aset_idx {
+        sessions.resize(aset_idx + 1, HashMap::new());
+    }
+    &mut sessions[aset_idx]
 }
 
 #[cfg(test)]

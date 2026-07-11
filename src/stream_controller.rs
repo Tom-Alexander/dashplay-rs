@@ -7,6 +7,7 @@ use std::sync::atomic::{AtomicBool, Ordering};
 
 use futures::future::join_all;
 use reqwest::Client;
+use tokio::sync::Mutex as AsyncMutex;
 use tokio::time::sleep;
 use url::Url;
 
@@ -23,23 +24,22 @@ use super::utc_timing;
 pub(crate) struct PlaybackLoopState {
     pub client: Client,
     pub manifest_uri: Url,
-    pub manifest: Option<dash_mpd::MPD>,
-    pub mpd_xml: Option<String>,
     pub drm: DrmSessionCoordinator,
-    pub(crate) last_period_idx: Option<usize>,
 }
 
 impl PlaybackLoopState {
-    pub async fn fetch_manifest(&mut self) -> Result<(), PlayerError> {
-        let resp = self.client.get(self.manifest_uri.clone()).send().await?;
-        let text = resp.text().await?;
-        let mpd = dash_mpd::parse(&text)?;
-        self.manifest = Some(mpd);
-        self.mpd_xml = Some(text);
-        Ok(())
-    }
+    pub async fn run(self, tracks: Vec<super::types::PlayerTrack>) -> Result<(), PlayerError> {
+        let PlaybackLoopState {
+            client,
+            manifest_uri,
+            drm,
+            ..
+        } = self;
 
-    pub async fn run(mut self, tracks: Vec<super::types::PlayerTrack>) -> Result<(), PlayerError> {
+        let mut manifest;
+        let mut mpd_xml;
+        let mut last_period_idx = None;
+
         let have_init: Arc<Vec<AtomicBool>> =
             Arc::new((0..tracks.len()).map(|_| AtomicBool::new(false)).collect());
         let delivered: Arc<Vec<Arc<Mutex<DeliveredSegmentTracker>>>> = Arc::new(
@@ -48,22 +48,25 @@ impl PlaybackLoopState {
                 .collect(),
         );
         let blacklist = SegmentBlacklist::new();
+        let drm = Arc::new(AsyncMutex::new(drm));
 
         loop {
             if tracks.iter().all(|t| t.receiver_count() == 0) {
                 break;
             }
 
-            self.fetch_manifest().await?;
+            let resp = client.get(manifest_uri.clone()).send().await?;
+            let text = resp.text().await?;
+            manifest = Some(dash_mpd::parse(&text)?);
+            mpd_xml = Some(text);
 
-            let mpd_ref = manifest::mpd(&self.manifest)?;
+            let mpd_ref = manifest::mpd(&manifest)?;
             let min_update = mpd_ref
                 .minimumUpdatePeriod
                 .unwrap_or(std::time::Duration::ZERO);
 
             let is_dynamic = manifest::is_dynamic_mpd(mpd_ref);
-            let wall_now =
-                utc_timing::wall_clock_utc(&self.client, mpd_ref, Some(&self.manifest_uri)).await;
+            let wall_now = utc_timing::wall_clock_utc(&client, mpd_ref, Some(&manifest_uri)).await;
             let target_time = manifest::target_presentation_time_at(mpd_ref, wall_now)?;
             let period_windows = manifest::period_windows(mpd_ref)?;
             let periods_to_play: Vec<manifest::PeriodWindow> = if is_dynamic {
@@ -73,7 +76,7 @@ impl PlaybackLoopState {
             };
 
             for current_window in periods_to_play {
-                if self.last_period_idx != Some(current_window.idx) {
+                if last_period_idx != Some(current_window.idx) {
                     for flag in have_init.iter() {
                         flag.store(false, Ordering::Release);
                     }
@@ -83,20 +86,20 @@ impl PlaybackLoopState {
                         }
                     }
                 }
-                self.last_period_idx = Some(current_window.idx);
+                last_period_idx = Some(current_window.idx);
 
-                if let Some(xml) = self.mpd_xml.as_deref() {
-                    self.drm.sync_from_mpd(xml, current_window.idx).await?;
+                if let Some(xml) = mpd_xml.as_deref() {
+                    drm.lock()
+                        .await
+                        .sync_from_mpd(xml, current_window.idx)
+                        .await?;
                 }
-                self.drm.poll_renewals().await?;
-
-                let (adaptation_wv_sessions, adaptation_wv_sessions_by_rep) =
-                    self.drm.adaptation_sessions();
+                drm.lock().await.poll_renewals().await?;
 
                 let period_start = current_window.start;
                 let period = mpd_ref.periods[current_window.idx].clone();
                 let segment_base_ctx = manifest::SegmentBaseContext {
-                    manifest_uri: self.manifest_uri.clone(),
+                    manifest_uri: manifest_uri.clone(),
                     mpd_base_urls: mpd_ref.base_url.clone(),
                     period_base_urls: period.BaseURL.clone(),
                 };
@@ -133,14 +136,10 @@ impl PlaybackLoopState {
 
                     let tx = tracks[aset_idx].tx.clone();
                     let have_init = have_init.clone();
-                    let client = self.client.clone();
+                    let client = client.clone();
                     let segment_base_ctx = segment_base_ctx.clone();
                     let blacklist = blacklist.clone();
-                    let license = adaptation_wv_sessions.get(aset_idx).and_then(|x| x.clone());
-                    let wv_by_rep = adaptation_wv_sessions_by_rep
-                        .get(aset_idx)
-                        .cloned()
-                        .unwrap_or_default();
+                    let drm = drm.clone();
                     let buffer_rx = tracks[aset_idx].buffer_rx.clone();
                     let delivered = delivered[aset_idx].clone();
 
@@ -159,8 +158,7 @@ impl PlaybackLoopState {
                             have_init,
                             delivered,
                             blacklist,
-                            license,
-                            wv_by_rep,
+                            drm,
                             buffer_rx,
                         })
                         .await

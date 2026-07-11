@@ -138,6 +138,19 @@ impl License {
         Ok(Bytes::from(decrypted))
     }
 
+    pub fn has_kid(&self, kid: &[u8; 16]) -> Result<bool, LicenseError> {
+        let inner = self.inner.read().map_err(|_| LicenseError::LockPoisoned)?;
+        Ok(inner.content_keys.contains_key(kid))
+    }
+
+    /// Returns true when decrypt failed in a way that may be fixed by acquiring more keys.
+    pub fn is_likely_missing_key(err: &LicenseError) -> bool {
+        matches!(
+            err,
+            LicenseError::Mp4Decrypt(mp4decrypt::Error::DecryptionFailed(_))
+        )
+    }
+
     pub(crate) fn renewal_needs_action(&self, now: Instant) -> Result<bool, LicenseError> {
         let inner = self.inner.read().map_err(|_| LicenseError::LockPoisoned)?;
         Ok(inner.renewal.needs_renewal(now))

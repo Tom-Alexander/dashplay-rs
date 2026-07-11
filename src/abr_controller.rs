@@ -54,8 +54,15 @@ impl AbrController {
         self.bola.update_buffer(buffer_s);
     }
 
-    pub fn observe_throughput(&mut self, throughput_bps: f64) {
-        self.bola.observe_throughput(throughput_bps);
+    pub fn observe_segment_download(
+        &mut self,
+        throughput_bps: f64,
+        downloaded_bytes: usize,
+        quality_index: usize,
+    ) {
+        let estimated = self.bola.estimated_segment_bytes_for_quality(quality_index);
+        self.bola
+            .observe_segment_download(throughput_bps, downloaded_bytes, estimated);
     }
 
     pub fn decide(&self) -> BolaDecision {

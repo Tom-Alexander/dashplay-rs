@@ -1,5 +1,6 @@
 pub mod coordinator;
 pub mod decrypt;
+pub mod mp4;
 pub mod mpd;
 pub mod widevine;
 

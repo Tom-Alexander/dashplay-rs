@@ -55,6 +55,7 @@ pub use player::{Player, PlayerTrackOutput};
 pub use types::{BufferFeedback, BufferFeedbackError, PlayerEvent, PlayerOutputs, PlayerTrack};
 
 use crate::drm::LicenseError;
+use crate::drm::mp4::Mp4DrmError;
 use crate::drm::mpd::MpdDrmError;
 
 /// Errors that can occur anywhere in the playback pipeline.
@@ -124,4 +125,6 @@ pub enum PlayerError {
     License(#[from] LicenseError),
     #[error("mpd drm parse: {0}")]
     DrmMpd(#[from] MpdDrmError),
+    #[error("in-band mp4 drm parse: {0}")]
+    InBandDrm(#[from] Mp4DrmError),
 }

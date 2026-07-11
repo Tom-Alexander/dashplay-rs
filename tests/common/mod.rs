@@ -410,6 +410,11 @@ pub fn read_fixture(name: &str, relative: &str) -> String {
         .unwrap_or_else(|e| panic!("read fixture {name}/{relative}: {e}"))
 }
 
+pub fn read_fixture_bytes(name: &str, relative: &str) -> Vec<u8> {
+    std::fs::read(fixture_dir(name).join(relative))
+        .unwrap_or_else(|e| panic!("read fixture {name}/{relative}: {e}"))
+}
+
 async fn serve_path(
     State(state): State<AppState>,
     Path(path): Path<String>,
@@ -546,6 +551,7 @@ pub async fn play_single_track_with_buffer(
     let player = dashplayrs::Player::new(manifest_url.as_str(), None)?;
     let outputs = player.start_tracks().await?;
     let buffer_feedback = outputs.buffer_feedback(0).expect("one track");
+    let _ = buffer_feedback.report(initial_buffer_s);
     let drain = spawn_playback_buffer_simulation(buffer_feedback, initial_buffer_s);
     let mut rx = outputs
         .tracks

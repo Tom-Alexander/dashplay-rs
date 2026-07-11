@@ -12,6 +12,7 @@ use super::PlayerError;
 use super::abr_controller::AbrController;
 use super::delivered_segments::DeliveredSegmentTracker;
 use super::drm::License;
+use super::drm::coordinator::DrmSessionCoordinator;
 use super::manifest::{self, TimelineBuildContext};
 use super::segment_blacklist::SegmentBlacklist;
 use super::segment_fetcher::{
@@ -21,6 +22,7 @@ use super::types::PlayerEvent;
 use bytes::Bytes;
 use dash_mpd::{AdaptationSet, Period, Representation};
 use reqwest::Client;
+use tokio::sync::Mutex as AsyncMutex;
 use tokio::sync::broadcast;
 use tokio::sync::watch;
 
@@ -37,9 +39,7 @@ pub(crate) struct AdaptationStreamContext {
     pub have_init: Arc<Vec<AtomicBool>>,
     pub delivered: Arc<Mutex<DeliveredSegmentTracker>>,
     pub blacklist: SegmentBlacklist,
-    pub license: Option<Arc<License>>,
-    /// Representation-specific Widevine sessions (effective DRM at Representation level).
-    pub wv_by_rep: HashMap<String, Arc<License>>,
+    pub drm: Arc<AsyncMutex<DrmSessionCoordinator>>,
     /// Latest buffer occupancy reported by the consumer (seconds).
     pub buffer_rx: watch::Receiver<f64>,
 }
@@ -59,8 +59,7 @@ pub(crate) async fn run_adaptation_stream(ctx: AdaptationStreamContext) -> Resul
         have_init,
         delivered,
         blacklist,
-        license,
-        wv_by_rep,
+        drm,
         buffer_rx,
     } = ctx;
 
@@ -138,8 +137,8 @@ pub(crate) async fn run_adaptation_stream(ctx: AdaptationStreamContext) -> Resul
         period: &period,
         adaptation_set: &adaptation_set,
         blacklist: &blacklist,
-        license: &license,
-        wv_by_rep: &wv_by_rep,
+        drm: &drm,
+        aset_idx,
         tx: &tx,
     };
     if init_taken {
@@ -192,30 +191,26 @@ pub(crate) async fn run_adaptation_stream(ctx: AdaptationStreamContext) -> Resul
         let elapsed_s = t0.elapsed().as_secs_f64().max(1e-6);
         let throughput_bps = (bytes.len() as f64 * 8.0) / elapsed_s;
 
-        abr.observe_throughput(throughput_bps);
+        abr.observe_segment_download(throughput_bps, bytes.len(), used_quality_index);
         abr.update_buffer(latest_buffer_s(&buffer_rx));
 
         let rep_idx = abr.representation_index_for_quality_index(used_quality_index);
         let rep = &adaptation_set.representations[rep_idx];
         let rep_id = rep.id.as_deref().unwrap_or_default();
-        let rep_license = wv_by_rep.get(rep_id).cloned().or_else(|| license.clone());
-        let init_for_decrypt = encrypted_init_by_rep.get(rep_id);
+        let init_for_decrypt = encrypted_init_by_rep
+            .get(rep_id)
+            .ok_or(PlayerError::SegmentExhaustedRepresentations)?;
 
-        let mut data = Bytes::from(bytes);
-        if let (Some(lic), Some(init_bytes)) = (&rep_license, init_for_decrypt) {
-            // If the fragment is clear, mp4decrypt may error; treat that as passthrough.
-            match lic.decrypt(&data, Some(init_bytes)) {
-                Ok(d) => data = d,
-                Err(e) => {
-                    let msg = e.to_string().to_ascii_lowercase();
-                    if msg.contains("not encrypted") || msg.contains("no") && msg.contains("senc") {
-                        // Clear fragment; keep `data` as-is.
-                    } else {
-                        return Err(PlayerError::License(e));
-                    }
-                }
-            }
+        {
+            let mut guard = drm.lock().await;
+            guard
+                .ensure_from_fragments(aset_idx, rep_id, init_for_decrypt, Some(&bytes))
+                .await?;
         }
+
+        let data =
+            decrypt_media_fragment(&drm, aset_idx, rep_id, init_for_decrypt, Bytes::from(bytes))
+                .await?;
 
         let _ = tx.send(PlayerEvent::Segment {
             number: seg_for_fetch.number,
@@ -231,6 +226,48 @@ pub(crate) async fn run_adaptation_stream(ctx: AdaptationStreamContext) -> Resul
     Ok(())
 }
 
+async fn decrypt_media_fragment(
+    drm: &Arc<AsyncMutex<DrmSessionCoordinator>>,
+    aset_idx: usize,
+    rep_id: &str,
+    init_bytes: &Bytes,
+    data: Bytes,
+) -> Result<Bytes, PlayerError> {
+    let license = {
+        let guard = drm.lock().await;
+        guard.license_for_rep(aset_idx, rep_id)
+    };
+    let Some(lic) = license else {
+        return Ok(data);
+    };
+
+    match lic.decrypt(&data, Some(init_bytes)) {
+        Ok(decrypted) => Ok(decrypted),
+        Err(e) if License::is_likely_missing_key(&e) => {
+            let mut guard = drm.lock().await;
+            guard
+                .recover_from_decrypt_failure(aset_idx, rep_id, init_bytes, data.as_ref())
+                .await?;
+            let refreshed = guard.license_for_rep(aset_idx, rep_id);
+            drop(guard);
+            let Some(new_lic) = refreshed else {
+                return Err(PlayerError::License(e));
+            };
+            new_lic
+                .decrypt(&data, Some(init_bytes))
+                .map_err(PlayerError::License)
+        }
+        Err(e) => {
+            let msg = e.to_string().to_ascii_lowercase();
+            if msg.contains("not encrypted") || msg.contains("no") && msg.contains("senc") {
+                Ok(data)
+            } else {
+                Err(PlayerError::License(e))
+            }
+        }
+    }
+}
+
 fn lock_delivered(
     delivered: &Arc<Mutex<DeliveredSegmentTracker>>,
 ) -> std::sync::MutexGuard<'_, DeliveredSegmentTracker> {
@@ -243,8 +280,8 @@ struct RepFetchEnv<'a> {
     period: &'a Period,
     adaptation_set: &'a AdaptationSet,
     blacklist: &'a SegmentBlacklist,
-    license: &'a Option<Arc<License>>,
-    wv_by_rep: &'a HashMap<String, Arc<License>>,
+    drm: &'a Arc<AsyncMutex<DrmSessionCoordinator>>,
+    aset_idx: usize,
     tx: &'a broadcast::Sender<PlayerEvent>,
 }
 
@@ -347,11 +384,6 @@ async fn ensure_init_for_rep(
 
     let bases =
         manifest::segment_bases_for_representation(env.segment_base_ctx, env.adaptation_set, rep)?;
-    let rep_license = env
-        .wv_by_rep
-        .get(rep_id)
-        .cloned()
-        .or_else(|| env.license.clone());
     let rep_addressing =
         manifest::segment_addressing_for_representation(env.period, env.adaptation_set, rep)?;
     let template_vars = manifest::template_vars_for_representation(rep);
@@ -360,9 +392,35 @@ async fn ensure_init_for_rep(
     let init_bytes = Bytes::from(bytes);
     encrypted_init_by_rep.insert(rep_id.to_string(), init_bytes.clone());
 
-    let out = if let Some(ref lic) = rep_license {
-        lic.decrypt(&init_bytes, Option::<&Bytes>::None)
-            .map_err(PlayerError::License)?
+    {
+        let mut guard = env.drm.lock().await;
+        guard
+            .ensure_from_fragments(env.aset_idx, rep_id, &init_bytes, None)
+            .await?;
+    }
+
+    let license = {
+        let guard = env.drm.lock().await;
+        guard.license_for_rep(env.aset_idx, rep_id)
+    };
+
+    let out = if let Some(ref lic) = license {
+        match lic.decrypt(&init_bytes, Option::<&Bytes>::None) {
+            Ok(decrypted) => decrypted,
+            Err(e) if License::is_likely_missing_key(&e) => {
+                let mut guard = env.drm.lock().await;
+                guard
+                    .recover_from_decrypt_failure(env.aset_idx, rep_id, &init_bytes, &[])
+                    .await?;
+                let refreshed = guard.license_for_rep(env.aset_idx, rep_id);
+                drop(guard);
+                refreshed
+                    .ok_or(PlayerError::License(e))?
+                    .decrypt(&init_bytes, Option::<&Bytes>::None)
+                    .map_err(PlayerError::License)?
+            }
+            Err(e) => return Err(PlayerError::License(e)),
+        }
     } else {
         init_bytes.clone()
     };

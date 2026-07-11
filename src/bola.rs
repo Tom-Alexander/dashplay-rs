@@ -140,6 +140,31 @@ impl Bola {
         }
     }
 
+    /// Update throughput from a completed segment download.
+    ///
+    /// Ignores samples that are much smaller than the nominal segment size at the
+    /// chosen quality. Tiny payloads (e.g. test fixtures) otherwise produce
+    /// unstable EWMA values and spurious ABR downgrades.
+    pub fn observe_segment_download(
+        &mut self,
+        throughput_bps: f64,
+        downloaded_bytes: usize,
+        estimated_segment_bytes: f64,
+    ) {
+        const MIN_SAMPLE_FRACTION: f64 = 0.25;
+        if estimated_segment_bytes > 0.0
+            && (downloaded_bytes as f64) < estimated_segment_bytes * MIN_SAMPLE_FRACTION
+        {
+            return;
+        }
+        self.observe_throughput(throughput_bps);
+    }
+
+    /// Nominal media segment size (bytes) at a quality index for the configured segment duration.
+    pub fn estimated_segment_bytes_for_quality(&self, quality_index: usize) -> f64 {
+        self.qualities[quality_index].bitrate_bps * SEGMENT_DURATION_S / 8.0
+    }
+
     /// Notify BOLA that the buffer has changed (e.g. after a segment was
     /// appended or playback consumed some content).
     pub fn update_buffer(&mut self, buffer_s: f64) {
@@ -388,5 +413,22 @@ mod tests {
         assert_eq!(d.quality_index, 0);
         assert!(!d.is_emergency);
         assert_eq!(d.bitrate_bps, 2_500_000.0);
+    }
+
+    #[test]
+    fn ignores_unrepresentative_throughput_sample() {
+        let mut bola = Bola::new(ladder(), 0.3);
+        bola.update_buffer(BUFFER_MAX_S);
+
+        let estimated = bola.estimated_segment_bytes_for_quality(4);
+        bola.observe_segment_download(100_000.0, 24, estimated);
+        assert_eq!(bola.throughput_bps(), 0.0);
+        let d = bola.decide();
+        assert_eq!(d.quality_index, 4);
+
+        bola.observe_segment_download(100_000.0, estimated as usize, estimated);
+        assert_eq!(bola.throughput_bps(), 100_000.0);
+        let d = bola.decide();
+        assert_eq!(d.quality_index, 0);
     }
 }

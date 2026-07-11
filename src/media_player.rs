@@ -111,10 +111,7 @@ impl MediaPlayer {
         let loop_state = PlaybackLoopState {
             client: self.client,
             manifest_uri: self.manifest_uri,
-            manifest: self.manifest,
-            mpd_xml: self.mpd_xml,
             drm: self.drm,
-            last_period_idx: None,
         };
 
         let tracks_for_task = tracks.clone();

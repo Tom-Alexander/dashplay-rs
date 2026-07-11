@@ -50,7 +50,7 @@ These close the largest gaps between "delivers some streams" and "handles confor
 - [x] **Real buffer feedback for ABR.** Replace the synthetic `abr.update_buffer(10.0)`
   seed with a buffer level reported by the consumer, so ABR reflects actual playback
   state rather than download timing alone.
-- [ ] **Representation fallback on segment failure.** README claims it, but only BaseURL
+- [x] **Representation fallback on segment failure.** README claims it, but only BaseURL
   failover exists; add fallback to a lower representation when a segment fetch fails.
 
 ## P1 — Reliability and playback lifecycle

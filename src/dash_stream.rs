@@ -123,34 +123,27 @@ pub(crate) async fn run_adaptation_stream(ctx: AdaptationStreamContext) -> Resul
 
     // Cache init segments by Representation ID (ABR switches may require different init/boxes/KIDs).
     let mut encrypted_init_by_rep: HashMap<String, Bytes> = HashMap::new();
-    let mut active_rep_id: Option<String> = None;
+    let fetch_env = RepFetchEnv {
+        client: &client,
+        segment_base_ctx: &segment_base_ctx,
+        period: &period,
+        adaptation_set: &adaptation_set,
+        blacklist: &blacklist,
+        license: &license,
+        wv_by_rep: &wv_by_rep,
+        tx: &tx,
+    };
     if init_taken {
         let init_res: Result<(), PlayerError> = async {
             let decision = abr.decide();
-            let rep_idx = abr.representation_index_for_quality_index(decision.quality_index);
-            let rep = &adaptation_set.representations[rep_idx];
-            let bases = manifest::segment_bases_for_representation(
-                &segment_base_ctx,
-                &adaptation_set,
-                rep,
-            )?;
-            let rep_id = rep.id.as_deref().unwrap_or_default();
-            let rep_license = wv_by_rep.get(rep_id).cloned().or_else(|| license.clone());
-            let rep_addressing =
-                manifest::segment_addressing_for_representation(&period, &adaptation_set, rep)?;
-            let template_vars = manifest::template_vars_for_representation(rep);
-            let init_target = init_target_for_addressing(&rep_addressing, &template_vars)?;
-            let bytes = fetch_segment_target(&client, &bases, &init_target, &blacklist).await?;
-            let init_bytes = Bytes::from(bytes);
-            encrypted_init_by_rep.insert(rep_id.to_string(), init_bytes.clone());
-            active_rep_id = Some(rep_id.to_string());
-            let out = if let Some(ref lic) = rep_license {
-                lic.decrypt(&init_bytes, Option::<&Bytes>::None)
-                    .map_err(PlayerError::License)?
-            } else {
-                init_bytes
-            };
-            let _ = tx.send(PlayerEvent::Init(out));
+            let (_, rep_id) = fetch_init_with_rep_fallback(
+                &fetch_env,
+                &abr,
+                decision.quality_index,
+                &mut encrypted_init_by_rep,
+            )
+            .await?;
+            let _ = rep_id;
             Ok(())
         }
         .await;
@@ -165,69 +158,32 @@ pub(crate) async fn run_adaptation_stream(ctx: AdaptationStreamContext) -> Resul
     for (local_idx, seg) in segments.into_iter().enumerate() {
         abr.update_buffer(latest_buffer_s(&buffer_rx));
         let decision = abr.decide();
-        let rep_idx = abr.representation_index_for_quality_index(decision.quality_index);
-        let rep = &adaptation_set.representations[rep_idx];
-        let bases =
-            manifest::segment_bases_for_representation(&segment_base_ctx, &adaptation_set, rep)?;
-        let rep_id = rep.id.as_deref().unwrap_or_default();
-        let rep_id_string = rep_id.to_string();
-        let rep_license = wv_by_rep.get(rep_id).cloned().or_else(|| license.clone());
-
-        // If ABR switched reps (or init was never fetched for this rep), fetch init for this rep.
-        if active_rep_id.as_deref() != Some(rep_id) || !encrypted_init_by_rep.contains_key(rep_id) {
-            let rep_addressing =
-                manifest::segment_addressing_for_representation(&period, &adaptation_set, rep)?;
-            let template_vars = manifest::template_vars_for_representation(rep);
-            let init_target = init_target_for_addressing(&rep_addressing, &template_vars)?;
-            let init_bytes = fetch_segment_target(&client, &bases, &init_target, &blacklist)
-                .await
-                .map(Bytes::from)?;
-            encrypted_init_by_rep.insert(rep_id_string.clone(), init_bytes.clone());
-            active_rep_id = Some(rep_id_string.clone());
-
-            // Emit decrypted init on rep switch to keep downstream consumers consistent.
-            let out = if let Some(ref lic) = rep_license {
-                lic.decrypt(&init_bytes, Option::<&Bytes>::None)
-                    .map_err(PlayerError::License)?
-            } else {
-                init_bytes
-            };
-            let _ = tx.send(PlayerEvent::Init(out));
-        }
-
-        // We only decrypt if we have both a license and a cached encrypted init for this rep.
-        let init_for_decrypt = encrypted_init_by_rep.get(rep_id);
-        let rep_addressing =
-            manifest::segment_addressing_for_representation(&period, &adaptation_set, rep)?;
         let list_idx = segment_start_index + local_idx;
-        let mut seg_for_fetch = seg;
-        if let manifest::SegmentAddressing::Base(ref sb) = rep_addressing {
-            if sb.indexRange.is_some() {
-                let rep_segs = sidx_segments_for_rep(
-                    &client,
-                    &segment_base_ctx,
-                    &period,
-                    &adaptation_set,
-                    rep,
-                    &blacklist,
-                    &mut sidx_segments_by_rep,
-                )
-                .await?;
-                if let Some(rep_seg) = rep_segs.get(local_idx) {
-                    seg_for_fetch.media_range = rep_seg.media_range;
-                }
-            }
-        }
-        let template_vars = manifest::template_vars_for_representation(rep);
-        let seg_target =
-            media_target_for_addressing(&rep_addressing, &seg_for_fetch, list_idx, &template_vars)?;
         let t0 = Instant::now();
-        let bytes = fetch_segment_target(&client, &bases, &seg_target, &blacklist).await?;
+        let (bytes, used_quality_index, seg_for_fetch) = fetch_media_with_rep_fallback(
+            &fetch_env,
+            &abr,
+            MediaFetchParams {
+                start_quality_index: decision.quality_index,
+                seg: &seg,
+                local_idx,
+                list_idx,
+            },
+            &mut encrypted_init_by_rep,
+            &mut sidx_segments_by_rep,
+        )
+        .await?;
         let elapsed_s = t0.elapsed().as_secs_f64().max(1e-6);
         let throughput_bps = (bytes.len() as f64 * 8.0) / elapsed_s;
 
         abr.observe_throughput(throughput_bps);
         abr.update_buffer(latest_buffer_s(&buffer_rx));
+
+        let rep_idx = abr.representation_index_for_quality_index(used_quality_index);
+        let rep = &adaptation_set.representations[rep_idx];
+        let rep_id = rep.id.as_deref().unwrap_or_default();
+        let rep_license = wv_by_rep.get(rep_id).cloned().or_else(|| license.clone());
+        let init_for_decrypt = encrypted_init_by_rep.get(rep_id);
 
         let mut data = Bytes::from(bytes);
         if let (Some(lic), Some(init_bytes)) = (&rep_license, init_for_decrypt) {
@@ -254,6 +210,139 @@ pub(crate) async fn run_adaptation_stream(ctx: AdaptationStreamContext) -> Resul
     }
 
     Ok(())
+}
+
+struct RepFetchEnv<'a> {
+    client: &'a Client,
+    segment_base_ctx: &'a manifest::SegmentBaseContext,
+    period: &'a Period,
+    adaptation_set: &'a AdaptationSet,
+    blacklist: &'a SegmentBlacklist,
+    license: &'a Option<Arc<License>>,
+    wv_by_rep: &'a HashMap<String, Arc<License>>,
+    tx: &'a broadcast::Sender<PlayerEvent>,
+}
+
+struct MediaFetchParams<'a> {
+    start_quality_index: usize,
+    seg: &'a manifest::TimelineSegment,
+    local_idx: usize,
+    list_idx: usize,
+}
+
+async fn fetch_init_with_rep_fallback(
+    env: &RepFetchEnv<'_>,
+    abr: &AbrController,
+    start_quality_index: usize,
+    encrypted_init_by_rep: &mut HashMap<String, Bytes>,
+) -> Result<(Bytes, String), PlayerError> {
+    let mut last_err = PlayerError::SegmentExhaustedRepresentations;
+    for quality_index in abr.quality_indices_for_fallback(start_quality_index) {
+        let rep_idx = abr.representation_index_for_quality_index(quality_index);
+        let rep = &env.adaptation_set.representations[rep_idx];
+        match ensure_init_for_rep(env, rep, encrypted_init_by_rep).await {
+            Ok(init_bytes) => {
+                let rep_id = rep.id.as_deref().unwrap_or_default().to_string();
+                return Ok((init_bytes, rep_id));
+            }
+            Err(e) => last_err = e,
+        }
+    }
+    Err(last_err)
+}
+
+async fn fetch_media_with_rep_fallback(
+    env: &RepFetchEnv<'_>,
+    abr: &AbrController,
+    params: MediaFetchParams<'_>,
+    encrypted_init_by_rep: &mut HashMap<String, Bytes>,
+    sidx_segments_by_rep: &mut HashMap<String, Vec<manifest::TimelineSegment>>,
+) -> Result<(Vec<u8>, usize, manifest::TimelineSegment), PlayerError> {
+    let mut last_err = PlayerError::SegmentExhaustedRepresentations;
+    for quality_index in abr.quality_indices_for_fallback(params.start_quality_index) {
+        let rep_idx = abr.representation_index_for_quality_index(quality_index);
+        let rep = &env.adaptation_set.representations[rep_idx];
+        let bases = manifest::segment_bases_for_representation(
+            env.segment_base_ctx,
+            env.adaptation_set,
+            rep,
+        )?;
+        match ensure_init_for_rep(env, rep, encrypted_init_by_rep).await {
+            Ok(_) => {}
+            Err(e) => {
+                last_err = e;
+                continue;
+            }
+        }
+
+        let rep_addressing =
+            manifest::segment_addressing_for_representation(env.period, env.adaptation_set, rep)?;
+        let mut seg_for_fetch = params.seg.clone();
+        if let manifest::SegmentAddressing::Base(ref sb) = rep_addressing {
+            if sb.indexRange.is_some() {
+                let rep_segs = sidx_segments_for_rep(
+                    env.client,
+                    env.segment_base_ctx,
+                    env.period,
+                    env.adaptation_set,
+                    rep,
+                    env.blacklist,
+                    sidx_segments_by_rep,
+                )
+                .await?;
+                if let Some(rep_seg) = rep_segs.get(params.local_idx) {
+                    seg_for_fetch.media_range = rep_seg.media_range;
+                }
+            }
+        }
+        let template_vars = manifest::template_vars_for_representation(rep);
+        let seg_target = media_target_for_addressing(
+            &rep_addressing,
+            &seg_for_fetch,
+            params.list_idx,
+            &template_vars,
+        )?;
+        match fetch_segment_target(env.client, &bases, &seg_target, env.blacklist).await {
+            Ok(bytes) => return Ok((bytes, quality_index, seg_for_fetch)),
+            Err(e) => last_err = e,
+        }
+    }
+    Err(last_err)
+}
+
+async fn ensure_init_for_rep(
+    env: &RepFetchEnv<'_>,
+    rep: &Representation,
+    encrypted_init_by_rep: &mut HashMap<String, Bytes>,
+) -> Result<Bytes, PlayerError> {
+    let rep_id = rep.id.as_deref().unwrap_or_default();
+    if let Some(init) = encrypted_init_by_rep.get(rep_id) {
+        return Ok(init.clone());
+    }
+
+    let bases =
+        manifest::segment_bases_for_representation(env.segment_base_ctx, env.adaptation_set, rep)?;
+    let rep_license = env
+        .wv_by_rep
+        .get(rep_id)
+        .cloned()
+        .or_else(|| env.license.clone());
+    let rep_addressing =
+        manifest::segment_addressing_for_representation(env.period, env.adaptation_set, rep)?;
+    let template_vars = manifest::template_vars_for_representation(rep);
+    let init_target = init_target_for_addressing(&rep_addressing, &template_vars)?;
+    let bytes = fetch_segment_target(env.client, &bases, &init_target, env.blacklist).await?;
+    let init_bytes = Bytes::from(bytes);
+    encrypted_init_by_rep.insert(rep_id.to_string(), init_bytes.clone());
+
+    let out = if let Some(ref lic) = rep_license {
+        lic.decrypt(&init_bytes, Option::<&Bytes>::None)
+            .map_err(PlayerError::License)?
+    } else {
+        init_bytes.clone()
+    };
+    let _ = env.tx.send(PlayerEvent::Init(out));
+    Ok(init_bytes)
 }
 
 fn latest_buffer_s(buffer_rx: &watch::Receiver<f64>) -> f64 {

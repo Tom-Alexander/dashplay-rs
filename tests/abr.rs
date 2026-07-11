@@ -29,6 +29,32 @@ async fn abr_starts_at_high_representation_with_full_buffer() {
 }
 
 #[tokio::test]
+async fn representation_fallback_uses_lower_rep_when_higher_segment_missing() {
+    let server = FixtureServer::spawn("vod_rep_fallback").await;
+    let events = play_single_track(&server.manifest_url, TIMEOUT)
+        .await
+        .expect("playback");
+
+    assert_eq!(
+        init_payload(&events).as_deref(),
+        Some(b"dashplay-abr-high-init".as_ref())
+    );
+    let inits = init_payloads(&events);
+    assert!(
+        inits.iter().any(|init| init == b"dashplay-abr-low-init"),
+        "expected low-rep init after segment fallback, got {inits:?}"
+    );
+    assert_eq!(
+        segment_payloads(&events),
+        vec![
+            b"dashplay-abr-low-seg-1".to_vec(),
+            b"dashplay-abr-low-seg-2".to_vec(),
+        ]
+    );
+    assert!(has_end(&events));
+}
+
+#[tokio::test]
 async fn abr_downgrades_and_re_emits_init_when_buffer_drains() {
     let server = FixtureServer::spawn_with_delays("vod_abr", &["/high"]).await;
     let events = play_single_track(&server.manifest_url, ABR_TIMEOUT)

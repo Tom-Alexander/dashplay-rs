@@ -71,6 +71,14 @@ impl AbrController {
         self.rep_by_quality[quality_index]
     }
 
+    /// Quality indices from `start` down to the lowest rung (inclusive), for representation fallback.
+    pub fn quality_indices_for_fallback(
+        &self,
+        start: usize,
+    ) -> impl DoubleEndedIterator<Item = usize> + '_ {
+        (0..=start).rev()
+    }
+
     #[allow(dead_code)]
     pub fn rung_count(&self) -> usize {
         self.rep_by_quality.len()

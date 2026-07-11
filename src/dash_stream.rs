@@ -35,7 +35,10 @@ pub(crate) struct AdaptationStreamContext {
     pub period: Period,
     pub timeline_ctx: TimelineBuildContext,
     pub adaptation_set: AdaptationSet,
-    pub aset_idx: usize,
+    /// Index into the session's selected `PlayerTrack` list.
+    pub track_idx: usize,
+    /// Index into `Period.adaptations` for DRM session lookup.
+    pub period_adaptation_index: usize,
     pub tx: broadcast::Sender<PlayerEvent>,
     pub have_init: Arc<Vec<AtomicBool>>,
     pub delivered: Arc<Mutex<DeliveredSegmentTracker>>,
@@ -56,7 +59,8 @@ pub(crate) async fn run_adaptation_stream(ctx: AdaptationStreamContext) -> Resul
         period,
         timeline_ctx,
         adaptation_set,
-        aset_idx,
+        track_idx,
+        period_adaptation_index,
         tx,
         have_init,
         delivered,
@@ -131,7 +135,7 @@ pub(crate) async fn run_adaptation_stream(ctx: AdaptationStreamContext) -> Resul
 
     abr.update_buffer(latest_buffer_s(&buffer_rx));
 
-    let init_taken = have_init[aset_idx]
+    let init_taken = have_init[track_idx]
         .compare_exchange(false, true, Ordering::AcqRel, Ordering::Acquire)
         .is_ok();
 
@@ -144,7 +148,7 @@ pub(crate) async fn run_adaptation_stream(ctx: AdaptationStreamContext) -> Resul
         adaptation_set: &adaptation_set,
         blacklist: &blacklist,
         drm: &drm,
-        aset_idx,
+        period_adaptation_index,
         tx: &tx,
     };
     if init_taken {
@@ -162,7 +166,7 @@ pub(crate) async fn run_adaptation_stream(ctx: AdaptationStreamContext) -> Resul
         }
         .await;
         if init_res.is_err() {
-            have_init[aset_idx].store(false, Ordering::Release);
+            have_init[track_idx].store(false, Ordering::Release);
             init_res?;
         }
     }
@@ -215,13 +219,23 @@ pub(crate) async fn run_adaptation_stream(ctx: AdaptationStreamContext) -> Resul
         {
             let mut guard = drm.lock().await;
             guard
-                .ensure_from_fragments(aset_idx, rep_id, init_for_decrypt, Some(&bytes))
+                .ensure_from_fragments(
+                    period_adaptation_index,
+                    rep_id,
+                    init_for_decrypt,
+                    Some(&bytes),
+                )
                 .await?;
         }
 
-        let data =
-            decrypt_media_fragment(&drm, aset_idx, rep_id, init_for_decrypt, Bytes::from(bytes))
-                .await?;
+        let data = decrypt_media_fragment(
+            &drm,
+            period_adaptation_index,
+            rep_id,
+            init_for_decrypt,
+            Bytes::from(bytes),
+        )
+        .await?;
 
         if playback.is_stopped() || playback.seek_generation() != seek_generation_at_start {
             return Ok(());
@@ -250,14 +264,14 @@ pub(crate) async fn run_adaptation_stream(ctx: AdaptationStreamContext) -> Resul
 
 async fn decrypt_media_fragment(
     drm: &Arc<AsyncMutex<DrmSessionCoordinator>>,
-    aset_idx: usize,
+    period_adaptation_index: usize,
     rep_id: &str,
     init_bytes: &Bytes,
     data: Bytes,
 ) -> Result<Bytes, PlayerError> {
     let license = {
         let guard = drm.lock().await;
-        guard.license_for_rep(aset_idx, rep_id)
+        guard.license_for_rep(period_adaptation_index, rep_id)
     };
     let Some(lic) = license else {
         return Ok(data);
@@ -268,9 +282,14 @@ async fn decrypt_media_fragment(
         Err(e) if License::is_likely_missing_key(&e) => {
             let mut guard = drm.lock().await;
             guard
-                .recover_from_decrypt_failure(aset_idx, rep_id, init_bytes, data.as_ref())
+                .recover_from_decrypt_failure(
+                    period_adaptation_index,
+                    rep_id,
+                    init_bytes,
+                    data.as_ref(),
+                )
                 .await?;
-            let refreshed = guard.license_for_rep(aset_idx, rep_id);
+            let refreshed = guard.license_for_rep(period_adaptation_index, rep_id);
             drop(guard);
             let Some(new_lic) = refreshed else {
                 return Err(PlayerError::License(e));
@@ -303,7 +322,7 @@ struct RepFetchEnv<'a> {
     adaptation_set: &'a AdaptationSet,
     blacklist: &'a SegmentBlacklist,
     drm: &'a Arc<AsyncMutex<DrmSessionCoordinator>>,
-    aset_idx: usize,
+    period_adaptation_index: usize,
     tx: &'a broadcast::Sender<PlayerEvent>,
 }
 
@@ -417,13 +436,13 @@ async fn ensure_init_for_rep(
     {
         let mut guard = env.drm.lock().await;
         guard
-            .ensure_from_fragments(env.aset_idx, rep_id, &init_bytes, None)
+            .ensure_from_fragments(env.period_adaptation_index, rep_id, &init_bytes, None)
             .await?;
     }
 
     let license = {
         let guard = env.drm.lock().await;
-        guard.license_for_rep(env.aset_idx, rep_id)
+        guard.license_for_rep(env.period_adaptation_index, rep_id)
     };
 
     let out = if let Some(ref lic) = license {
@@ -432,9 +451,14 @@ async fn ensure_init_for_rep(
             Err(e) if License::is_likely_missing_key(&e) => {
                 let mut guard = env.drm.lock().await;
                 guard
-                    .recover_from_decrypt_failure(env.aset_idx, rep_id, &init_bytes, &[])
+                    .recover_from_decrypt_failure(
+                        env.period_adaptation_index,
+                        rep_id,
+                        &init_bytes,
+                        &[],
+                    )
                     .await?;
-                let refreshed = guard.license_for_rep(env.aset_idx, rep_id);
+                let refreshed = guard.license_for_rep(env.period_adaptation_index, rep_id);
                 drop(guard);
                 refreshed
                     .ok_or(PlayerError::License(e))?

@@ -16,9 +16,10 @@ use super::drm::coordinator::DrmSessionCoordinator;
 use super::PlayerError;
 use super::dash_stream::{AdaptationStreamContext, run_adaptation_stream};
 use super::delivered_segments::DeliveredSegmentTracker;
-use super::manifest::{self, MimeType};
+use super::manifest;
 use super::playback_control::{PlaybackController, PlaybackState};
 use super::segment_blacklist::SegmentBlacklist;
+use super::track_selection::{TrackSelection, select_adaptation_sets};
 use super::types::PlayerEvent;
 use super::utc_timing;
 
@@ -27,6 +28,7 @@ pub(crate) struct PlaybackLoopState {
     pub manifest_uri: Url,
     pub drm: DrmSessionCoordinator,
     pub playback: PlaybackController,
+    pub track_selection: TrackSelection,
 }
 
 impl PlaybackLoopState {
@@ -36,6 +38,7 @@ impl PlaybackLoopState {
             manifest_uri,
             drm,
             playback,
+            track_selection,
         } = self;
 
         let mut manifest = None;
@@ -141,34 +144,24 @@ impl PlaybackLoopState {
                         since_availability_start: since_ast,
                     };
 
-                    let adaptation_sets: Vec<dash_mpd::AdaptationSet> = period
-                        .adaptations
-                        .iter()
-                        .filter(|adaptation_set| {
-                            let mime = adaptation_set.mimeType.as_deref();
-                            matches!(
-                                mime,
-                                Some(m) if m == MimeType::Audio.as_str()
-                                    || m == MimeType::Video.as_str()
-                            )
-                        })
-                        .cloned()
-                        .collect();
+                    let adaptation_sets = select_adaptation_sets(&period, &track_selection);
 
                     let mut streams = Vec::new();
-                    for (aset_idx, adaptation_set) in adaptation_sets.into_iter().enumerate() {
-                        if aset_idx >= tracks.len() {
+                    for (track_idx, selected) in adaptation_sets.into_iter().enumerate() {
+                        if track_idx >= tracks.len() {
                             break;
                         }
+                        let adaptation_set = selected.adaptation_set.clone();
+                        let period_adaptation_index = selected.info.period_adaptation_index;
 
-                        let tx = tracks[aset_idx].tx.clone();
+                        let tx = tracks[track_idx].tx.clone();
                         let have_init = have_init.clone();
                         let client = client.clone();
                         let segment_base_ctx = segment_base_ctx.clone();
                         let blacklist = blacklist.clone();
                         let drm = drm.clone();
-                        let buffer_rx = tracks[aset_idx].buffer_rx.clone();
-                        let delivered = delivered[aset_idx].clone();
+                        let buffer_rx = tracks[track_idx].buffer_rx.clone();
+                        let delivered = delivered[track_idx].clone();
                         let playback = playback.clone();
 
                         let period = period.clone();
@@ -181,7 +174,8 @@ impl PlaybackLoopState {
                                 period,
                                 timeline_ctx,
                                 adaptation_set,
-                                aset_idx,
+                                track_idx,
+                                period_adaptation_index,
                                 tx,
                                 have_init,
                                 delivered,

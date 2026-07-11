@@ -7,6 +7,7 @@ A pure Rust implementation of an MPEG-DASH player library.
 - **MPEG-DASH playback** — VOD and live streams with `SegmentTemplate` addressing (number, time, and duration) and `SegmentTimeline` support, including segment sequences (`S@k`)
 - **Live streaming** — Dynamic manifests, time-shift buffer windows, periodic manifest refresh, and multi-period transitions with init re-emission
 - **Multi-track output** — Separate audio and video adaptation sets, or a single merged byte stream
+- **Track selection** — Ordered language, role, codec, and accessibility preferences with per-kind output limits
 - **Adaptive bitrate** — BOLA (Buffer Occupancy based Lyapunov Algorithm) with automatic representation switching and init re-emission on quality changes
 - **Widevine DRM** — PSSH and license URL parsing from the MPD, license acquisition, and in-pipeline segment decryption
 - **Custom license handling** — Pluggable async license fetcher for custom headers, cookies, or proxies
@@ -51,6 +52,46 @@ async fn main() -> Result<(), dashplayrs::PlayerError> {
 For DRM-protected streams, pass a Widevine license server URL as the second argument to
 [`Player::new`](#player), or supply a custom license fetcher with
 [`Player::with_license_fetcher`](#player).
+
+### Track selection
+
+Use ordered fallback preferences and per-kind limits to choose adaptation sets. The default
+retains every audio and video track.
+
+```rust
+use dashplayrs::{Player, TrackDescriptor, TrackPreference, TrackSelection};
+
+# async fn example() -> Result<(), dashplayrs::PlayerError> {
+let selection = TrackSelection::default()
+    .with_audio(
+        TrackPreference::default()
+            .language("en-NZ")
+            .language("en")
+            .role("main")
+            .accessibility(TrackDescriptor::scheme(
+                "urn:tva:metadata:cs:AudioPurposeCS:2007",
+            ))
+            .max_tracks(2),
+    )
+    .with_video(
+        TrackPreference::default()
+            .codec("avc1")
+            .max_tracks(1),
+    );
+
+let outputs = Player::new("https://example.com/manifest.mpd", None)?
+    .with_track_selection(selection)
+    .start_tracks()
+    .await?;
+# outputs.stop()?;
+# outputs.join.await.unwrap()?;
+# Ok(())
+# }
+```
+
+Selected tracks expose `TrackInfo` metadata including language, roles, codecs, and accessibility
+descriptors. Preferences rank candidates; unmatched tracks are fallback candidates. Use
+`max_tracks(0)` to disable a media kind.
 
 ### Playback control
 
@@ -101,6 +142,9 @@ controller. Clone handles (`outputs.playback.clone()`) share one session.
 | [`PlaybackController`](#playbackcontroller) | Seek, pause, resume, stop, and lifecycle state |
 | [`PlaybackState`](#playbackstate) | Explicit playback lifecycle enum |
 | [`PlaybackControlError`](#playbackcontrolerror) | Errors from playback control commands |
+| `TrackSelection` / `TrackPreference` | Ordered adaptation-set preferences and per-kind limits |
+| `TrackInfo` / `TrackKind` | Metadata and media kind for a selected track |
+| `TrackDescriptor` | Accessibility descriptor scheme/value matcher and metadata |
 | [`WidevineLicenseFetcher`](#widevinelicensefetcher) | Custom async Widevine license HTTP handler |
 | [`PlayerError`](#playererror) | Unified error type for the playback pipeline |
 | [`bola`](#bola) | BOLA adaptive bitrate algorithm |
@@ -121,6 +165,7 @@ server when the manifest does not specify one.
 
 ```rust
 Player::with_license_fetcher(self, fetcher: WidevineLicenseFetcher) -> Player
+Player::with_track_selection(self, selection: TrackSelection) -> Player
 ```
 
 Replace the default `reqwest` license POST with a custom fetcher (extra headers, cookies, proxy,
@@ -178,6 +223,7 @@ need finer control over manifest loading.
 ```rust
 MediaPlayer::new(uri: &str, license_uri: Option<&str>) -> Result<MediaPlayer, PlayerError>
 MediaPlayer::with_license_fetcher(self, fetcher: WidevineLicenseFetcher) -> MediaPlayer
+MediaPlayer::with_track_selection(self, selection: TrackSelection) -> MediaPlayer
 MediaPlayer::fetch_manifest(&mut self) -> Result<(), PlayerError>
 MediaPlayer::start(self) -> Result<PlayerOutputs, PlayerError>
 ```
@@ -209,6 +255,7 @@ One DASH adaptation set exposed as a `tokio::sync::broadcast` channel.
 | Field / method | Description |
 |----------------|-------------|
 | `mime_type` | `AdaptationSet@mimeType` when present (e.g. `video/mp4`) |
+| `info` | Selected-track language, roles, codecs, accessibility, ID, and media kind |
 | `subscribe()` | Create a new event receiver |
 | `receiver_count()` | Number of active subscribers |
 | `buffer_feedback()` | Report playback buffer occupancy for ABR |
@@ -313,6 +360,7 @@ Per-track handle returned in `PlayerTrackOutputs.tracks`:
 |----------------|-------------|
 | `track_index` | Adaptation-set index |
 | `mime_type` | MIME type of the adaptation set |
+| `info` | Selected-track language, roles, codecs, accessibility, ID, and media kind |
 | `into_receiver()` | Take ownership of the broadcast receiver |
 | `buffer_feedback()` | Report playback buffer occupancy for ABR |
 | `events()` | Stream wrapper over track events |

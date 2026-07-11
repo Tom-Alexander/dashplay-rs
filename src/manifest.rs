@@ -9,21 +9,6 @@ use url::Url;
 
 use super::PlayerError;
 
-#[derive(Debug, Copy, Clone, Eq, PartialEq)]
-pub(crate) enum MimeType {
-    Audio,
-    Video,
-}
-
-impl MimeType {
-    pub(crate) fn as_str(self) -> &'static str {
-        match self {
-            MimeType::Audio => "audio/mp4",
-            MimeType::Video => "video/mp4",
-        }
-    }
-}
-
 #[derive(Debug, Clone, Copy)]
 pub(crate) struct PeriodWindow {
     pub idx: usize,

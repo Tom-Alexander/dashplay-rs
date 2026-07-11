@@ -118,6 +118,41 @@ async fn vod_audio_video_parallel_tracks() {
 }
 
 #[tokio::test]
+async fn track_preferences_limit_outputs_and_expose_metadata() {
+    let server = FixtureServer::spawn("vod_av").await;
+    let selection = dashplayrs::TrackSelection::default()
+        .with_video(dashplayrs::TrackPreference::default().max_tracks(0))
+        .with_audio(
+            dashplayrs::TrackPreference::default()
+                .codec("mp4a")
+                .max_tracks(1),
+        );
+    let player = dashplayrs::Player::new(server.manifest_url.as_str(), None)
+        .expect("player")
+        .with_track_selection(selection);
+    let outputs = player.start_tracks().await.expect("start");
+
+    assert_eq!(outputs.track_count(), 1);
+    assert_eq!(outputs.tracks[0].info.kind, dashplayrs::TrackKind::Audio);
+    assert_eq!(outputs.tracks[0].info.codecs, vec!["mp4a.40.2"]);
+
+    let mut rx = outputs
+        .tracks
+        .into_iter()
+        .next()
+        .expect("audio")
+        .into_receiver();
+    let events = common::collect_events(&mut rx, TIMEOUT).await;
+    outputs.join.await.expect("join").expect("playback");
+
+    assert_eq!(
+        init_payload(&events).as_deref(),
+        Some(b"dashplay-audio-init".as_ref())
+    );
+    assert!(has_end(&events));
+}
+
+#[tokio::test]
 async fn vod_multi_period_emits_inits_and_segments_in_order() {
     let server = FixtureServer::spawn("vod_multi_period").await;
     let events = play_single_track(&server.manifest_url, TIMEOUT)

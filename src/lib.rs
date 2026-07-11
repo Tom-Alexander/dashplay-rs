@@ -48,6 +48,7 @@ mod player;
 mod segment_blacklist;
 mod segment_fetcher;
 mod stream_controller;
+mod track_selection;
 mod types;
 mod utc_timing;
 
@@ -56,6 +57,7 @@ pub use playback_control::{PlaybackControlError, PlaybackController, PlaybackSta
 pub use player::{
     Player, PlayerMergedAsyncRead, PlayerMergedOutput, PlayerTrackOutput, PlayerTrackOutputs,
 };
+pub use track_selection::{TrackDescriptor, TrackInfo, TrackKind, TrackPreference, TrackSelection};
 pub use types::{BufferFeedback, BufferFeedbackError, PlayerEvent, PlayerOutputs, PlayerTrack};
 
 use crate::drm::LicenseError;

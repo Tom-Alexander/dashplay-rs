@@ -9,6 +9,7 @@ use tokio_stream::wrappers::ReceiverStream;
 
 use super::media_player::{MediaPlayer, WidevineLicenseFetcher};
 use super::playback_control::{PlaybackControlError, PlaybackController, PlaybackState};
+use super::track_selection::{TrackInfo, TrackSelection};
 use super::types::BufferFeedback;
 use super::{PlayerError, PlayerEvent, PlayerOutputs, PlayerTrack};
 
@@ -29,6 +30,13 @@ impl Player {
     pub fn with_license_fetcher(self, fetcher: WidevineLicenseFetcher) -> Self {
         Self {
             media_player: self.media_player.with_license_fetcher(fetcher),
+        }
+    }
+
+    /// Configure deterministic audio and video adaptation-set selection.
+    pub fn with_track_selection(self, selection: TrackSelection) -> Self {
+        Self {
+            media_player: self.media_player.with_track_selection(selection),
         }
     }
 
@@ -107,6 +115,7 @@ impl Player {
             outs.push(PlayerTrackOutput {
                 track_index: i,
                 mime_type: t.mime_type.clone(),
+                info: t.info.clone(),
                 rx: t.tx.subscribe(),
                 tx: t.tx.clone(),
                 buffer_feedback: t.buffer_feedback(),
@@ -226,6 +235,8 @@ impl PlayerTrackOutputs {
 pub struct PlayerTrackOutput {
     pub track_index: usize,
     pub mime_type: Option<String>,
+    /// Language, roles, codecs, accessibility, and other selected-track metadata.
+    pub info: TrackInfo,
     rx: broadcast::Receiver<PlayerEvent>,
     tx: broadcast::Sender<PlayerEvent>,
     buffer_feedback: BufferFeedback,

@@ -11,6 +11,7 @@ use super::PlayerError;
 use super::manifest;
 use super::playback_control::PlaybackController;
 use super::stream_controller::PlaybackLoopState;
+use super::track_selection::{TrackSelection, select_adaptation_sets};
 use super::types::PlayerOutputs;
 use super::utc_timing;
 
@@ -26,6 +27,7 @@ pub struct MediaPlayer {
     manifest: Option<dash_mpd::MPD>,
     mpd_xml: Option<String>,
     drm: DrmSessionCoordinator,
+    track_selection: TrackSelection,
 }
 
 impl MediaPlayer {
@@ -39,6 +41,7 @@ impl MediaPlayer {
             manifest: None,
             mpd_xml: None,
             drm: DrmSessionCoordinator::new(Client::new(), license_uri, None),
+            track_selection: TrackSelection::default(),
         })
     }
 
@@ -50,6 +53,12 @@ impl MediaPlayer {
             self.license_uri.clone(),
             Some(fetcher),
         );
+        self
+    }
+
+    /// Configure deterministic audio and video adaptation-set selection.
+    pub fn with_track_selection(mut self, selection: TrackSelection) -> Self {
+        self.track_selection = selection;
         self
     }
 
@@ -87,25 +96,15 @@ impl MediaPlayer {
             self.drm.sync_from_mpd(xml, current_window.idx).await?;
         }
 
-        let adaptation_sets: Vec<&dash_mpd::AdaptationSet> = period
-            .adaptations
-            .iter()
-            .filter(|adaptation_set| {
-                let mime = adaptation_set.mimeType.as_deref();
-                matches!(
-                    mime,
-                    Some(m) if m == manifest::MimeType::Audio.as_str()
-                        || m == manifest::MimeType::Video.as_str()
-                )
-            })
-            .collect();
+        let adaptation_sets = select_adaptation_sets(period, &self.track_selection);
 
         let mut tracks = Vec::with_capacity(adaptation_sets.len());
-        for aset in &adaptation_sets {
+        for selected in adaptation_sets {
             let (tx, _rx) = broadcast::channel(32);
             let (buffer_tx, buffer_rx) = watch::channel(0.0);
             tracks.push(super::types::PlayerTrack {
-                mime_type: aset.mimeType.clone(),
+                mime_type: selected.info.mime_type.clone(),
+                info: selected.info,
                 tx,
                 buffer_feedback: super::types::BufferFeedback::new(buffer_tx),
                 buffer_rx,
@@ -120,6 +119,7 @@ impl MediaPlayer {
             manifest_uri: self.manifest_uri,
             drm: self.drm,
             playback: playback.clone(),
+            track_selection: self.track_selection,
         };
 
         Ok(PlayerOutputs {

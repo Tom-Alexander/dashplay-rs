@@ -7,6 +7,7 @@ use tokio::task::JoinHandle;
 use super::PlayerError;
 use super::playback_control::PlaybackController;
 use super::stream_controller::PlaybackLoopState;
+use super::track_selection::TrackInfo;
 
 /// Error returned when buffer feedback can no longer reach the playback pipeline.
 #[derive(Debug, Error)]
@@ -59,6 +60,8 @@ pub enum PlayerEvent {
 pub struct PlayerTrack {
     /// `AdaptationSet@mimeType` when present (e.g. `video/mp4`, `audio/mp4`).
     pub mime_type: Option<String>,
+    /// Language, roles, codecs, accessibility, and other selected-track metadata.
+    pub info: TrackInfo,
     pub(crate) tx: broadcast::Sender<PlayerEvent>,
     pub(crate) buffer_feedback: BufferFeedback,
     pub(crate) buffer_rx: watch::Receiver<f64>,

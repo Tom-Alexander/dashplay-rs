@@ -72,7 +72,7 @@ These close the largest gaps between "delivers some streams" and "handles confor
 
 ## P2 — Track selection and auxiliary content
 
-- [ ] **Rich track selection.** Select by language, role, codecs, and accessibility;
+- [x] **Rich track selection.** Select by language, role, codecs, and accessibility;
   allow user preferences and multiple audio tracks. Today selection is MIME-type only.
 - [ ] **Subtitles / captions.** `text/vtt`, TTML, and in-band caption tracks.
 - [ ] **Thumbnails / trick-play.** Image adaptation sets (`image/jpeg`) and trick-play

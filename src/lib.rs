@@ -43,6 +43,7 @@ mod delivered_segments;
 pub mod drm;
 mod manifest;
 mod media_player;
+mod playback_control;
 mod player;
 mod segment_blacklist;
 mod segment_fetcher;
@@ -51,6 +52,7 @@ mod types;
 mod utc_timing;
 
 pub use media_player::{MediaPlayer, WidevineLicenseFetcher};
+pub use playback_control::{PlaybackControlError, PlaybackController, PlaybackState};
 pub use player::{Player, PlayerTrackOutput};
 pub use types::{BufferFeedback, BufferFeedbackError, PlayerEvent, PlayerOutputs, PlayerTrack};
 

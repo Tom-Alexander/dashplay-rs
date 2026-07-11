@@ -5,6 +5,7 @@ use tokio::sync::watch;
 use tokio::task::JoinHandle;
 
 use super::PlayerError;
+use super::playback_control::PlaybackController;
 
 /// Error returned when buffer feedback can no longer reach the playback pipeline.
 #[derive(Debug, Error)]
@@ -84,4 +85,6 @@ pub struct PlayerOutputs {
     pub tracks: Vec<PlayerTrack>,
     /// Background task running the stream controller loop.
     pub join: JoinHandle<Result<(), PlayerError>>,
+    /// Seek, pause, resume, stop, and lifecycle state for this session.
+    pub playback: PlaybackController,
 }

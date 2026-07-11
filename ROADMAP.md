@@ -27,7 +27,7 @@ Status legend: `[ ]` not started · `[~]` partial · `[x]` done.
 | DRM | `[~]` | Widevine only; requires external CDM device |
 | Track selection | `[~]` | MIME type only (`audio/mp4`, `video/mp4`) |
 | Segment addressing | `[~]` | `SegmentTemplate`, `SegmentList` / `SegmentURL`, `SegmentBase` + byte ranges |
-| Playback control (seek/pause/stop) | `[ ]` | Not implemented |
+| Playback control (seek/pause/stop) | `[x]` | `PlaybackController` with state machine |
 | Demux / decode | `[ ]` | Out of scope (bytes only) |
 | Metrics / rich events | `[ ]` | Only `Init`/`Segment`/`End` |
 | Pluggable networking / ABR | `[ ]` | Hard-wired to `reqwest` / BOLA |
@@ -55,8 +55,8 @@ These close the largest gaps between "delivers some streams" and "handles confor
 
 ## P1 — Reliability and playback lifecycle
 
-- [ ] **Playback control API.** `seek`, `pause`, `resume`, `stop`, and a `PlaybackState`
-  machine (`Idle`, `Buffering`, `Playing`, `Seeking`, `Ended`, `Error`) as promised in
+- [x] **Playback control API.** `seek`, `pause`, `resume`, `stop`, and a `PlaybackState`
+  machine (`Idle`, `Buffering`, `Playing`, `Seeking`, `Paused`, `Ended`, `Error`) as promised in
   `ARCHITECTURE.md`.
 - [ ] **Explicit lifecycle vs. background tasks.** `MediaPlayer::start` and
   `stream_controller` currently spawn hidden `tokio` tasks, which conflicts with the

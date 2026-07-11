@@ -13,6 +13,7 @@ A pure Rust implementation of an MPEG-DASH player library.
 - **Resilient fetching** — BaseURL resolution and failover, representation fallback, and segment URL blacklisting after failures
 - **Clock sync** — `UTCTiming` resolution for live edge calculation (HTTP, NTP/SNTP, and related schemes)
 - **Modular API** — High-level [`Player`](#player) wrapper or lower-level [`MediaPlayer`](#mediaplayer) for finer control
+- **Playback control** — `seek`, `pause`, `resume`, `stop`, and a [`PlaybackState`](#playbackstate) lifecycle machine
 - **Async delivery** — Tokio-based fragment delivery via broadcast channels (`Init`, `Segment`, `End` events)
 
 ## Usage
@@ -51,6 +52,37 @@ For DRM-protected streams, pass a Widevine license server URL as the second argu
 [`Player::new`](#player), or supply a custom license fetcher with
 [`Player::with_license_fetcher`](#player).
 
+### Playback control
+
+After [`Player::start_tracks`](#player) or [`MediaPlayer::start`](#mediaplayer), use
+[`PlaybackController`](#playbackcontroller) (available as `outputs.playback`) to manage the
+session:
+
+```rust
+use std::time::Duration;
+use dashplayrs::{PlaybackState, Player};
+
+# async fn example() -> Result<(), dashplayrs::PlayerError> {
+let outputs = Player::new("https://example.com/manifest.mpd", None)?
+    .start_tracks()
+    .await?;
+
+outputs.pause()?;                       // suspend segment delivery
+outputs.resume()?;                      // continue from the current position
+outputs.seek(Duration::from_secs(30))?; // jump to 30 s into the presentation
+outputs.stop()?;                        // halt playback and emit End
+
+assert_eq!(outputs.playback_state(), PlaybackState::Ended);
+
+outputs.join.await.unwrap()?;
+# Ok(())
+# }
+```
+
+[`PlayerTrackOutputs`](#playertrackoutputs) also exposes `pause`, `resume`, `seek`, `stop`,
+`playback_state`, and `subscribe_playback_state` as convenience wrappers around the same
+controller. Clone handles (`outputs.playback.clone()`) share one session.
+
 ## Public API
 
 ### Crate root
@@ -63,6 +95,9 @@ For DRM-protected streams, pass a Widevine license server URL as the second argu
 | [`PlayerTrack`](#playertrack) | One adaptation-set broadcast channel |
 | [`PlayerOutputs`](#playeroutputs) | Tracks and background task from [`MediaPlayer::start`](#mediaplayer) |
 | [`PlayerTrackOutput`](#playertrackoutput) | Per-track handle from [`Player::start_tracks`](#player) |
+| [`PlaybackController`](#playbackcontroller) | Seek, pause, resume, stop, and lifecycle state |
+| [`PlaybackState`](#playbackstate) | Explicit playback lifecycle enum |
+| [`PlaybackControlError`](#playbackcontrolerror) | Errors from playback control commands |
 | [`WidevineLicenseFetcher`](#widevinelicensefetcher) | Custom async Widevine license HTTP handler |
 | [`PlayerError`](#playererror) | Unified error type for the playback pipeline |
 | [`bola`](#bola) | BOLA adaptive bitrate algorithm |
@@ -99,7 +134,10 @@ Each track emits [`PlayerEvent::Init`](#playerevent) followed by
 The returned value also exposes:
 
 - `tracks` — slice of [`PlayerTrackOutput`](#playertrackoutput)
+- `playback` — [`PlaybackController`](#playbackcontroller) for seek / pause / resume / stop
 - `join` — await to wait for the background stream controller
+- `pause` / `resume` / `seek` / `stop` — convenience wrappers around `playback`
+- `playback_state` / `subscribe_playback_state` — observe lifecycle transitions
 - `subscribe(idx)` — subscribe to track `idx` after start
 - `into_parts()` — split into tracks, senders, and join handle
 
@@ -176,7 +214,10 @@ Returned by [`Player::start_tracks`](#player):
 | Field / method | Description |
 |----------------|-------------|
 | `tracks` | One [`PlayerTrackOutput`](#playertrackoutput) per adaptation set |
+| `playback` | [`PlaybackController`](#playbackcontroller) for this session |
 | `join` | Background task running the stream controller loop |
+| `pause` / `resume` / `seek` / `stop` | Playback control (delegates to `playback`) |
+| `playback_state` / `subscribe_playback_state` | Current or watched [`PlaybackState`](#playbackstate) |
 | `buffer_feedback(idx)` | [`BufferFeedback`](#bufferfeedback) for a track index |
 | `subscribe(idx)` | Subscribe to a track's broadcast channel |
 
@@ -189,7 +230,54 @@ Returned by [`MediaPlayer::start`](#mediaplayer):
 | Field | Description |
 |-------|-------------|
 | `tracks` | One [`PlayerTrack`](#playertrack) per selected audio/video adaptation set |
+| `playback` | [`PlaybackController`](#playbackcontroller) for this session |
 | `join` | Background task running the stream controller loop |
+
+---
+
+### `PlaybackController`
+
+Lifecycle controls for an active playback session. Returned as `outputs.playback` from
+[`Player::start_tracks`](#player) and [`MediaPlayer::start`](#mediaplayer). Clone handles share
+the same session.
+
+| Method | Description |
+|--------|-------------|
+| `pause()` | Suspend segment delivery until `resume` |
+| `resume()` | Resume delivery after `pause` |
+| `seek(presentation_time)` | Seek to a presentation time ([`Duration`](https://doc.rust-lang.org/std/time/struct.Duration.html) from the start of the presentation) |
+| `stop()` | Stop playback; no further segments are delivered |
+| `state()` | Current [`PlaybackState`](#playbackstate) |
+| `subscribe_state()` | Watch lifecycle state transitions |
+
+Commands return [`PlaybackControlError`](#playbackcontrolerror) when playback is not active or
+has already stopped.
+
+---
+
+### `PlaybackState`
+
+Explicit lifecycle state for the playback pipeline:
+
+| Variant | Meaning |
+|---------|---------|
+| `Idle` | No active playback session |
+| `LoadingManifest` | Fetching or refreshing the MPD |
+| `Buffering` | Waiting for media to begin or resume |
+| `Playing` | Segments are being delivered |
+| `Paused` | Delivery suspended until `resume` |
+| `Seeking` | Repositioning to a new presentation time |
+| `Ended` | Manifest window exhausted or playback stopped |
+| `Error` | Pipeline failed; inspect `join` for details |
+
+---
+
+### `PlaybackControlError`
+
+| Variant | When |
+|---------|------|
+| `NotActive` | Command issued before playback started |
+| `Stopped` | Command issued after `stop` or natural end |
 
 ---
 

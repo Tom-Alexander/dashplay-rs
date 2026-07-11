@@ -1,12 +1,13 @@
 use bytes::Bytes;
 use futures_util::StreamExt;
 use std::pin::Pin;
-use tokio::sync::{broadcast, mpsc};
+use tokio::sync::{broadcast, mpsc, watch};
 use tokio::task::JoinHandle;
 use tokio_stream::Stream;
 use tokio_stream::wrappers::ReceiverStream;
 
 use super::media_player::{MediaPlayer, WidevineLicenseFetcher};
+use super::playback_control::{PlaybackControlError, PlaybackController, PlaybackState};
 use super::types::BufferFeedback;
 use super::{PlayerError, PlayerEvent, PlayerOutputs, PlayerTrack};
 
@@ -39,7 +40,11 @@ impl Player {
     ///   `start_tracks()` instead.
     #[allow(dead_code)]
     pub async fn start_merged(self) -> Result<PlayerMergedOutput, PlayerError> {
-        let PlayerOutputs { tracks, join } = self.media_player.start().await?;
+        let PlayerOutputs {
+            tracks,
+            join,
+            playback: _playback,
+        } = self.media_player.start().await?;
 
         let (out_tx, out_rx) = mpsc::channel::<Result<Bytes, PlayerError>>(256);
         let mut forwarders: Vec<JoinHandle<()>> = Vec::with_capacity(tracks.len());
@@ -81,7 +86,11 @@ impl Player {
 
     /// Start the underlying `MediaPlayer` and return one stream per track.
     pub async fn start_tracks(self) -> Result<PlayerTrackOutputs, PlayerError> {
-        let PlayerOutputs { tracks, join } = self.media_player.start().await?;
+        let PlayerOutputs {
+            tracks,
+            join,
+            playback,
+        } = self.media_player.start().await?;
 
         let mut outs = Vec::with_capacity(tracks.len());
         let senders = tracks.clone();
@@ -97,6 +106,7 @@ impl Player {
         Ok(PlayerTrackOutputs {
             tracks: outs,
             join,
+            playback,
             senders,
         })
     }
@@ -143,10 +153,42 @@ pub struct PlayerMergedAsyncRead {
 pub struct PlayerTrackOutputs {
     pub tracks: Vec<PlayerTrackOutput>,
     pub join: JoinHandle<Result<(), PlayerError>>,
+    /// Seek, pause, resume, stop, and lifecycle state for this session.
+    pub playback: PlaybackController,
     senders: Vec<PlayerTrack>,
 }
 
 impl PlayerTrackOutputs {
+    /// Current playback lifecycle state.
+    pub fn playback_state(&self) -> PlaybackState {
+        self.playback.state()
+    }
+
+    /// Watch playback lifecycle state transitions.
+    pub fn subscribe_playback_state(&self) -> watch::Receiver<PlaybackState> {
+        self.playback.subscribe_state()
+    }
+
+    /// Suspend segment delivery until [`Self::resume`].
+    pub fn pause(&self) -> Result<(), PlaybackControlError> {
+        self.playback.pause()
+    }
+
+    /// Resume delivery after [`Self::pause`].
+    pub fn resume(&self) -> Result<(), PlaybackControlError> {
+        self.playback.resume()
+    }
+
+    /// Seek to a presentation time (seconds from the start of the presentation).
+    pub fn seek(&self, presentation_time: std::time::Duration) -> Result<(), PlaybackControlError> {
+        self.playback.seek(presentation_time)
+    }
+
+    /// Stop playback. No further segments are delivered.
+    pub fn stop(&self) -> Result<(), PlaybackControlError> {
+        self.playback.stop()
+    }
+
     #[allow(dead_code)]
     pub fn track_count(&self) -> usize {
         self.senders.len()
@@ -172,6 +214,7 @@ impl PlayerTrackOutputs {
         let Self {
             tracks,
             join,
+            playback: _playback,
             senders,
         } = self;
         (tracks, senders, join)

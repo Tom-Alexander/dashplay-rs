@@ -10,6 +10,7 @@ use super::drm::coordinator::DrmSessionCoordinator;
 
 use super::PlayerError;
 use super::manifest;
+use super::playback_control::PlaybackController;
 use super::stream_controller::PlaybackLoopState;
 use super::types::PlayerOutputs;
 use super::utc_timing;
@@ -108,16 +109,24 @@ impl MediaPlayer {
             });
         }
 
+        let playback = PlaybackController::new();
+        playback.mark_started();
+
         let loop_state = PlaybackLoopState {
             client: self.client,
             manifest_uri: self.manifest_uri,
             drm: self.drm,
+            playback: playback.clone(),
         };
 
         let tracks_for_task = tracks.clone();
         let join: JoinHandle<Result<(), PlayerError>> =
             tokio::spawn(async move { loop_state.run(tracks_for_task).await });
 
-        Ok(PlayerOutputs { tracks, join })
+        Ok(PlayerOutputs {
+            tracks,
+            join,
+            playback,
+        })
     }
 }

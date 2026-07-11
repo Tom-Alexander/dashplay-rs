@@ -14,6 +14,7 @@ use super::delivered_segments::DeliveredSegmentTracker;
 use super::drm::License;
 use super::drm::coordinator::DrmSessionCoordinator;
 use super::manifest::{self, TimelineBuildContext};
+use super::playback_control::{PlaybackController, PlaybackState};
 use super::segment_blacklist::SegmentBlacklist;
 use super::segment_fetcher::{
     fetch_bytes_with_base_failover, fetch_bytes_with_base_failover_and_range,
@@ -42,6 +43,7 @@ pub(crate) struct AdaptationStreamContext {
     pub drm: Arc<AsyncMutex<DrmSessionCoordinator>>,
     /// Latest buffer occupancy reported by the consumer (seconds).
     pub buffer_rx: watch::Receiver<f64>,
+    pub playback: PlaybackController,
 }
 
 /// Run the fragment loop for one adaptation set until segments are exhausted for this manifest snapshot.
@@ -61,7 +63,11 @@ pub(crate) async fn run_adaptation_stream(ctx: AdaptationStreamContext) -> Resul
         blacklist,
         drm,
         buffer_rx,
+        playback,
     } = ctx;
+
+    let seek_generation_at_start = playback.seek_generation();
+    playback.set_state(PlaybackState::Buffering);
 
     let addressing = manifest::segment_addressing_for_timeline(&period, &adaptation_set)?;
 
@@ -164,6 +170,11 @@ pub(crate) async fn run_adaptation_stream(ctx: AdaptationStreamContext) -> Resul
     let mut sidx_segments_by_rep: HashMap<String, Vec<manifest::TimelineSegment>> = HashMap::new();
 
     for (local_idx, seg) in segments.into_iter().enumerate() {
+        playback.wait_while_paused().await;
+        if playback.is_stopped() || playback.seek_generation() != seek_generation_at_start {
+            return Ok(());
+        }
+
         {
             let delivered_tracker = lock_delivered(&delivered);
             if delivered_tracker.is_delivered(&seg) {
@@ -212,12 +223,23 @@ pub(crate) async fn run_adaptation_stream(ctx: AdaptationStreamContext) -> Resul
             decrypt_media_fragment(&drm, aset_idx, rep_id, init_for_decrypt, Bytes::from(bytes))
                 .await?;
 
+        if playback.is_stopped() || playback.seek_generation() != seek_generation_at_start {
+            return Ok(());
+        }
+        if playback.is_paused() {
+            continue;
+        }
+
         let _ = tx.send(PlayerEvent::Segment {
             number: seg_for_fetch.number,
             time: seg_for_fetch.time,
             sub_number: seg_for_fetch.sub_number,
             data,
         });
+
+        if playback.state() != PlaybackState::Playing {
+            playback.set_state(PlaybackState::Playing);
+        }
 
         let mut delivered_tracker = lock_delivered(&delivered);
         delivered_tracker.mark_delivered(&seg_for_fetch);

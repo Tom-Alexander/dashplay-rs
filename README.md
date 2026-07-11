@@ -2,6 +2,19 @@
 
 A pure Rust implementation of an MPEG-DASH player library.
 
+## Features
+
+- **MPEG-DASH playback** — VOD and live streams with `SegmentTemplate` addressing (number, time, and duration) and `SegmentTimeline` support, including segment sequences (`S@k`)
+- **Live streaming** — Dynamic manifests, time-shift buffer windows, periodic manifest refresh, and multi-period transitions with init re-emission
+- **Multi-track output** — Separate audio and video adaptation sets, or a single merged byte stream
+- **Adaptive bitrate** — BOLA (Buffer Occupancy based Lyapunov Algorithm) with automatic representation switching and init re-emission on quality changes
+- **Widevine DRM** — PSSH and license URL parsing from the MPD, license acquisition, and in-pipeline segment decryption
+- **Custom license handling** — Pluggable async license fetcher for custom headers, cookies, or proxies
+- **Resilient fetching** — BaseURL resolution and failover, representation fallback, and segment URL blacklisting after failures
+- **Clock sync** — `UTCTiming` resolution for live edge calculation (HTTP, NTP/SNTP, and related schemes)
+- **Modular API** — High-level [`Player`](#player) wrapper or lower-level [`MediaPlayer`](#mediaplayer) for finer control
+- **Async delivery** — Tokio-based fragment delivery via broadcast channels (`Init`, `Segment`, `End` events)
+
 ## Usage
 
 Add to your `Cargo.toml`:

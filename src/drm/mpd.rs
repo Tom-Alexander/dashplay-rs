@@ -1,4 +1,4 @@
-use pssh_box::{from_base64 as pssh_from_base64, PsshBox, ToBytes, WIDEVINE_SYSTEM_ID};
+use pssh_box::{PsshBox, ToBytes, WIDEVINE_SYSTEM_ID, from_base64 as pssh_from_base64};
 use quick_xml::events::{BytesStart, BytesText, Event};
 use quick_xml::reader::Reader;
 use std::collections::HashSet;
@@ -148,8 +148,17 @@ fn merge_prefer_child(child: &LevelDrmInfo, parent: &LevelDrmInfo) -> LevelDrmIn
     let mut out = LevelDrmInfo::default();
 
     let mut seen_pssh: HashSet<Vec<u8>> = HashSet::new();
-    for p in child.widevine_pssh.iter().chain(parent.widevine_pssh.iter()) {
-        dedupe_push(&mut out.widevine_pssh, &mut seen_pssh, p.to_bytes(), p.clone());
+    for p in child
+        .widevine_pssh
+        .iter()
+        .chain(parent.widevine_pssh.iter())
+    {
+        dedupe_push(
+            &mut out.widevine_pssh,
+            &mut seen_pssh,
+            p.to_bytes(),
+            p.clone(),
+        );
     }
 
     let mut seen_kid: HashSet<String> = HashSet::new();
@@ -272,9 +281,10 @@ pub fn parse_mpd_drm_info(mpd_xml: &str) -> Result<MpdDrmInfo, MpdDrmError> {
                         current_period.adaptation_sets.push(current_aset.clone());
                     } else {
                         // Period-less MPD is invalid, but keep it by creating an implicit period.
-                        let mut p = PeriodDrmInfo::default();
-                        p.period = period_level.clone();
-                        p.adaptation_sets.push(current_aset.clone());
+                        let p = PeriodDrmInfo {
+                            period: period_level.clone(),
+                            adaptation_sets: vec![current_aset.clone()],
+                        };
                         info.periods.push(p);
                     }
                 }
@@ -331,9 +341,7 @@ pub fn parse_mpd_drm_info(mpd_xml: &str) -> Result<MpdDrmInfo, MpdDrmError> {
                 }
             }
             Event::End(e) if e.name().local_name().as_ref() == b"ContentProtection" => {
-                if cp_depth > 0 {
-                    cp_depth -= 1;
-                }
+                cp_depth = cp_depth.saturating_sub(1);
                 cp_is_widevine = false;
                 in_pssh = false;
                 pssh_acc.clear();
@@ -443,4 +451,3 @@ pub fn parse_mpd_drm_info(mpd_xml: &str) -> Result<MpdDrmInfo, MpdDrmError> {
     info.mpd = mpd_level.clone();
     Ok(info)
 }
-

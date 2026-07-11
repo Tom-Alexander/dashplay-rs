@@ -1,3 +1,4 @@
+use super::decrypt;
 use bytes::Bytes;
 use mp4decrypt::Ap4CencDecryptingProcessor;
 use pssh_box::{PsshBox, ToBytes};
@@ -5,7 +6,6 @@ use std::collections::HashMap;
 use std::sync::Arc;
 use thiserror::Error;
 use widevine::{CdmLicenseRequest, Key, KeyType};
-use super::decrypt;
 
 #[derive(Clone, Debug, Eq, PartialEq, Hash)]
 pub struct WidevineSessionKey(Vec<u8>);
@@ -49,7 +49,9 @@ impl License {
         for key in content_keys {
             let kid_hex = hex::encode(key.kid);
             let key_hex = hex::encode(&key.key);
-            builder = builder.key(&kid_hex, &key_hex).map_err(LicenseError::Mp4Decrypt)?;
+            builder = builder
+                .key(&kid_hex, &key_hex)
+                .map_err(LicenseError::Mp4Decrypt)?;
         }
 
         let built = builder.build().map_err(LicenseError::Mp4Decrypt)?;
@@ -58,10 +60,7 @@ impl License {
     }
 
     pub fn decrypt(&self, ciphertext: &Bytes, init: Option<&Bytes>) -> Result<Bytes, LicenseError> {
-        let processor = self
-            .processor
-            .as_ref()
-            .ok_or(LicenseError::LicenseNotSet)?;
+        let processor = self.processor.as_ref().ok_or(LicenseError::LicenseNotSet)?;
         let init_ref = init.map(|b| b.as_ref());
         let decrypted = processor
             .decrypt(ciphertext.as_ref(), init_ref)
@@ -89,6 +88,12 @@ pub struct WidevineLicenseManager {
     sessions: HashMap<WidevineSessionKey, Arc<License>>,
 }
 
+impl Default for WidevineLicenseManager {
+    fn default() -> Self {
+        Self::new()
+    }
+}
+
 impl WidevineLicenseManager {
     pub fn new() -> Self {
         Self {
@@ -106,4 +111,3 @@ impl WidevineLicenseManager {
         arc
     }
 }
-

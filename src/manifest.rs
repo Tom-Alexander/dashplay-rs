@@ -115,7 +115,7 @@ pub(crate) async fn fetch_mpd(client: &Client, manifest_uri: &Url) -> Result<MPD
     Ok(dash_mpd::parse(&text)?)
 }
 
-pub(crate) fn mpd<'a>(manifest: &'a Option<MPD>) -> Result<&'a MPD, PlayerError> {
+pub(crate) fn mpd(manifest: &Option<MPD>) -> Result<&MPD, PlayerError> {
     manifest.as_ref().ok_or(PlayerError::ManifestNotLoaded)
 }
 
@@ -178,7 +178,7 @@ pub(crate) fn current_period_window_at(
     };
 
     for w in windows {
-        let in_range = since_ast >= w.start && w.end.map_or(true, |e| since_ast < e);
+        let in_range = since_ast >= w.start && w.end.is_none_or(|e| since_ast < e);
         if in_range {
             return Ok(w);
         }
@@ -227,7 +227,7 @@ pub(crate) fn merge_base_url(current: &Url, new: &str) -> Result<Url, PlayerErro
     Ok(merged)
 }
 
-fn sorted_base_url_layer<'a>(layer: &'a [BaseURL]) -> Vec<&'a BaseURL> {
+fn sorted_base_url_layer(layer: &[BaseURL]) -> Vec<&BaseURL> {
     let mut v: Vec<_> = layer.iter().collect();
     v.sort_by_key(|bu| bu.priority.unwrap_or(u64::MAX));
     v
@@ -395,8 +395,8 @@ fn segments_from_explicit_timeline(
                         }
                     }
                     NegativeRepeatEnd::MpdSeconds(end_s) => {
-                        let abs_start_s =
-                            period_start_s + (t.saturating_sub(presentation_time_offset) as f64)
+                        let abs_start_s = period_start_s
+                            + (t.saturating_sub(presentation_time_offset) as f64)
                                 / (timescale as f64);
                         if abs_start_s >= *end_s - 1e-9 {
                             break;
@@ -548,7 +548,9 @@ fn segments_from_duration_template(
             .map(|x| x.as_secs_f64())
             .filter(|x| x.is_finite() && *x > 0.0)
             .unwrap_or(120.0);
-        let span = ((tsbd_s / duration_s).ceil() as u64).saturating_add(2).max(1);
+        let span = ((tsbd_s / duration_s).ceil() as u64)
+            .saturating_add(2)
+            .max(1);
         let start_n = end_n.saturating_sub(span).max(start_number);
 
         let mut segments = Vec::new();
@@ -707,9 +709,10 @@ mod timeline_tests {
         };
         let segs = timeline_segments(&st, &static_ctx(None)).unwrap();
         assert_eq!(segs.len(), 5);
-        assert_eq!(segs.iter().map(|s| s.time).collect::<Vec<_>>(), vec![
-            0, 500, 1000, 1500, 2000
-        ]);
+        assert_eq!(
+            segs.iter().map(|s| s.time).collect::<Vec<_>>(),
+            vec![0, 500, 1000, 1500, 2000]
+        );
     }
 
     #[test]
@@ -765,9 +768,10 @@ mod timeline_tests {
         };
         let segs = timeline_segments(&st, &ctx).unwrap();
         assert_eq!(segs.len(), 3);
-        assert_eq!(segs.iter().map(|s| s.time).collect::<Vec<_>>(), vec![
-            3000, 4000, 5000
-        ]);
+        assert_eq!(
+            segs.iter().map(|s| s.time).collect::<Vec<_>>(),
+            vec![3000, 4000, 5000]
+        );
     }
 
     #[test]
@@ -824,9 +828,10 @@ mod timeline_tests {
         };
         let segs = timeline_segments(&st, &static_ctx(None)).unwrap();
         assert_eq!(segs.len(), 4);
-        assert_eq!(segs.iter().map(|s| s.number).collect::<Vec<_>>(), vec![
-            1, 1, 2, 2
-        ]);
+        assert_eq!(
+            segs.iter().map(|s| s.number).collect::<Vec<_>>(),
+            vec![1, 1, 2, 2]
+        );
         assert_eq!(segs[2].time, 4000);
         assert_eq!(segs[2].presentation_time_s, 4.0);
     }

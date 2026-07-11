@@ -10,14 +10,14 @@ use tokio::sync::broadcast;
 use tokio::task::JoinHandle;
 use url::Url;
 
-use super::drm::mpd::{parse_mpd_drm_info, MpdDrmInfo};
+use super::drm::mpd::{MpdDrmInfo, parse_mpd_drm_info};
 use super::drm::widevine::{License, WidevineLicenseManager, WidevineSessionKey};
 
+use super::PlayerError;
 use super::manifest;
-use super::utc_timing;
 use super::stream_controller::PlaybackLoopState;
 use super::types::PlayerOutputs;
-use super::PlayerError;
+use super::utc_timing;
 
 /// Async license fetch invoked instead of the default `reqwest` POST when set.
 pub type WidevineLicenseFetcher = Arc<
@@ -48,8 +48,8 @@ impl MediaPlayer {
     pub fn new(uri: &str, license_uri: Option<&str>) -> Result<Self, PlayerError> {
         Ok(Self {
             client: Client::new(),
-            manifest_uri: Url::parse(uri).unwrap(),
-            license_uri: license_uri.map(|uri| Url::parse(uri).unwrap()),
+            manifest_uri: Url::parse(uri)?,
+            license_uri: license_uri.map(Url::parse).transpose()?,
             license_fetch: None,
             manifest: None,
             mpd_xml: None,
@@ -66,7 +66,11 @@ impl MediaPlayer {
         self
     }
 
-    async fn fetch_widevine_license(&self, license_url: &Url, challenge: Vec<u8>) -> Result<Bytes, PlayerError> {
+    async fn fetch_widevine_license(
+        &self,
+        license_url: &Url,
+        challenge: Vec<u8>,
+    ) -> Result<Bytes, PlayerError> {
         if let Some(fetch) = self.license_fetch.as_ref() {
             return fetch(license_url.clone(), challenge).await;
         }
@@ -105,7 +109,8 @@ impl MediaPlayer {
     pub async fn start(mut self) -> Result<PlayerOutputs, PlayerError> {
         self.fetch_manifest().await?;
         let mpd = manifest::mpd(&self.manifest)?;
-        let wall_now = utc_timing::wall_clock_utc(&self.client, mpd, Some(&self.manifest_uri)).await;
+        let wall_now =
+            utc_timing::wall_clock_utc(&self.client, mpd, Some(&self.manifest_uri)).await;
         let current_window = manifest::current_period_window_at(mpd, wall_now)?;
         let period = &mpd.periods[current_window.idx];
 
@@ -165,7 +170,8 @@ impl MediaPlayer {
                                 .unwrap_or_else(|| license_url.clone());
                             let mut lic = License::new_from_pssh(rep_pssh)?;
                             let challenge = lic.challenge()?;
-                            let bytes = self.fetch_widevine_license(&license_url, challenge).await?;
+                            let bytes =
+                                self.fetch_widevine_license(&license_url, challenge).await?;
                             lic.set_license(bytes.as_ref())?;
                             self.license_manager.insert_ready(rep_key, lic)
                         };

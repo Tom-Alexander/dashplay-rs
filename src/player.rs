@@ -1,14 +1,15 @@
 use bytes::Bytes;
+use futures_util::StreamExt;
 use std::pin::Pin;
 use tokio::sync::{broadcast, mpsc};
 use tokio::task::JoinHandle;
-use tokio_stream::wrappers::ReceiverStream;
 use tokio_stream::Stream;
-use futures_util::StreamExt;
+use tokio_stream::wrappers::ReceiverStream;
 
 use super::media_player::{MediaPlayer, WidevineLicenseFetcher};
 use super::{PlayerError, PlayerEvent, PlayerOutputs, PlayerTrack};
 
+type MergedByteStream = Pin<Box<dyn Stream<Item = Result<Bytes, std::io::Error>> + Send>>;
 
 pub struct Player {
     media_player: MediaPlayer,
@@ -36,9 +37,7 @@ impl Player {
     /// - If you need per-track separation (e.g. audio + video as separate inputs), use
     ///   `start_tracks()` instead.
     #[allow(dead_code)]
-    pub async fn start_merged(
-        self,
-    ) -> Result<PlayerMergedOutput, PlayerError> {
+    pub async fn start_merged(self) -> Result<PlayerMergedOutput, PlayerError> {
         let PlayerOutputs { tracks, join } = self.media_player.start().await?;
 
         let (out_tx, out_rx) = mpsc::channel::<Result<Bytes, PlayerError>>(256);
@@ -74,10 +73,7 @@ impl Player {
         Ok(PlayerMergedOutput {
             stream: ReceiverStream::new(out_rx),
             join,
-            _tracks: tracks
-                .into_iter()
-                .map(|t| t.tx)
-                .collect::<Vec<_>>(),
+            _tracks: tracks.into_iter().map(|t| t.tx).collect::<Vec<_>>(),
             _forwarders: forwarders,
         })
     }
@@ -123,7 +119,7 @@ impl PlayerMergedOutput {
     pub fn into_async_read(self) -> PlayerMergedAsyncRead {
         let s = self.stream.map(|res| match res {
             Ok(b) => Ok(b),
-            Err(e) => Err(std::io::Error::new(std::io::ErrorKind::Other, e)),
+            Err(e) => Err(std::io::Error::other(e)),
         });
         PlayerMergedAsyncRead {
             reader: tokio_util::io::StreamReader::new(Box::pin(s)),
@@ -136,10 +132,7 @@ impl PlayerMergedOutput {
 
 #[allow(dead_code)]
 pub struct PlayerMergedAsyncRead {
-    pub reader: tokio_util::io::StreamReader<
-        Pin<Box<dyn Stream<Item = Result<Bytes, std::io::Error>> + Send>>,
-        Bytes,
-    >,
+    pub reader: tokio_util::io::StreamReader<MergedByteStream, Bytes>,
     pub join: JoinHandle<Result<(), PlayerError>>,
     _tracks: Vec<broadcast::Sender<PlayerEvent>>,
     _forwarders: Vec<JoinHandle<()>>,

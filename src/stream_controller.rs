@@ -1,9 +1,9 @@
 //! Orchestrates manifest refresh, period selection, and parallel adaptation-set streams
 //! (dash.js: `StreamController` coordinating multiple `Stream` instances).
 
+use std::collections::HashMap;
 use std::sync::Arc;
 use std::sync::atomic::{AtomicBool, Ordering};
-use std::collections::HashMap;
 
 use futures::future::join_all;
 use reqwest::Client;
@@ -12,12 +12,12 @@ use url::Url;
 
 use super::drm::License;
 
-use super::dash_stream::{run_adaptation_stream, AdaptationStreamContext};
+use super::PlayerError;
+use super::dash_stream::{AdaptationStreamContext, run_adaptation_stream};
 use super::manifest::{self, MimeType};
-use super::utc_timing;
 use super::segment_blacklist::SegmentBlacklist;
 use super::types::PlayerEvent;
-use super::PlayerError;
+use super::utc_timing;
 
 pub(crate) struct PlaybackLoopState {
     pub client: Client,
@@ -35,15 +35,9 @@ impl PlaybackLoopState {
         Ok(())
     }
 
-    pub async fn run(
-        mut self,
-        tracks: Vec<super::types::PlayerTrack>,
-    ) -> Result<(), PlayerError> {
-        let have_init: Arc<Vec<AtomicBool>> = Arc::new(
-            (0..tracks.len())
-                .map(|_| AtomicBool::new(false))
-                .collect(),
-        );
+    pub async fn run(mut self, tracks: Vec<super::types::PlayerTrack>) -> Result<(), PlayerError> {
+        let have_init: Arc<Vec<AtomicBool>> =
+            Arc::new((0..tracks.len()).map(|_| AtomicBool::new(false)).collect());
         let blacklist = SegmentBlacklist::new();
 
         loop {
@@ -54,7 +48,9 @@ impl PlaybackLoopState {
             self.fetch_manifest().await?;
 
             let mpd_ref = manifest::mpd(&self.manifest)?;
-            let min_update = mpd_ref.minimumUpdatePeriod.unwrap_or(std::time::Duration::ZERO);
+            let min_update = mpd_ref
+                .minimumUpdatePeriod
+                .unwrap_or(std::time::Duration::ZERO);
 
             let wall_now =
                 utc_timing::wall_clock_utc(&self.client, mpd_ref, Some(&self.manifest_uri)).await;
@@ -139,10 +135,8 @@ impl PlaybackLoopState {
             }
 
             let results = join_all(tasks).await;
-            for r in results {
-                if let Ok(Err(e)) = r {
-                    return Err(e);
-                }
+            for inner in results.into_iter().filter_map(Result::ok) {
+                inner?;
             }
 
             if min_update.is_zero() {

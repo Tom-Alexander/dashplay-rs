@@ -1,10 +1,10 @@
-/// BOLA: Buffer Occupancy based Lyapunov Algorithm
-///
-/// Based on: "BOLA: Near-Optimal Bitrate Adaptation for Online Videos"
-/// Huang et al., INFOCOM 2015 / IEEE/ACM Transactions on Networking 2018
-///
-/// BOLA uses Lyapunov optimization to select video quality levels that
-/// maximize a utility function while keeping the playback buffer stable.
+//! BOLA: Buffer Occupancy based Lyapunov Algorithm
+//!
+//! Based on: "BOLA: Near-Optimal Bitrate Adaptation for Online Videos"
+//! Huang et al., INFOCOM 2015 / IEEE/ACM Transactions on Networking 2018
+//!
+//! BOLA uses Lyapunov optimization to select video quality levels that
+//! maximize a utility function while keeping the playback buffer stable.
 
 // ─── Constants ───────────────────────────────────────────────────────────────
 
@@ -87,11 +87,17 @@ impl Bola {
     /// With a single quality there is no adaptation; [`Self::decide`] always
     /// selects that representation (the highest and only rung).
     pub fn new(mut qualities: Vec<QualityLevel>, ewma_alpha: f64) -> Self {
-        assert!(!qualities.is_empty(), "BOLA needs at least one quality level");
-        assert!((0.0..=1.0).contains(&ewma_alpha), "ewma_alpha must be in (0,1]");
+        assert!(
+            !qualities.is_empty(),
+            "BOLA needs at least one quality level"
+        );
+        assert!(
+            (0.0..=1.0).contains(&ewma_alpha),
+            "ewma_alpha must be in (0,1]"
+        );
 
         // Sort ascending by bitrate.
-        qualities.sort_by(|a, b| a.bitrate_bps.partial_cmp(&b.bitrate_bps).unwrap());
+        qualities.sort_by(|a, b| a.bitrate_bps.total_cmp(&b.bitrate_bps));
 
         // Assign utilities: v(m) = ln(bitrate_m / bitrate_0).
         let min_bitrate = qualities[0].bitrate_bps;
@@ -107,7 +113,7 @@ impl Bola {
         // This ensures the highest quality can only be chosen when the buffer
         // is close to full, providing a safety margin of γ·p seconds.
         // With one quality, utility_max is 0 and V is still well-defined.
-        let utility_max = qualities.last().unwrap().utility;
+        let utility_max = qualities[qualities.len() - 1].utility;
         let v = (BUFFER_MAX_S - BUFFER_LOW_S) / (utility_max + GAMMA_P);
 
         Bola {
@@ -186,17 +192,14 @@ impl Bola {
         for (idx, q) in self.qualities.iter().enumerate() {
             // Skip qualities whose bitrate exceeds estimated throughput
             // (we couldn't download them in time to prevent a re-buffer).
-            if self.throughput_ewma_bps > 0.0
-                && q.bitrate_bps > self.throughput_ewma_bps
-            {
+            if self.throughput_ewma_bps > 0.0 && q.bitrate_bps > self.throughput_ewma_bps {
                 continue;
             }
 
             // Lyapunov drift-plus-penalty objective (per-bit normalised):
             //   score = (V · (v(m) + 1) - Q) / bitrate(m)
             // Maximising this maximises utility while keeping the queue stable.
-            let score =
-                (self.v * (q.utility + 1.0) - self.buffer_s) / q.bitrate_bps;
+            let score = (self.v * (q.utility + 1.0) - self.buffer_s) / q.bitrate_bps;
 
             // Prefer higher quality on a tie (compare with >=).
             if score >= best_score {
@@ -249,11 +252,31 @@ mod tests {
 
     fn ladder() -> Vec<QualityLevel> {
         vec![
-            QualityLevel { label: "240p".into(),  bitrate_bps:  300_000.0, utility: 0.0 },
-            QualityLevel { label: "360p".into(),  bitrate_bps:  750_000.0, utility: 0.0 },
-            QualityLevel { label: "480p".into(),  bitrate_bps: 1_200_000.0, utility: 0.0 },
-            QualityLevel { label: "720p".into(),  bitrate_bps: 2_500_000.0, utility: 0.0 },
-            QualityLevel { label: "1080p".into(), bitrate_bps: 5_000_000.0, utility: 0.0 },
+            QualityLevel {
+                label: "240p".into(),
+                bitrate_bps: 300_000.0,
+                utility: 0.0,
+            },
+            QualityLevel {
+                label: "360p".into(),
+                bitrate_bps: 750_000.0,
+                utility: 0.0,
+            },
+            QualityLevel {
+                label: "480p".into(),
+                bitrate_bps: 1_200_000.0,
+                utility: 0.0,
+            },
+            QualityLevel {
+                label: "720p".into(),
+                bitrate_bps: 2_500_000.0,
+                utility: 0.0,
+            },
+            QualityLevel {
+                label: "1080p".into(),
+                bitrate_bps: 5_000_000.0,
+                utility: 0.0,
+            },
         ]
     }
 
@@ -320,7 +343,9 @@ mod tests {
             assert!(
                 d.quality_index >= prev_idx,
                 "quality dropped from {} to {} at buf={:.1}s",
-                prev_idx, d.quality_index, buf
+                prev_idx,
+                d.quality_index,
+                buf
             );
             prev_idx = d.quality_index;
         }

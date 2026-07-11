@@ -28,7 +28,7 @@ impl AbrController {
             })
             .collect();
 
-        ladder.sort_by(|a, b| a.2.partial_cmp(&b.2).unwrap());
+        ladder.sort_by(|a, b| a.2.total_cmp(&b.2));
 
         if ladder.is_empty() {
             return None;

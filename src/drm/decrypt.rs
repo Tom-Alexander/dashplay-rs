@@ -12,8 +12,8 @@ pub fn get_cdm() -> anyhow::Result<Cdm> {
 pub fn create_license_request(pssh: &PsshBox) -> anyhow::Result<CdmLicenseRequest> {
     let cdm = get_cdm()?;
     let pssh_bytes = pssh.to_bytes();
-    let pssh = Pssh::from_bytes(&pssh_bytes)
-        .map_err(|e| anyhow::anyhow!("parse widevine pssh: {e:?}"))?;
+    let pssh =
+        Pssh::from_bytes(&pssh_bytes).map_err(|e| anyhow::anyhow!("parse widevine pssh: {e:?}"))?;
     let request = cdm
         .open()
         .get_license_request(pssh, LicenseType::STREAMING)

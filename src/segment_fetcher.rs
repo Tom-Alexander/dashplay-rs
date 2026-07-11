@@ -1,8 +1,8 @@
 use reqwest::Client;
 use url::Url;
 
-use super::segment_blacklist::SegmentBlacklist;
 use super::PlayerError;
+use super::segment_blacklist::SegmentBlacklist;
 
 /// Low-level segment / fragment HTTP fetch (dash.js: FragmentLoader / HTTPLoader).
 ///

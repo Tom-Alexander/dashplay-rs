@@ -1,23 +1,23 @@
 //! One DASH stream: initialization + media segments for a single AdaptationSet
 //! (dash.js: `Stream` + schedule / fragment pipeline for that stream).
 
+use std::collections::HashMap;
 use std::sync::Arc;
 use std::sync::atomic::{AtomicBool, Ordering};
-use std::collections::HashMap;
 use std::time::Duration;
 use std::time::Instant;
 
-use bytes::Bytes;
-use dash_mpd::AdaptationSet;
-use reqwest::Client;
-use tokio::sync::broadcast;
-use super::drm::License;
+use super::PlayerError;
 use super::abr_controller::AbrController;
+use super::drm::License;
 use super::manifest::{self, TimelineBuildContext};
 use super::segment_blacklist::SegmentBlacklist;
 use super::segment_fetcher::fetch_bytes_with_base_failover;
 use super::types::PlayerEvent;
-use super::PlayerError;
+use bytes::Bytes;
+use dash_mpd::AdaptationSet;
+use reqwest::Client;
+use tokio::sync::broadcast;
 
 pub(crate) struct AdaptationStreamContext {
     pub client: Client,
@@ -61,7 +61,10 @@ pub(crate) async fn run_adaptation_stream(ctx: AdaptationStreamContext) -> Resul
         .initialization
         .as_deref()
         .ok_or(PlayerError::MissingInitializationTemplate)?;
-    let media_tpl = st.media.as_deref().ok_or(PlayerError::MissingMediaTemplate)?;
+    let media_tpl = st
+        .media
+        .as_deref()
+        .ok_or(PlayerError::MissingMediaTemplate)?;
 
     let segments_all = manifest::timeline_segments(st, &timeline_ctx)?;
 
@@ -109,15 +112,9 @@ pub(crate) async fn run_adaptation_stream(ctx: AdaptationStreamContext) -> Resul
             )?;
             let rep_id = rep.id.as_deref().unwrap_or_default();
             let rep_license = wv_by_rep.get(rep_id).cloned().or_else(|| license.clone());
-            let init_path =
-                manifest::interpolate_template(init_tpl, rep_id, None, None, None);
-            let bytes = fetch_bytes_with_base_failover(
-                &client,
-                &bases,
-                &init_path,
-                &blacklist,
-            )
-            .await?;
+            let init_path = manifest::interpolate_template(init_tpl, rep_id, None, None, None);
+            let bytes =
+                fetch_bytes_with_base_failover(&client, &bases, &init_path, &blacklist).await?;
             let init_bytes = Bytes::from(bytes);
             encrypted_init_by_rep.insert(rep_id.to_string(), init_bytes.clone());
             active_rep_id = Some(rep_id.to_string());
@@ -143,11 +140,8 @@ pub(crate) async fn run_adaptation_stream(ctx: AdaptationStreamContext) -> Resul
         let decision = abr.decide();
         let rep_idx = abr.representation_index_for_quality_index(decision.quality_index);
         let rep = &adaptation_set.representations[rep_idx];
-        let bases = manifest::segment_bases_for_representation(
-            &segment_base_ctx,
-            &adaptation_set,
-            rep,
-        )?;
+        let bases =
+            manifest::segment_bases_for_representation(&segment_base_ctx, &adaptation_set, rep)?;
         let rep_id = rep.id.as_deref().unwrap_or_default();
         let rep_id_string = rep_id.to_string();
         let rep_license = wv_by_rep.get(rep_id).cloned().or_else(|| license.clone());
@@ -155,9 +149,10 @@ pub(crate) async fn run_adaptation_stream(ctx: AdaptationStreamContext) -> Resul
         // If ABR switched reps (or init was never fetched for this rep), fetch init for this rep.
         if active_rep_id.as_deref() != Some(rep_id) || !encrypted_init_by_rep.contains_key(rep_id) {
             let init_path = manifest::interpolate_template(init_tpl, rep_id, None, None, None);
-            let init_bytes = fetch_bytes_with_base_failover(&client, &bases, &init_path, &blacklist)
-                .await
-                .map(Bytes::from)?;
+            let init_bytes =
+                fetch_bytes_with_base_failover(&client, &bases, &init_path, &blacklist)
+                    .await
+                    .map(Bytes::from)?;
             encrypted_init_by_rep.insert(rep_id_string.clone(), init_bytes.clone());
             active_rep_id = Some(rep_id_string.clone());
 

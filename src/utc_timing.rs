@@ -9,8 +9,8 @@ use std::time::Duration;
 
 use chrono::{DateTime, NaiveDateTime, TimeZone, Utc};
 use dash_mpd::{MPD, UTCTiming};
-use quick_xml::events::Event;
 use quick_xml::Reader;
+use quick_xml::events::Event;
 use reqwest::Client;
 use url::Url;
 
@@ -105,7 +105,11 @@ async fn resolve_utc_timing(
     manifest_uri: Option<&Url>,
 ) -> Option<DateTime<Utc>> {
     let kind = classify_scheme(&u.schemeIdUri)?;
-    let value = u.value.as_deref().map(str::trim).filter(|s| !s.is_empty())?;
+    let value = u
+        .value
+        .as_deref()
+        .map(str::trim)
+        .filter(|s| !s.is_empty())?;
 
     match kind {
         UtcScheme::Direct => parse_xs_datetime_loose(value),
@@ -123,10 +127,7 @@ async fn resolve_utc_timing(
         }
         UtcScheme::Ntp | UtcScheme::NtpServer | UtcScheme::Sntp => {
             let (host, port) = parse_host_port(value, 123)?;
-            match tokio::task::spawn_blocking(move || sntp_query(&host, port)).await {
-                Ok(dt) => dt,
-                Err(_) => None,
-            }
+            (tokio::task::spawn_blocking(move || sntp_query(&host, port)).await).unwrap_or_default()
         }
         UtcScheme::WebSocket => None,
     }
@@ -213,14 +214,7 @@ async fn http_ntp_body(client: &Client, url: &str) -> Option<DateTime<Utc>> {
 }
 
 async fn http_datetime_body(client: &Client, url: &str, xsdate: bool) -> Option<DateTime<Utc>> {
-    let text = client
-        .get(url)
-        .send()
-        .await
-        .ok()?
-        .text()
-        .await
-        .ok()?;
+    let text = client.get(url).send().await.ok()?.text().await.ok()?;
     let t = text.trim();
     if !xsdate {
         return parse_xs_datetime_loose(t);
@@ -275,9 +269,7 @@ fn parse_http_date(s: &str) -> Option<DateTime<Utc>> {
 
 fn sntp_query(host: &str, port: u16) -> Option<DateTime<Utc>> {
     let socket = UdpSocket::bind("0.0.0.0:0").ok()?;
-    socket
-        .set_read_timeout(Some(Duration::from_secs(3)))
-        .ok()?;
+    socket.set_read_timeout(Some(Duration::from_secs(3))).ok()?;
     let mut packet = [0u8; 48];
     packet[0] = 0x1b;
     let dest = format!("{host}:{port}");
@@ -302,10 +294,7 @@ mod tests {
             scheme_base("urn:mpeg:dash:utc:http-iso:2014"),
             Some("http-iso")
         );
-        assert_eq!(
-            scheme_base("urn:mpeg:dash:utc:direct:2012"),
-            Some("direct")
-        );
+        assert_eq!(scheme_base("urn:mpeg:dash:utc:direct:2012"), Some("direct"));
     }
 
     #[test]

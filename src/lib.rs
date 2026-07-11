@@ -1,10 +1,42 @@
+//! Pure Rust MPEG-DASH player library.
+//!
+//! `dashplayrs` implements a modular playback pipeline for MPEG-DASH manifests:
+//! manifest parsing, timeline resolution, adaptive bitrate selection, segment
+//! scheduling, HTTP download, and optional Widevine decryption.
+//!
+//! # Quick start
+//!
+//! ```no_run
+//! use dashplayrs::{Player, PlayerEvent};
+//!
+//! # async fn example() -> Result<(), dashplayrs::PlayerError> {
+//! let player = Player::new("https://example.com/manifest.mpd", None)?;
+//! let outputs = player.start_tracks().await?;
+//!
+//! if let Some(mut rx) = outputs.subscribe(0) {
+//!     while let Ok(event) = rx.recv().await {
+//!         match event {
+//!             PlayerEvent::Init(_) | PlayerEvent::Segment { .. } => { /* decode */ }
+//!             PlayerEvent::End => break,
+//!         }
+//!     }
+//! }
+//!
+//! outputs.join.await.unwrap()?;
+//! # Ok(())
+//! # }
+//! ```
+//!
+//! See [`ARCHITECTURE.md`](https://github.com/dashplayrs/dashplayrs/blob/main/ARCHITECTURE.md)
+//! for the component layout and design goals.
+
 use thiserror::Error;
 
 mod abr_controller;
 pub mod bola;
-pub mod drm;
 mod dash_stream;
-pub mod manifest;
+pub mod drm;
+mod manifest;
 mod media_player;
 mod player;
 mod segment_blacklist;
@@ -13,13 +45,14 @@ mod stream_controller;
 mod types;
 mod utc_timing;
 
-pub use player::{Player, PlayerTrackOutput};
 pub use media_player::{MediaPlayer, WidevineLicenseFetcher};
+pub use player::{Player, PlayerTrackOutput};
 pub use types::{PlayerEvent, PlayerOutputs, PlayerTrack};
 
-use crate::player::drm::LicenseError;
-use crate::player::drm::mpd::MpdDrmError;
+use crate::drm::LicenseError;
+use crate::drm::mpd::MpdDrmError;
 
+/// Errors that can occur anywhere in the playback pipeline.
 #[derive(Debug, Error)]
 pub enum PlayerError {
     #[error("manifest: {0}")]
@@ -54,7 +87,9 @@ pub enum PlayerError {
     MissingAvailabilityStartForDynamicTemplate,
     #[error("static SegmentTemplate@duration needs Period or MPD duration to bound segment count")]
     MissingPeriodExtentForStaticTemplate,
-    #[error("SegmentTimeline S@r<0 needs a following S@t, Period end, or (for dynamic MPD) availabilityStartTime")]
+    #[error(
+        "SegmentTimeline S@r<0 needs a following S@t, Period end, or (for dynamic MPD) availabilityStartTime"
+    )]
     UnboundedSegmentTimelineRepeat,
     #[error("segment URL blacklisted: {0}")]
     SegmentBlacklisted(String),

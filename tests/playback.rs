@@ -640,6 +640,130 @@ async fn subtitle_and_video_tracks_play_in_parallel() {
     assert!(has_end(video));
 }
 
+fn trick_play_track_selection() -> dashplayrs::TrackSelection {
+    dashplayrs::TrackSelection::default()
+        .with_video(dashplayrs::TrackPreference::default().max_tracks(0))
+        .with_trick_play(dashplayrs::TrackPreference::default().max_tracks(1))
+}
+
+#[tokio::test]
+async fn trick_play_track_delivers_init_and_segments() {
+    let server = FixtureServer::spawn("dashif_trick_play").await;
+    let player = dashplayrs::Player::new(server.manifest_url.as_str(), None)
+        .expect("player")
+        .with_track_selection(trick_play_track_selection());
+    let outputs = player.start_tracks().await.expect("start");
+
+    assert_eq!(outputs.track_count(), 1);
+    assert_eq!(
+        outputs.tracks[0].info.kind,
+        dashplayrs::TrackKind::TrickPlay
+    );
+    assert_eq!(
+        outputs.tracks[0].info.mime_type.as_deref(),
+        Some("video/mp4")
+    );
+
+    let mut rx = outputs
+        .tracks
+        .into_iter()
+        .next()
+        .expect("trick-play track")
+        .into_receiver();
+    let events = common::collect_events(&mut rx, TIMEOUT).await;
+    outputs.join.await.unwrap().expect("join");
+
+    assert_eq!(
+        init_payload(&events).as_deref(),
+        Some(b"dashplay-init-v1".as_ref())
+    );
+    assert_eq!(
+        segment_payloads(&events),
+        vec![b"dashplay-seg-1".to_vec(), b"dashplay-seg-2".to_vec()]
+    );
+    assert!(has_end(&events));
+}
+
+fn image_track_selection() -> dashplayrs::TrackSelection {
+    dashplayrs::TrackSelection::default()
+        .with_video(dashplayrs::TrackPreference::default().max_tracks(0))
+        .with_image(dashplayrs::TrackPreference::default().max_tracks(1))
+}
+
+#[tokio::test]
+async fn image_thumbnail_track_delivers_init_and_segments() {
+    let server = FixtureServer::spawn("thumbnail_jpeg").await;
+    let player = dashplayrs::Player::new(server.manifest_url.as_str(), None)
+        .expect("player")
+        .with_track_selection(image_track_selection());
+    let outputs = player.start_tracks().await.expect("start");
+
+    assert_eq!(outputs.track_count(), 1);
+    assert_eq!(outputs.tracks[0].info.kind, dashplayrs::TrackKind::Image);
+    assert_eq!(outputs.tracks[0].info.thumbnail_tile, Some((4, 2)));
+    assert_eq!(
+        outputs.tracks[0].info.mime_type.as_deref(),
+        Some("image/jpeg")
+    );
+
+    let mut rx = outputs
+        .tracks
+        .into_iter()
+        .next()
+        .expect("image track")
+        .into_receiver();
+    let events = common::collect_events(&mut rx, TIMEOUT).await;
+    outputs.join.await.unwrap().expect("join");
+
+    assert_eq!(
+        init_payload(&events).as_deref(),
+        Some(b"dashplay-thumb-init".as_ref())
+    );
+    assert_eq!(
+        segment_payloads(&events),
+        vec![
+            b"dashplay-thumb-seg-1".to_vec(),
+            b"dashplay-thumb-seg-2".to_vec()
+        ]
+    );
+    assert!(has_end(&events));
+}
+
+#[tokio::test]
+async fn trick_play_and_video_tracks_play_in_parallel() {
+    let server = FixtureServer::spawn("dashif_trick_play").await;
+    let selection = dashplayrs::TrackSelection::default()
+        .with_trick_play(dashplayrs::TrackPreference::default().max_tracks(1));
+    let player = dashplayrs::Player::new(server.manifest_url.as_str(), None)
+        .expect("player")
+        .with_track_selection(selection);
+    let outputs = player.start_tracks().await.expect("start");
+
+    assert_eq!(outputs.track_count(), 2);
+    assert_eq!(outputs.tracks[0].info.kind, dashplayrs::TrackKind::Video);
+    assert_eq!(
+        outputs.tracks[1].info.kind,
+        dashplayrs::TrackKind::TrickPlay
+    );
+
+    let all = play_all_tracks_with_outputs(outputs, TIMEOUT)
+        .await
+        .expect("playback");
+    let video = &all[0];
+    let trick = &all[1];
+
+    assert_eq!(
+        init_payload(video).as_deref(),
+        Some(b"dashplay-init-v1".as_ref())
+    );
+    assert_eq!(
+        init_payload(trick).as_deref(),
+        Some(b"dashplay-init-v1".as_ref())
+    );
+    assert!(has_end(video));
+    assert!(has_end(trick));
+}
+
 async fn play_all_tracks_with_outputs(
     outputs: dashplayrs::PlayerTrackOutputs,
     timeout: std::time::Duration,

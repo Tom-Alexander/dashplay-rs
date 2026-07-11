@@ -159,6 +159,48 @@ for track in &outputs.tracks {
 # }
 ```
 
+### Trick-play and thumbnails
+
+Trick-play video (`http://dashif.org/guidelines/trickmode`) and thumbnail image
+(`image/jpeg`, often with `http://dashif.org/guidelines/thumbnail_tile`) adaptation sets use the
+same fragment pipeline as other tracks. The library does not decode JPEG tiles or render preview
+UI — feed the payloads to your image decoder or scrub-bar component.
+
+Enable delivery with [`TrackSelection::with_trick_play`](#trick-play-and-thumbnails) or
+[`TrackSelection::with_image`](#trick-play-and-thumbnails). Both are disabled by default
+(`max_tracks(0)`). `TrackKind::TrickPlay` and `TrackKind::Image` mark selected auxiliary tracks;
+[`TrackInfo::thumbnail_tile`](#trick-play-and-thumbnails) reports tile layout when declared.
+
+```rust
+use dashplayrs::{Player, TrackKind, TrackPreference, TrackSelection};
+
+# async fn example() -> Result<(), dashplayrs::PlayerError> {
+let selection = TrackSelection::default()
+    .with_trick_play(TrackPreference::default().max_tracks(1))
+    .with_image(TrackPreference::default().max_tracks(1));
+
+let outputs = Player::new("https://example.com/manifest.mpd", None)?
+    .with_track_selection(selection)
+    .start_tracks()
+    .await?;
+
+for track in &outputs.tracks {
+    match track.info.kind {
+        TrackKind::TrickPlay => {
+            // low-frame-rate video segments for fast scrubbing
+        }
+        TrackKind::Image => {
+            println!("thumbnail tiles {:?}", track.info.thumbnail_tile);
+        }
+        _ => {}
+    }
+}
+# outputs.stop()?;
+# outputs.join.await.unwrap()?;
+# Ok(())
+# }
+```
+
 ### Custom HTTP client
 
 By default, playback uses an internal [`ReqwestClient`](#http-client) for manifest fetches,
@@ -283,7 +325,7 @@ controller. Clone handles (`outputs.playback.clone()`) share one session.
 | [`TrackMetricsSnapshot`](#metrics) | Point-in-time metrics view (throughput, buffer, switches, rebuffers) |
 | [`ThroughputSample`](#metrics) / [`BufferSample`](#metrics) / [`BitrateSwitch`](#metrics) / [`RebufferEvent`](#metrics) | Individual metric samples |
 | `TrackSelection` / `TrackPreference` | Ordered adaptation-set preferences and per-kind limits (audio, video, text) |
-| `TrackInfo` / `TrackKind` | Metadata and media kind (`Audio`, `Video`, `Text`) for a selected track |
+| `TrackInfo` / `TrackKind` | Metadata and media kind (`Audio`, `Video`, `Text`, `TrickPlay`, `Image`) for a selected track |
 | `SubtitleType` | Detected subtitle/caption format for text tracks |
 | `TrackDescriptor` | Accessibility descriptor scheme/value matcher and metadata |
 | [`WidevineLicenseFetcher`](#widevinelicensefetcher) | Custom async Widevine license HTTP handler |

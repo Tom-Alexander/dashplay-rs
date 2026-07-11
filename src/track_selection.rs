@@ -2,7 +2,10 @@
 
 use dash_mpd::{AdaptationSet, Period};
 
-use super::descriptors::{adaptation_descriptor_metadata, is_playback_adaptation_set};
+use super::descriptors::{
+    adaptation_descriptor_metadata, is_playback_adaptation_set, is_thumbnail_tile_adaptation_set,
+    is_trick_play_adaptation_set, thumbnail_tile_layout,
+};
 
 /// The media kind carried by a selected DASH adaptation set.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -13,6 +16,10 @@ pub enum TrackKind {
     Video,
     /// A subtitle or caption adaptation set (`text/vtt`, TTML, or in-band fMP4 text tracks).
     Text,
+    /// A trick-play video adaptation set (`http://dashif.org/guidelines/trickmode`).
+    TrickPlay,
+    /// A thumbnail image adaptation set (`image/jpeg`, often with `thumbnail_tile`).
+    Image,
 }
 
 /// A DASH descriptor used for track metadata and accessibility matching.
@@ -92,10 +99,11 @@ impl TrackPreference {
     }
 }
 
-/// User preferences for selecting audio, video, and text adaptation sets.
+/// User preferences for selecting audio, video, text, trick-play, and image adaptation sets.
 ///
-/// The default retains all audio and video tracks and **no** text tracks. Use
-/// [`TrackPreference::max_tracks`] on [`Self::text`] to enable subtitle or caption delivery.
+/// The default retains all audio and video tracks and **no** text, trick-play, or image tracks.
+/// Use [`TrackPreference::max_tracks`] on [`Self::text`], [`Self::trick_play`], or [`Self::image`]
+/// to enable auxiliary delivery.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct TrackSelection {
     /// Audio-track preferences. Set `max_tracks` above one to retain multiple preferred languages
@@ -105,6 +113,10 @@ pub struct TrackSelection {
     pub video: TrackPreference,
     /// Subtitle and caption preferences. Disabled by default (`max_tracks(0)`).
     pub text: TrackPreference,
+    /// Trick-play video preferences. Disabled by default (`max_tracks(0)`).
+    pub trick_play: TrackPreference,
+    /// Thumbnail image preferences. Disabled by default (`max_tracks(0)`).
+    pub image: TrackPreference,
 }
 
 impl Default for TrackSelection {
@@ -113,6 +125,8 @@ impl Default for TrackSelection {
             audio: TrackPreference::default(),
             video: TrackPreference::default(),
             text: TrackPreference::default().max_tracks(0),
+            trick_play: TrackPreference::default().max_tracks(0),
+            image: TrackPreference::default().max_tracks(0),
         }
     }
 }
@@ -135,6 +149,18 @@ impl TrackSelection {
         self.text = text;
         self
     }
+
+    /// Replace trick-play video preferences.
+    pub fn with_trick_play(mut self, trick_play: TrackPreference) -> Self {
+        self.trick_play = trick_play;
+        self
+    }
+
+    /// Replace thumbnail image preferences.
+    pub fn with_image(mut self, image: TrackPreference) -> Self {
+        self.image = image;
+        self
+    }
 }
 
 /// Public metadata for one selected adaptation-set track.
@@ -148,6 +174,9 @@ pub struct TrackInfo {
     pub kind: TrackKind,
     /// Subtitle or caption format when [`Self::kind`] is [`TrackKind::Text`].
     pub subtitle_type: Option<dash_mpd::SubtitleType>,
+    /// Thumbnail tile layout `(horizontal_tiles, vertical_tiles)` when [`Self::kind`] is
+    /// [`TrackKind::Image`] and the manifest declares `thumbnail_tile`.
+    pub thumbnail_tile: Option<(u32, u32)>,
     /// Effective MIME type from the adaptation set or one of its representations.
     pub mime_type: Option<String>,
     /// Effective RFC 5646 language from the adaptation set, content component, or representation.
@@ -170,6 +199,12 @@ pub(crate) struct SelectedAdaptationSet<'a> {
 }
 
 fn track_kind(adaptation_set: &AdaptationSet) -> Option<TrackKind> {
+    if is_trick_play_adaptation_set(adaptation_set) {
+        return Some(TrackKind::TrickPlay);
+    }
+    if is_image_adaptation_set(adaptation_set) {
+        return Some(TrackKind::Image);
+    }
     if dash_mpd::is_audio_adaptation(&adaptation_set) {
         return Some(TrackKind::Audio);
     }
@@ -180,6 +215,12 @@ fn track_kind(adaptation_set: &AdaptationSet) -> Option<TrackKind> {
         return Some(TrackKind::Text);
     }
     None
+}
+
+fn is_image_adaptation_set(adaptation_set: &AdaptationSet) -> bool {
+    effective_mime_type(adaptation_set)
+        .is_some_and(|mime_type| mime_type.eq_ignore_ascii_case("image/jpeg"))
+        || is_thumbnail_tile_adaptation_set(adaptation_set)
 }
 
 fn effective_mime_type(adaptation_set: &AdaptationSet) -> Option<String> {
@@ -277,6 +318,11 @@ fn track_info(
         id: adaptation_set.id.clone(),
         kind,
         subtitle_type: (kind == TrackKind::Text).then(|| subtitle_type_for(adaptation_set)),
+        thumbnail_tile: if kind == TrackKind::Image {
+            thumbnail_tile_layout(adaptation_set)
+        } else {
+            None
+        },
         mime_type: effective_mime_type(adaptation_set),
         language: effective_language(adaptation_set),
         roles: role_values(adaptation_set, &supplemental_roles),
@@ -390,14 +436,18 @@ pub(crate) fn select_adaptation_sets<'a>(
     let mut audio = Vec::new();
     let mut video = Vec::new();
     let mut text = Vec::new();
+    let mut trick_play = Vec::new();
+    let mut image = Vec::new();
 
     for (document_index, adaptation_set) in period.adaptations.iter().enumerate() {
-        if !is_playback_adaptation_set(adaptation_set) {
-            continue;
-        }
         let Some(kind) = track_kind(adaptation_set) else {
             continue;
         };
+        if matches!(kind, TrackKind::Audio | TrackKind::Video | TrackKind::Text)
+            && !is_playback_adaptation_set(adaptation_set)
+        {
+            continue;
+        }
         let candidate = (
             document_index,
             adaptation_set,
@@ -407,14 +457,24 @@ pub(crate) fn select_adaptation_sets<'a>(
             TrackKind::Audio => audio.push(candidate),
             TrackKind::Video => video.push(candidate),
             TrackKind::Text => text.push(candidate),
+            TrackKind::TrickPlay => trick_play.push(candidate),
+            TrackKind::Image => image.push(candidate),
         }
     }
 
     select_kind(&mut audio, &selection.audio);
     select_kind(&mut video, &selection.video);
     select_kind(&mut text, &selection.text);
+    select_kind(&mut trick_play, &selection.trick_play);
+    select_kind(&mut image, &selection.image);
 
-    let mut selected: Vec<_> = audio.into_iter().chain(video).chain(text).collect();
+    let mut selected: Vec<_> = audio
+        .into_iter()
+        .chain(video)
+        .chain(text)
+        .chain(trick_play)
+        .chain(image)
+        .collect();
     selected.sort_by_key(|(document_index, _, _)| *document_index);
     selected
         .into_iter()
@@ -634,6 +694,65 @@ mod tests {
                 .collect::<Vec<_>>(),
             vec![Some("main")]
         );
+    }
+
+    #[test]
+    fn trick_play_tracks_are_selected_when_preferences_enable_them() {
+        let period = period(
+            r#"<MPD><Period>
+                <AdaptationSet id="main" contentType="video" mimeType="video/mp4"/>
+                <AdaptationSet id="trick" contentType="video" mimeType="video/mp4">
+                  <EssentialProperty schemeIdUri="http://dashif.org/guidelines/trickmode" value="1"/>
+                </AdaptationSet>
+            </Period></MPD>"#,
+        );
+        let selection = TrackSelection::default()
+            .with_video(TrackPreference::default().max_tracks(0))
+            .with_trick_play(TrackPreference::default().max_tracks(1));
+
+        let selected = select_adaptation_sets(&period, &selection);
+        assert_eq!(selected.len(), 1);
+        assert_eq!(selected[0].info.kind, TrackKind::TrickPlay);
+        assert_eq!(selected[0].info.id.as_deref(), Some("trick"));
+    }
+
+    #[test]
+    fn image_jpeg_tracks_are_excluded_by_default() {
+        let period = period(
+            r#"<MPD><Period>
+                <AdaptationSet id="thumb" mimeType="image/jpeg" contentType="image"/>
+                <AdaptationSet id="video" contentType="video" mimeType="video/mp4"/>
+            </Period></MPD>"#,
+        );
+
+        let selected = select_adaptation_sets(&period, &TrackSelection::default());
+        assert_eq!(
+            selected
+                .iter()
+                .map(|track| track.info.id.as_deref())
+                .collect::<Vec<_>>(),
+            vec![Some("video")]
+        );
+    }
+
+    #[test]
+    fn image_tracks_are_selected_when_preferences_enable_them() {
+        let period = period(
+            r#"<MPD><Period>
+                <AdaptationSet id="thumb" mimeType="image/jpeg" contentType="image">
+                  <EssentialProperty schemeIdUri="http://dashif.org/guidelines/thumbnail_tile" value="10x5"/>
+                  <Representation id="tiles" bandwidth="1000" width="320" height="180"/>
+                </AdaptationSet>
+            </Period></MPD>"#,
+        );
+        let selection =
+            TrackSelection::default().with_image(TrackPreference::default().max_tracks(1));
+
+        let selected = select_adaptation_sets(&period, &selection);
+        assert_eq!(selected.len(), 1);
+        assert_eq!(selected[0].info.kind, TrackKind::Image);
+        assert_eq!(selected[0].info.thumbnail_tile, Some((10, 5)));
+        assert_eq!(selected[0].info.mime_type.as_deref(), Some("image/jpeg"));
     }
 
     #[test]

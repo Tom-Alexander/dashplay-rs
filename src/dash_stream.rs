@@ -538,18 +538,21 @@ fn init_target_for_addressing(
     vars: &manifest::TemplateVars<'_>,
 ) -> Result<Option<manifest::SegmentFetchTarget>, PlayerError> {
     match addressing {
-        manifest::SegmentAddressing::Template(st) => Ok(st.initialization.as_deref().map(|init_tpl| {
-            manifest::SegmentFetchTarget {
-                path: manifest::interpolate_template(init_tpl, vars),
-                range: None,
-            }
-        })),
-        manifest::SegmentAddressing::List(sl) => Ok(manifest::segment_list_init_source(sl).ok().map(
-            |init_src| manifest::SegmentFetchTarget {
+        manifest::SegmentAddressing::Template(st) => {
+            Ok(st
+                .initialization
+                .as_deref()
+                .map(|init_tpl| manifest::SegmentFetchTarget {
+                    path: manifest::interpolate_template(init_tpl, vars),
+                    range: None,
+                }))
+        }
+        manifest::SegmentAddressing::List(sl) => Ok(manifest::segment_list_init_source(sl)
+            .ok()
+            .map(|init_src| manifest::SegmentFetchTarget {
                 path: manifest::interpolate_template(init_src, vars),
                 range: None,
-            },
-        )),
+            })),
         manifest::SegmentAddressing::Base(sb) => {
             manifest::segment_base_init_target(sb, vars).map(Some)
         }

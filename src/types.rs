@@ -168,7 +168,8 @@ impl PlayerTrack {
 /// [`MediaPlayer::start`](crate::MediaPlayer::start) does not spawn tasks. Call [`Self::run`] on
 /// the current async task, or [`Self::spawn`] when a separate Tokio task is desired.
 pub struct PlayerOutputs {
-    /// One channel per selected AdaptationSet (audio/video/text filtered by [`TrackSelection`]).
+    /// One channel per selected AdaptationSet (audio/video/text/trick-play/image filtered by
+    /// [`TrackSelection`]).
     pub tracks: Vec<PlayerTrack>,
     /// Seek, pause, resume, stop, and lifecycle state for this session.
     pub playback: PlaybackController,

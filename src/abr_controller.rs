@@ -3,7 +3,7 @@
 use dash_mpd::AdaptationSet;
 
 use super::bola::{Bola, BolaDecision, QualityLevel};
-use super::descriptors::is_playback_representation;
+use super::descriptors::is_delivery_representation;
 
 /// Chooses representation per segment from an adaptation set’s ladder (dash.js-style ABR facade).
 pub struct AbrController {
@@ -20,7 +20,7 @@ impl AbrController {
             .iter()
             .enumerate()
             .filter_map(|(idx, r)| {
-                if !is_playback_representation(r) {
+                if !is_delivery_representation(r) {
                     return None;
                 }
                 let bw = r.bandwidth.unwrap_or(0) as f64;

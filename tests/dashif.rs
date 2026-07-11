@@ -474,6 +474,30 @@ async fn dashif_trick_play_plays_main_video_track() {
     assert!(has_end(&events));
 }
 
+#[tokio::test]
+async fn dashif_trick_play_track_delivers_when_enabled() {
+    let server = FixtureServer::spawn("dashif_trick_play").await;
+    let player = dashplayrs::Player::new(server.manifest_url.as_str(), None)
+        .expect("player")
+        .with_track_selection(
+            dashplayrs::TrackSelection::default()
+                .with_video(dashplayrs::TrackPreference::default().max_tracks(0))
+                .with_trick_play(dashplayrs::TrackPreference::default().max_tracks(1)),
+        );
+    let outputs = player.start_tracks().await.expect("start");
+
+    assert_eq!(
+        outputs.tracks[0].info.kind,
+        dashplayrs::TrackKind::TrickPlay
+    );
+    let mut rx = outputs.tracks.into_iter().next().unwrap().into_receiver();
+    let events = common::collect_events(&mut rx, VOD_TIMEOUT).await;
+    outputs.join.await.unwrap().expect("join");
+
+    assert_eq!(segment_payloads(&events).len(), 2);
+    assert!(has_end(&events));
+}
+
 #[test]
 fn dashif_local_fixture_mpds_parse() {
     for fixture in PARSE_FIXTURES {

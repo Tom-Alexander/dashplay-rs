@@ -58,10 +58,11 @@ These close the largest gaps between "delivers some streams" and "handles confor
 - [x] **Playback control API.** `seek`, `pause`, `resume`, `stop`, and a `PlaybackState`
   machine (`Idle`, `Buffering`, `Playing`, `Seeking`, `Paused`, `Ended`, `Error`) as promised in
   `ARCHITECTURE.md`.
-- [ ] **Explicit lifecycle vs. background tasks.** `MediaPlayer::start` and
-  `stream_controller` currently spawn hidden `tokio` tasks, which conflicts with the
-  architecture principle of never spawning hidden background work. Either make the loop
-  caller-driven or document/expose it as an explicit concurrency contract.
+- [x] **Explicit lifecycle vs. background tasks.** `MediaPlayer::start` prepares playback
+  without spawning; callers run the loop via [`PlayerOutputs::run`] or opt into
+  [`PlayerOutputs::spawn`]. Parallel adaptation-set fetches use cooperative `join` inside the
+  stream controller instead of hidden tasks. [`Player::start_tracks`] documents its single
+  spawned background task as the high-level concurrency contract.
 - [x] **Downloaded-segment dedup.** Track already-delivered segments across manifest
   refreshes so live refresh cannot re-emit or skip fragments.
 - [x] **Static multi-period VOD.** Live multi-period is covered; add VOD multi-period

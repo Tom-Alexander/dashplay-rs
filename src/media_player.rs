@@ -3,7 +3,6 @@
 use reqwest::Client;
 use tokio::sync::broadcast;
 use tokio::sync::watch;
-use tokio::task::JoinHandle;
 use url::Url;
 
 use super::drm::coordinator::DrmSessionCoordinator;
@@ -63,7 +62,11 @@ impl MediaPlayer {
         Ok(())
     }
 
-    /// Attach source and start the stream controller (dash.js: initialize + attachSource).
+    /// Attach source and prepare the stream controller (dash.js: initialize + attachSource).
+    ///
+    /// This does **not** spawn a background task. After subscribing to the tracks you need,
+    /// call [`PlayerOutputs::run`] on the current task or [`PlayerOutputs::spawn`] for a
+    /// separate Tokio task.
     ///
     /// Subscribe to **every** `outputs.tracks[i]` you care about before relying on delivery:
     /// each adaptation set runs in parallel, and a broadcast with no receivers drops events.
@@ -71,7 +74,7 @@ impl MediaPlayer {
     /// Each receiver sees `PlayerEvent::Init` then `PlayerEvent::Segment`, then
     /// `PlayerEvent::End` when the manifest window is exhausted (no `minimumUpdatePeriod`
     /// refresh). For live manifests, `End` is not sent until the controller stops.
-    /// Drop all `Sender`s after awaiting `outputs.join` if you need `RecvError::Closed`.
+    /// Drop all `Sender`s after the loop finishes if you need `RecvError::Closed`.
     pub async fn start(mut self) -> Result<PlayerOutputs, PlayerError> {
         self.fetch_manifest().await?;
         let mpd = manifest::mpd(&self.manifest)?;
@@ -119,14 +122,10 @@ impl MediaPlayer {
             playback: playback.clone(),
         };
 
-        let tracks_for_task = tracks.clone();
-        let join: JoinHandle<Result<(), PlayerError>> =
-            tokio::spawn(async move { loop_state.run(tracks_for_task).await });
-
         Ok(PlayerOutputs {
             tracks,
-            join,
             playback,
+            loop_state,
         })
     }
 }

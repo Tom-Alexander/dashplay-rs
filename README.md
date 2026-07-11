@@ -93,7 +93,7 @@ controller. Clone handles (`outputs.playback.clone()`) share one session.
 | [`MediaPlayer`](#mediaplayer) | Lower-level DASH coordinator |
 | [`PlayerEvent`](#playerevent) | Fragment events on a track stream |
 | [`PlayerTrack`](#playertrack) | One adaptation-set broadcast channel |
-| [`PlayerOutputs`](#playeroutputs) | Tracks and background task from [`MediaPlayer::start`](#mediaplayer) |
+| [`PlayerOutputs`](#playeroutputs) | Tracks and playback controller from [`MediaPlayer::start`](#mediaplayer) |
 | [`PlayerTrackOutput`](#playertrackoutput) | Per-track handle from [`Player::start_tracks`](#player) |
 | [`PlaybackController`](#playbackcontroller) | Seek, pause, resume, stop, and lifecycle state |
 | [`PlaybackState`](#playbackstate) | Explicit playback lifecycle enum |
@@ -131,6 +131,11 @@ Fetch the manifest, start playback, and return one output handle per audio/video
 Each track emits [`PlayerEvent::Init`](#playerevent) followed by
 [`PlayerEvent::Segment`](#playerevent) fragments (decrypted when DRM is present).
 
+This convenience API spawns one background Tokio task for the stream controller and returns its
+[`JoinHandle`](https://docs.rs/tokio/latest/tokio/task/struct.JoinHandle.html) as `join`. For
+caller-owned concurrency, use [`MediaPlayer::start`](#mediaplayer) and
+[`PlayerOutputs::run`](#playeroutputs) instead.
+
 The returned value also exposes:
 
 - `tracks` — slice of [`PlayerTrackOutput`](#playertrackoutput)
@@ -162,8 +167,10 @@ MediaPlayer::fetch_manifest(&mut self) -> Result<(), PlayerError>
 MediaPlayer::start(self) -> Result<PlayerOutputs, PlayerError>
 ```
 
-`start` fetches the manifest, acquires Widevine licenses when needed, and spawns the stream
-controller. Subscribe to every [`PlayerTrack`](#playertrack) you care about before relying on
+`start` fetches the manifest, acquires Widevine licenses when needed, and returns playback
+handles. It does **not** spawn a background task — call [`PlayerOutputs::run`](#playeroutputs)
+on the current async task, or [`PlayerOutputs::spawn`](#playeroutputs) for a separate Tokio
+task. Subscribe to every [`PlayerTrack`](#playertrack) you care about before relying on
 delivery — broadcast channels drop events when there are no receivers.
 
 ---
@@ -227,11 +234,12 @@ Returned by [`Player::start_tracks`](#player):
 
 Returned by [`MediaPlayer::start`](#mediaplayer):
 
-| Field | Description |
-|-------|-------------|
+| Field / method | Description |
+|----------------|-------------|
 | `tracks` | One [`PlayerTrack`](#playertrack) per selected audio/video adaptation set |
 | `playback` | [`PlaybackController`](#playbackcontroller) for this session |
-| `join` | Background task running the stream controller loop |
+| `run()` | Run the stream controller on the current async task (no spawn) |
+| `spawn()` | Spawn the stream controller as a separate Tokio task |
 
 ---
 

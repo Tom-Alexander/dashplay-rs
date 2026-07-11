@@ -1,4 +1,5 @@
 use bytes::Bytes;
+use futures::future::join_all;
 use futures_util::StreamExt;
 use std::pin::Pin;
 use tokio::sync::{broadcast, mpsc, watch};
@@ -33,6 +34,9 @@ impl Player {
 
     /// Start the underlying `MediaPlayer` and return a **single merged byte stream**.
     ///
+    /// Spawns one Tokio task that runs the stream controller and forwards all track events
+    /// into the merged output channel. See [`PlayerOutputs::spawn`] for the lower-level contract.
+    ///
     /// Notes:
     /// - Each adaptation set emits `Init` then `Segment` fragments (decrypted when DRM is present).
     /// - This merged stream simply forwards fragment bytes in arrival order.
@@ -42,55 +46,61 @@ impl Player {
     pub async fn start_merged(self) -> Result<PlayerMergedOutput, PlayerError> {
         let PlayerOutputs {
             tracks,
-            join,
+            loop_state,
             playback: _playback,
         } = self.media_player.start().await?;
 
         let (out_tx, out_rx) = mpsc::channel::<Result<Bytes, PlayerError>>(256);
-        let mut forwarders: Vec<JoinHandle<()>> = Vec::with_capacity(tracks.len());
+        let senders: Vec<_> = tracks.iter().map(|t| t.tx.clone()).collect();
 
-        for t in &tracks {
-            let mut rx = t.tx.subscribe();
-            let out_tx = out_tx.clone();
-            forwarders.push(tokio::spawn(async move {
-                loop {
-                    match rx.recv().await {
-                        Ok(PlayerEvent::Init(data)) => {
-                            if out_tx.send(Ok(data)).await.is_err() {
-                                break;
+        let join = tokio::spawn(async move {
+            let mut forwarders = Vec::with_capacity(tracks.len());
+            for t in &tracks {
+                let mut rx = t.tx.subscribe();
+                let out_tx = out_tx.clone();
+                forwarders.push(async move {
+                    loop {
+                        match rx.recv().await {
+                            Ok(PlayerEvent::Init(data)) => {
+                                if out_tx.send(Ok(data)).await.is_err() {
+                                    break;
+                                }
                             }
-                        }
-                        Ok(PlayerEvent::Segment { data, .. }) => {
-                            if out_tx.send(Ok(data)).await.is_err() {
-                                break;
+                            Ok(PlayerEvent::Segment { data, .. }) => {
+                                if out_tx.send(Ok(data)).await.is_err() {
+                                    break;
+                                }
                             }
+                            Ok(PlayerEvent::End) => break,
+                            Err(broadcast::error::RecvError::Lagged(_)) => continue,
+                            Err(broadcast::error::RecvError::Closed) => break,
                         }
-                        Ok(PlayerEvent::End) => break,
-                        Err(broadcast::error::RecvError::Lagged(_)) => continue,
-                        Err(broadcast::error::RecvError::Closed) => break,
                     }
-                }
-            }));
-        }
+                });
+            }
+            drop(out_tx);
 
-        // If the receiver is dropped, all `out_tx` clones will fail and forwarders will exit.
-        drop(out_tx);
+            let (_, loop_result) = tokio::join!(join_all(forwarders), loop_state.run(tracks));
+            loop_result
+        });
 
         Ok(PlayerMergedOutput {
             stream: ReceiverStream::new(out_rx),
             join,
-            _tracks: tracks.into_iter().map(|t| t.tx).collect::<Vec<_>>(),
-            _forwarders: forwarders,
+            _tracks: senders,
         })
     }
 
     /// Start the underlying `MediaPlayer` and return one stream per track.
+    ///
+    /// Spawns one Tokio task for the stream controller loop via [`PlayerOutputs::spawn`].
+    /// Use [`MediaPlayer::start`] and [`PlayerOutputs::run`] directly when you want the
+    /// caller to own the async task.
     pub async fn start_tracks(self) -> Result<PlayerTrackOutputs, PlayerError> {
-        let PlayerOutputs {
-            tracks,
-            join,
-            playback,
-        } = self.media_player.start().await?;
+        let outputs = self.media_player.start().await?;
+        let tracks = outputs.tracks.clone();
+        let playback = outputs.playback.clone();
+        let join = outputs.spawn();
 
         let mut outs = Vec::with_capacity(tracks.len());
         let senders = tracks.clone();
@@ -116,12 +126,10 @@ impl Player {
 pub struct PlayerMergedOutput {
     /// Merged stream of init + media fragments.
     pub stream: ReceiverStream<Result<Bytes, PlayerError>>,
-    /// Join handle for the underlying stream-controller task.
+    /// Join handle for the playback task (stream controller + event forwarding).
     pub join: JoinHandle<Result<(), PlayerError>>,
     // Hold senders so broadcasts don't close prematurely.
     _tracks: Vec<broadcast::Sender<PlayerEvent>>,
-    // Hold forwarders so they live as long as the output.
-    _forwarders: Vec<JoinHandle<()>>,
 }
 
 #[allow(dead_code)]
@@ -137,7 +145,6 @@ impl PlayerMergedOutput {
             reader: tokio_util::io::StreamReader::new(Box::pin(s)),
             join: self.join,
             _tracks: self._tracks,
-            _forwarders: self._forwarders,
         }
     }
 }
@@ -147,11 +154,11 @@ pub struct PlayerMergedAsyncRead {
     pub reader: tokio_util::io::StreamReader<MergedByteStream, Bytes>,
     pub join: JoinHandle<Result<(), PlayerError>>,
     _tracks: Vec<broadcast::Sender<PlayerEvent>>,
-    _forwarders: Vec<JoinHandle<()>>,
 }
 
 pub struct PlayerTrackOutputs {
     pub tracks: Vec<PlayerTrackOutput>,
+    /// Join handle for the stream controller task spawned by [`Player::start_tracks`].
     pub join: JoinHandle<Result<(), PlayerError>>,
     /// Seek, pause, resume, stop, and lifecycle state for this session.
     pub playback: PlaybackController,

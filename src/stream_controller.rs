@@ -155,7 +155,7 @@ impl PlaybackLoopState {
                         .cloned()
                         .collect();
 
-                    let mut tasks = Vec::new();
+                    let mut streams = Vec::new();
                     for (aset_idx, adaptation_set) in adaptation_sets.into_iter().enumerate() {
                         if aset_idx >= tracks.len() {
                             break;
@@ -172,7 +172,7 @@ impl PlaybackLoopState {
                         let playback = playback.clone();
 
                         let period = period.clone();
-                        tasks.push(tokio::spawn(async move {
+                        streams.push(async move {
                             run_adaptation_stream(AdaptationStreamContext {
                                 client,
                                 segment_base_ctx,
@@ -191,12 +191,11 @@ impl PlaybackLoopState {
                                 playback,
                             })
                             .await
-                        }));
+                        });
                     }
 
-                    let results = join_all(tasks).await;
-                    for inner in results.into_iter().filter_map(Result::ok) {
-                        inner?;
+                    for result in join_all(streams).await {
+                        result?;
                     }
 
                     if playback.seek_generation() != seek_generation_at_start {

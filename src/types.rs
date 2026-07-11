@@ -6,6 +6,7 @@ use tokio::task::JoinHandle;
 
 use super::PlayerError;
 use super::playback_control::PlaybackController;
+use super::stream_controller::PlaybackLoopState;
 
 /// Error returned when buffer feedback can no longer reach the playback pipeline.
 #[derive(Debug, Error)]
@@ -80,11 +81,35 @@ impl PlayerTrack {
 }
 
 /// Handles returned when starting playback (dash.js: MediaPlayer exposes stream interfaces).
+///
+/// [`MediaPlayer::start`](crate::MediaPlayer::start) does not spawn tasks. Call [`Self::run`] on
+/// the current async task, or [`Self::spawn`] when a separate Tokio task is desired.
 pub struct PlayerOutputs {
     /// One channel per selected AdaptationSet (audio/video filtered).
     pub tracks: Vec<PlayerTrack>,
-    /// Background task running the stream controller loop.
-    pub join: JoinHandle<Result<(), PlayerError>>,
     /// Seek, pause, resume, stop, and lifecycle state for this session.
     pub playback: PlaybackController,
+    pub(crate) loop_state: PlaybackLoopState,
+}
+
+impl PlayerOutputs {
+    /// Run the stream controller loop on the current async task.
+    ///
+    /// Audio and video adaptation sets are fetched concurrently within this task via
+    /// cooperative `join` — no additional Tokio tasks are spawned.
+    pub async fn run(self) -> Result<(), PlayerError> {
+        let Self {
+            tracks,
+            playback: _,
+            loop_state,
+        } = self;
+        loop_state.run(tracks).await
+    }
+
+    /// Spawn the stream controller loop as a separate Tokio task.
+    ///
+    /// Prefer [`Self::run`] when the caller owns concurrency and wants a single task.
+    pub fn spawn(self) -> JoinHandle<Result<(), PlayerError>> {
+        tokio::spawn(async move { self.run().await })
+    }
 }

@@ -386,9 +386,16 @@ Panics are considered bugs.
 
 Concurrency is explicit.
 
-The library should never spawn hidden background tasks.
+The library does not spawn hidden background tasks.
 
-If parallelism is desired, it should be visible to the caller.
+- `MediaPlayer::start` prepares playback state only. Call `PlayerOutputs::run` on the current
+  async task, or `PlayerOutputs::spawn` when a separate Tokio task is desired.
+- The stream controller fetches audio and video adaptation sets concurrently via cooperative
+  `join` within the caller's task — no additional spawned tasks.
+- `Player::start_tracks` is the high-level convenience API: it calls `PlayerOutputs::spawn` and
+  returns the resulting `JoinHandle` as `join`.
+
+If parallelism beyond cooperative async is desired, it should be visible to the caller.
 
 ---
 

@@ -5,9 +5,125 @@ use chrono::{DateTime, Utc};
 use dash_mpd::{
     AdaptationSet, BaseURL, MPD, Period, Representation, SegmentBase, SegmentList, SegmentTemplate,
 };
+use roxmltree::{Document, Node};
 use url::Url;
 
 use super::PlayerError;
+
+/// `SegmentTemplate@endNumber` per hierarchy node (`dash-mpd` does not deserialize this attribute).
+#[derive(Debug, Clone, Default)]
+pub(crate) struct SegmentTemplateEndNumbers {
+    periods: Vec<PeriodEndNumbers>,
+}
+
+#[derive(Debug, Clone, Default)]
+struct PeriodEndNumbers {
+    template: Option<u64>,
+    adaptation_sets: Vec<AdaptationSetEndNumbers>,
+}
+
+#[derive(Debug, Clone, Default)]
+struct AdaptationSetEndNumbers {
+    template: Option<u64>,
+    representations: Vec<Option<u64>>,
+}
+
+fn xml_element_name(node: Node<'_, '_>, name: &str) -> bool {
+    node.is_element() && node.tag_name().name() == name
+}
+
+fn segment_template_end_number_from_node(parent: Node<'_, '_>) -> Option<u64> {
+    parent
+        .children()
+        .find(|n| xml_element_name(*n, "SegmentTemplate"))
+        .and_then(|st| st.attribute("endNumber")?.parse().ok())
+}
+
+fn parse_adaptation_set_end_numbers(as_node: Node<'_, '_>) -> AdaptationSetEndNumbers {
+    let template = segment_template_end_number_from_node(as_node);
+    let representations = as_node
+        .children()
+        .filter(|n| xml_element_name(*n, "Representation"))
+        .map(segment_template_end_number_from_node)
+        .collect();
+    AdaptationSetEndNumbers {
+        template,
+        representations,
+    }
+}
+
+fn parse_period_end_numbers(period_node: Node<'_, '_>) -> PeriodEndNumbers {
+    let template = segment_template_end_number_from_node(period_node);
+    let adaptation_sets = period_node
+        .children()
+        .filter(|n| xml_element_name(*n, "AdaptationSet"))
+        .map(parse_adaptation_set_end_numbers)
+        .collect();
+    PeriodEndNumbers {
+        template,
+        adaptation_sets,
+    }
+}
+
+/// Parse `SegmentTemplate@endNumber` from raw MPD XML (indexed like `Period.adaptations`).
+pub(crate) fn parse_segment_template_end_numbers(
+    mpd_xml: &str,
+) -> Result<SegmentTemplateEndNumbers, PlayerError> {
+    let doc = Document::parse(mpd_xml)
+        .map_err(|e| PlayerError::Manifest(dash_mpd::DashMpdError::Parsing(e.to_string())))?;
+    let periods = doc
+        .root_element()
+        .children()
+        .filter(|n| xml_element_name(*n, "Period"))
+        .map(parse_period_end_numbers)
+        .collect();
+    Ok(SegmentTemplateEndNumbers { periods })
+}
+
+fn merge_end_number_chain(end_numbers: &[Option<u64>]) -> Option<u64> {
+    end_numbers
+        .iter()
+        .copied()
+        .fold(None, |parent, child| child.or(parent))
+}
+
+impl SegmentTemplateEndNumbers {
+    fn period(&self, period_idx: usize) -> Option<&PeriodEndNumbers> {
+        self.periods.get(period_idx)
+    }
+}
+
+impl PeriodEndNumbers {
+    fn adaptation_set(&self, adapt_idx: usize) -> Option<&AdaptationSetEndNumbers> {
+        self.adaptation_sets.get(adapt_idx)
+    }
+}
+
+impl AdaptationSetEndNumbers {
+    fn representation(&self, rep_idx: usize) -> Option<u64> {
+        self.representations.get(rep_idx).copied().flatten()
+    }
+}
+
+fn static_duration_segment_count(
+    start_number: u64,
+    duration_s: f64,
+    end_number: Option<u64>,
+    ctx: &TimelineBuildContext,
+) -> Result<u64, PlayerError> {
+    if let Some(end_num) = end_number {
+        if end_num < start_number {
+            return Err(PlayerError::InvalidSegmentTemplateEndNumber);
+        }
+        return Ok(end_num - start_number + 1);
+    }
+
+    let period_duration_s = ctx
+        .period_length_secs()
+        .filter(|x| x.is_finite() && *x > 0.0)
+        .ok_or(PlayerError::MissingPeriodExtentForStaticTemplate)?;
+    Ok(((period_duration_s / duration_s).ceil() as u64).max(1))
+}
 
 #[derive(Debug, Clone, Copy)]
 pub(crate) struct PeriodWindow {
@@ -459,6 +575,42 @@ fn segment_template_has_timeline_source(st: &SegmentTemplate) -> bool {
     st.SegmentTimeline.is_some() || st.duration.is_some()
 }
 
+/// Inherited `SegmentTemplate@endNumber` for adaptation-set timeline expansion.
+pub(crate) fn end_number_for_timeline(
+    period: &Period,
+    adaptation_set: &AdaptationSet,
+    supplements: &SegmentTemplateEndNumbers,
+    period_idx: usize,
+    adapt_idx: usize,
+) -> Option<u64> {
+    let period_sup = supplements.period(period_idx)?;
+    let adapt_sup = period_sup.adaptation_set(adapt_idx)?;
+
+    let mut chain = vec![period_sup.template, adapt_sup.template];
+
+    let merged = merge_segment_template_chain(&[
+        period.SegmentTemplate.as_ref(),
+        adaptation_set.SegmentTemplate.as_ref(),
+    ]);
+    if merged
+        .as_ref()
+        .is_none_or(|st| !segment_template_has_timeline_source(st))
+    {
+        for (rep_idx, rep) in adaptation_set.representations.iter().enumerate() {
+            if rep
+                .SegmentTemplate
+                .as_ref()
+                .is_some_and(segment_template_has_timeline_source)
+            {
+                chain.push(adapt_sup.representation(rep_idx));
+                break;
+            }
+        }
+    }
+
+    merge_end_number_chain(&chain)
+}
+
 /// Effective `SegmentTemplate` for timeline expansion on an adaptation set (Period → AdaptationSet,
 /// supplementing from the first representation that carries timeline or duration when needed).
 pub(crate) fn segment_template_for_timeline(
@@ -908,9 +1060,10 @@ pub(crate) fn segment_list_media_for_index(
 pub(crate) fn timeline_segments_for_addressing(
     addressing: &SegmentAddressing,
     ctx: &TimelineBuildContext,
+    end_number: Option<u64>,
 ) -> Result<Vec<TimelineSegment>, PlayerError> {
     match addressing {
-        SegmentAddressing::Template(st) => timeline_segments(st, ctx),
+        SegmentAddressing::Template(st) => timeline_segments(st, ctx, end_number),
         SegmentAddressing::List(sl) => timeline_segments_from_list(sl, ctx),
         SegmentAddressing::Base(sb) => timeline_segments_from_segment_base(sb, ctx),
     }
@@ -1265,11 +1418,12 @@ pub(crate) fn interpolate_template(template: &str, vars: &TemplateVars<'_>) -> S
 pub(crate) fn timeline_segments(
     st: &dash_mpd::SegmentTemplate,
     ctx: &TimelineBuildContext,
+    end_number: Option<u64>,
 ) -> Result<Vec<TimelineSegment>, PlayerError> {
     let segments = if let Some(timeline) = st.SegmentTimeline.as_ref() {
         segments_from_explicit_timeline(st, timeline, ctx)?
     } else {
-        segments_from_duration_template(st, ctx)?
+        segments_from_duration_template(st, ctx, end_number)?
     };
 
     if ctx.is_dynamic && st.SegmentTimeline.is_some() {
@@ -1485,6 +1639,7 @@ fn filter_explicit_timeline_for_dynamic_window(
 fn segments_from_duration_template(
     st: &dash_mpd::SegmentTemplate,
     ctx: &TimelineBuildContext,
+    end_number: Option<u64>,
 ) -> Result<Vec<TimelineSegment>, PlayerError> {
     let d = st
         .duration
@@ -1505,7 +1660,13 @@ fn segments_from_duration_template(
         };
         let period_start_s = ctx.period_window.start.as_secs_f64();
         let t_in_period = (since_ast.as_secs_f64() - period_start_s).max(0.0);
-        let end_n = start_number + (t_in_period / duration_s).floor() as u64;
+        let mut end_n = start_number + (t_in_period / duration_s).floor() as u64;
+        if let Some(en) = end_number {
+            end_n = end_n.min(en);
+        }
+        if end_n < start_number {
+            return Ok(Vec::new());
+        }
 
         let tsbd_s = ctx
             .time_shift_buffer_depth
@@ -1536,11 +1697,7 @@ fn segments_from_duration_template(
         }
         Ok(segments)
     } else {
-        let period_duration_s = ctx
-            .period_length_secs()
-            .filter(|x| x.is_finite() && *x > 0.0)
-            .ok_or(PlayerError::MissingPeriodExtentForStaticTemplate)?;
-        let count = ((period_duration_s / duration_s).ceil() as u64).max(1);
+        let count = static_duration_segment_count(start_number, duration_s, end_number, ctx)?;
         let mut segments = Vec::with_capacity(count as usize);
         for i in 0..count {
             let n = start_number + i;
@@ -1831,7 +1988,8 @@ mod timeline_tests {
             }),
             ..Default::default()
         };
-        let segs = timeline_segments(&st, &static_ctx(Some(Duration::from_secs(10)))).unwrap();
+        let segs =
+            timeline_segments(&st, &static_ctx(Some(Duration::from_secs(10))), None).unwrap();
         assert_eq!(segs.len(), 3);
         assert_eq!(segs[0].time, 0);
         assert_eq!(segs[1].time, 2000);
@@ -1855,7 +2013,7 @@ mod timeline_tests {
             }),
             ..Default::default()
         };
-        let segs = timeline_segments(&st, &static_ctx(None)).unwrap();
+        let segs = timeline_segments(&st, &static_ctx(None), None).unwrap();
         assert_eq!(segs.len(), 1);
         assert_eq!(segs[0].number, 99);
         assert_eq!(segs[0].time, 10);
@@ -1885,7 +2043,7 @@ mod timeline_tests {
             }),
             ..Default::default()
         };
-        let segs = timeline_segments(&st, &static_ctx(None)).unwrap();
+        let segs = timeline_segments(&st, &static_ctx(None), None).unwrap();
         assert_eq!(segs.len(), 5);
         assert_eq!(
             segs.iter().map(|s| s.time).collect::<Vec<_>>(),
@@ -1910,7 +2068,7 @@ mod timeline_tests {
             ..Default::default()
         };
         let ctx = static_ctx(None);
-        let err = timeline_segments(&st, &ctx).unwrap_err();
+        let err = timeline_segments(&st, &ctx, None).unwrap_err();
         assert!(matches!(err, PlayerError::UnboundedSegmentTimelineRepeat));
     }
 
@@ -1945,7 +2103,7 @@ mod timeline_tests {
             since_availability_start: Some(Duration::from_secs(5)),
             resync_hints: None,
         };
-        let segs = timeline_segments(&st, &ctx).unwrap();
+        let segs = timeline_segments(&st, &ctx, None).unwrap();
         assert_eq!(segs.len(), 3);
         assert_eq!(
             segs.iter().map(|s| s.time).collect::<Vec<_>>(),
@@ -1970,7 +2128,7 @@ mod timeline_tests {
             }),
             ..Default::default()
         };
-        let segs = timeline_segments(&st, &static_ctx(None)).unwrap();
+        let segs = timeline_segments(&st, &static_ctx(None), None).unwrap();
         assert_eq!(segs.len(), 3);
         assert_eq!(segs[0].number, 1);
         assert_eq!(segs[1].number, 1);
@@ -2005,7 +2163,7 @@ mod timeline_tests {
             }),
             ..Default::default()
         };
-        let segs = timeline_segments(&st, &static_ctx(None)).unwrap();
+        let segs = timeline_segments(&st, &static_ctx(None), None).unwrap();
         assert_eq!(segs.len(), 4);
         assert_eq!(
             segs.iter().map(|s| s.number).collect::<Vec<_>>(),
@@ -2032,7 +2190,7 @@ mod timeline_tests {
             }),
             ..Default::default()
         };
-        let err = timeline_segments(&st, &static_ctx(None)).unwrap_err();
+        let err = timeline_segments(&st, &static_ctx(None), None).unwrap_err();
         assert!(matches!(err, PlayerError::TimelineDNotDivisibleByK));
     }
 
@@ -2555,7 +2713,7 @@ mod manifest_logic_tests {
             since_availability_start: Some(Duration::from_secs(12)),
             resync_hints: None,
         };
-        let segments = timeline_segments(&st, &ctx).unwrap();
+        let segments = timeline_segments(&st, &ctx, None).unwrap();
         let filtered = filter_segments_by_availability(
             segments,
             true,
@@ -2591,7 +2749,7 @@ mod manifest_logic_tests {
             since_availability_start: Some(Duration::from_secs(11)),
             resync_hints: None,
         };
-        let segments = timeline_segments(&st, &ctx).unwrap();
+        let segments = timeline_segments(&st, &ctx, None).unwrap();
         let filtered = filter_segments_by_availability(
             segments,
             true,
@@ -2694,10 +2852,88 @@ mod manifest_logic_tests {
             resync_hints: None,
         };
 
-        let segs = timeline_segments(&st, &ctx).unwrap();
+        let segs = timeline_segments(&st, &ctx, None).unwrap();
         assert_eq!(segs.len(), 2);
         assert_eq!(segs[0].number, 1);
         assert_eq!(segs[1].number, 2);
+    }
+
+    #[test]
+    fn static_duration_template_bounds_by_end_number_without_period_extent() {
+        let st = SegmentTemplate {
+            timescale: Some(1000),
+            duration: Some(4000.0),
+            presentationTimeOffset: Some(0),
+            startNumber: Some(1),
+            ..Default::default()
+        };
+        let ctx = TimelineBuildContext {
+            is_dynamic: false,
+            period_window: PeriodWindow {
+                idx: 0,
+                start: Duration::ZERO,
+                end: None,
+            },
+            period_duration: None,
+            media_presentation_duration: None,
+            time_shift_buffer_depth: None,
+            since_availability_start: None,
+            resync_hints: None,
+        };
+
+        let err = timeline_segments(&st, &ctx, None).unwrap_err();
+        assert!(matches!(
+            err,
+            PlayerError::MissingPeriodExtentForStaticTemplate
+        ));
+
+        let segs = timeline_segments(&st, &ctx, Some(2)).unwrap();
+        assert_eq!(segs.len(), 2);
+        assert_eq!(segs[0].number, 1);
+        assert_eq!(segs[1].number, 2);
+    }
+
+    #[test]
+    fn static_duration_template_prefers_end_number_over_period_extent() {
+        let st = SegmentTemplate {
+            timescale: Some(1000),
+            duration: Some(4000.0),
+            presentationTimeOffset: Some(0),
+            startNumber: Some(1),
+            ..Default::default()
+        };
+        let ctx = TimelineBuildContext {
+            is_dynamic: false,
+            period_window: PeriodWindow {
+                idx: 0,
+                start: Duration::ZERO,
+                end: Some(Duration::from_secs(8)),
+            },
+            period_duration: None,
+            media_presentation_duration: Some(Duration::from_secs(8)),
+            time_shift_buffer_depth: None,
+            since_availability_start: None,
+            resync_hints: None,
+        };
+
+        let segs = timeline_segments(&st, &ctx, Some(1)).unwrap();
+        assert_eq!(segs.len(), 1);
+        assert_eq!(segs[0].number, 1);
+    }
+
+    #[test]
+    fn parse_segment_template_end_numbers_reads_adaptation_set_attribute() {
+        let xml = include_str!("../tests/fixtures/dashif_simple/manifest.mpd");
+        let mpd = dash_mpd::parse(xml).unwrap();
+        let supplements = parse_segment_template_end_numbers(xml).unwrap();
+        let end = end_number_for_timeline(
+            &mpd.periods[0],
+            &mpd.periods[0].adaptations[0],
+            &supplements,
+            0,
+            0,
+        );
+        assert_eq!(end, Some(4));
     }
 
     #[test]
@@ -2723,7 +2959,7 @@ mod manifest_logic_tests {
             resync_hints: None,
         };
 
-        let segs = timeline_segments(&st, &ctx).unwrap();
+        let segs = timeline_segments(&st, &ctx, None).unwrap();
         assert_eq!(segs.first().map(|s| s.number), Some(2));
         assert_eq!(segs.last().map(|s| s.number), Some(6));
     }

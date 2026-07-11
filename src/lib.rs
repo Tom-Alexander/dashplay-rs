@@ -151,6 +151,8 @@ pub enum PlayerError {
     MissingAvailabilityStartForDynamicTemplate,
     #[error("static SegmentTemplate@duration needs Period or MPD duration to bound segment count")]
     MissingPeriodExtentForStaticTemplate,
+    #[error("SegmentTemplate@endNumber is less than @startNumber")]
+    InvalidSegmentTemplateEndNumber,
     #[error(
         "SegmentTimeline S@r<0 needs a following S@t, Period end, or (for dynamic MPD) availabilityStartTime"
     )]

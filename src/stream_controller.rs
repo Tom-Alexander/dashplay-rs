@@ -125,6 +125,11 @@ impl PlaybackLoopState {
                 let seek_generation_at_start = playback.seek_generation();
                 let mut seek_interrupted = false;
 
+                let template_end_numbers = mpd_xml
+                    .as_deref()
+                    .map(manifest::parse_segment_template_end_numbers)
+                    .transpose()?;
+
                 for current_window in periods_to_play {
                     if playback.is_stopped() {
                         break;
@@ -269,6 +274,8 @@ impl PlaybackLoopState {
                         let abr_factory = abr_factory.clone();
                         let inband_prt_anchor = inband_prt_anchors[track_idx].clone();
                         let prt_reference_id = prt_reference_id.clone();
+                        let template_end_numbers = template_end_numbers.clone();
+                        let period_idx = current_window.idx;
 
                         let period = period.clone();
                         streams.push(async move {
@@ -279,6 +286,8 @@ impl PlaybackLoopState {
                                 period_start,
                                 period,
                                 timeline_ctx,
+                                template_end_numbers,
+                                period_idx,
                                 adaptation_set,
                                 track_idx,
                                 period_adaptation_index,

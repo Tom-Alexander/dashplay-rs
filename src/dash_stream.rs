@@ -39,6 +39,8 @@ pub(crate) struct AdaptationStreamContext {
     pub period_start: Duration,
     pub period: Period,
     pub timeline_ctx: TimelineBuildContext,
+    pub template_end_numbers: Option<manifest::SegmentTemplateEndNumbers>,
+    pub period_idx: usize,
     pub adaptation_set: AdaptationSet,
     /// Index into the session's selected `PlayerTrack` list.
     pub track_idx: usize,
@@ -69,6 +71,8 @@ pub(crate) async fn run_adaptation_stream(ctx: AdaptationStreamContext) -> Resul
         period_start,
         period,
         timeline_ctx,
+        template_end_numbers,
+        period_idx,
         adaptation_set,
         track_idx,
         period_adaptation_index,
@@ -89,6 +93,16 @@ pub(crate) async fn run_adaptation_stream(ctx: AdaptationStreamContext) -> Resul
     playback.set_state(PlaybackState::Buffering);
 
     let addressing = manifest::segment_addressing_for_timeline(&period, &adaptation_set)?;
+
+    let template_end_number = template_end_numbers.as_ref().and_then(|supplements| {
+        manifest::end_number_for_timeline(
+            &period,
+            &adaptation_set,
+            supplements,
+            period_idx,
+            period_adaptation_index,
+        )
+    });
 
     let segments_all = match &addressing {
         manifest::SegmentAddressing::Base(sb) if sb.indexRange.is_some() => {
@@ -117,7 +131,11 @@ pub(crate) async fn run_adaptation_stream(ctx: AdaptationStreamContext) -> Resul
                     .await?;
             manifest::parse_sidx_index(&merged_sb, &index_bytes)?
         }
-        _ => manifest::timeline_segments_for_addressing(&addressing, &timeline_ctx)?,
+        _ => manifest::timeline_segments_for_addressing(
+            &addressing,
+            &timeline_ctx,
+            template_end_number,
+        )?,
     };
     let segments_all = manifest::filter_segments_by_availability(
         segments_all,

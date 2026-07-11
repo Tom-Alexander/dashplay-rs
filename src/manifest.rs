@@ -1366,6 +1366,104 @@ fn segments_from_duration_template(
     }
 }
 
+/// Low-latency segment availability attributes from merged segment addressing (ISO 23009-1 §5.3.9.6).
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub(crate) struct SegmentAvailability {
+    /// `@availabilityTimeOffset` in seconds; `None` in XML means zero.
+    pub availability_time_offset_s: Option<f64>,
+    /// `@availabilityTimeComplete`; absent means `true`.
+    pub availability_time_complete: bool,
+}
+
+impl SegmentAvailability {
+    pub(crate) fn from_addressing(addressing: &SegmentAddressing) -> Self {
+        match addressing {
+            SegmentAddressing::Template(st) => Self {
+                availability_time_offset_s: st.availabilityTimeOffset,
+                availability_time_complete: st.availabilityTimeComplete.unwrap_or(true),
+            },
+            SegmentAddressing::List(_sl) => Self {
+                availability_time_offset_s: None,
+                availability_time_complete: true,
+            },
+            SegmentAddressing::Base(sb) => Self {
+                availability_time_offset_s: sb.availabilityTimeOffset,
+                availability_time_complete: sb.availabilityTimeComplete.unwrap_or(true),
+            },
+        }
+    }
+}
+
+/// `@target` from the first [`ServiceDescription::Latency`] entry (milliseconds per DASH-IF IOP).
+pub(crate) fn target_latency_from_mpd(mpd: &MPD) -> Option<Duration> {
+    for sd in &mpd.ServiceDescription {
+        for lat in &sd.Latency {
+            let target_ms = lat.target?;
+            if target_ms.is_finite() && target_ms >= 0.0 {
+                return Some(Duration::from_secs_f64(target_ms / 1000.0));
+            }
+        }
+    }
+    None
+}
+
+/// MPD media-timeline seconds (from `availabilityStartTime`) when a segment sequence starts.
+pub(crate) fn segment_sequence_start_s(period_start: Duration, seg: &TimelineSegment) -> f64 {
+    let period_start_s = period_start.as_secs_f64();
+    let seq_start_s = if let Some(sub) = seg.sub_number {
+        let prior = sub.saturating_sub(1) as f64;
+        seg.presentation_time_s - prior * seg.duration_s
+    } else {
+        seg.presentation_time_s
+    };
+    period_start_s + seq_start_s
+}
+
+/// Whether a segment is published and fetchable at `since_availability_start`.
+///
+/// For `@availabilityTimeComplete=false`, whole-segment fetch still waits until the sequence
+/// start plus `@availabilityTimeOffset` (partial/chunked transfer is a later increment).
+pub(crate) fn segment_is_available(
+    seg: &TimelineSegment,
+    period_start: Duration,
+    since_availability_start: Duration,
+    availability: &SegmentAvailability,
+) -> bool {
+    let ato = availability.availability_time_offset_s.unwrap_or(0.0);
+    if ato.is_infinite() {
+        return ato.is_sign_positive();
+    }
+    if ato.is_nan() {
+        return true;
+    }
+
+    let sap_s = segment_sequence_start_s(period_start, seg);
+    let now_s = since_availability_start.as_secs_f64();
+    let _ = availability.availability_time_complete;
+    now_s + 1e-6 >= sap_s + ato.max(0.0)
+}
+
+/// Drop segments that are not yet published on dynamic MPDs.
+pub(crate) fn filter_segments_by_availability(
+    segments: Vec<TimelineSegment>,
+    is_dynamic: bool,
+    period_start: Duration,
+    since_availability_start: Option<Duration>,
+    addressing: &SegmentAddressing,
+) -> Vec<TimelineSegment> {
+    if !is_dynamic {
+        return segments;
+    }
+    let Some(since) = since_availability_start else {
+        return segments;
+    };
+    let availability = SegmentAvailability::from_addressing(addressing);
+    segments
+        .into_iter()
+        .filter(|s| segment_is_available(s, period_start, since, &availability))
+        .collect()
+}
+
 pub(crate) fn target_presentation_time_at(
     mpd: &MPD,
     wall_now: DateTime<Utc>,
@@ -1374,8 +1472,10 @@ pub(crate) fn target_presentation_time_at(
         return Ok(None);
     };
 
-    // Target "safe live edge" = now - suggestedPresentationDelay (if present).
-    if let Some(delay) = mpd.suggestedPresentationDelay {
+    // Prefer ServiceDescription target latency, then suggestedPresentationDelay.
+    if let Some(latency) = target_latency_from_mpd(mpd) {
+        t = t.saturating_sub(latency);
+    } else if let Some(delay) = mpd.suggestedPresentationDelay {
         t = t.saturating_sub(delay);
     }
 
@@ -1934,6 +2034,126 @@ mod manifest_logic_tests {
             target_presentation_time_at(&mpd, now).unwrap(),
             Some(Duration::from_secs(8))
         );
+    }
+
+    #[test]
+    fn target_presentation_time_prefers_service_description_latency() {
+        use dash_mpd::{Latency, ServiceDescription};
+
+        let ast = Utc.with_ymd_and_hms(2020, 5, 1, 12, 0, 0).unwrap();
+        let mpd = MPD {
+            availabilityStartTime: Some(ast),
+            suggestedPresentationDelay: Some(Duration::from_secs(2)),
+            ServiceDescription: vec![ServiceDescription {
+                Latency: vec![Latency {
+                    target: Some(3500.0),
+                    ..Default::default()
+                }],
+                ..Default::default()
+            }],
+            ..Default::default()
+        };
+        let now = Utc.with_ymd_and_hms(2020, 5, 1, 12, 0, 10).unwrap();
+        assert_eq!(
+            target_presentation_time_at(&mpd, now).unwrap(),
+            Some(Duration::from_secs_f64(6.5))
+        );
+    }
+
+    #[test]
+    fn segment_availability_waits_for_availability_time_offset() {
+        let seg = TimelineSegment {
+            number: 3,
+            time: 8000,
+            duration: 4000,
+            duration_s: 4.0,
+            presentation_time_s: 8.0,
+            sub_number: None,
+            media_url: None,
+            media_range: None,
+        };
+        let availability = SegmentAvailability {
+            availability_time_offset_s: Some(7.0),
+            availability_time_complete: false,
+        };
+        assert!(!segment_is_available(
+            &seg,
+            Duration::ZERO,
+            Duration::from_secs(14),
+            &availability,
+        ));
+        assert!(segment_is_available(
+            &seg,
+            Duration::ZERO,
+            Duration::from_secs(15),
+            &availability,
+        ));
+    }
+
+    #[test]
+    fn segment_availability_uses_sequence_start_for_subsegments() {
+        let seg = TimelineSegment {
+            number: 1,
+            time: 0,
+            duration: 1000,
+            duration_s: 1.0,
+            presentation_time_s: 2.0,
+            sub_number: Some(3),
+            media_url: None,
+            media_range: None,
+        };
+        assert!((segment_sequence_start_s(Duration::ZERO, &seg) - 0.0).abs() < 1e-6);
+        let availability = SegmentAvailability {
+            availability_time_offset_s: Some(5.0),
+            availability_time_complete: true,
+        };
+        assert!(!segment_is_available(
+            &seg,
+            Duration::ZERO,
+            Duration::from_secs(4),
+            &availability,
+        ));
+        assert!(segment_is_available(
+            &seg,
+            Duration::ZERO,
+            Duration::from_secs(5),
+            &availability,
+        ));
+    }
+
+    #[test]
+    fn filter_segments_by_availability_drops_unpublished_live_edge() {
+        let st = SegmentTemplate {
+            timescale: Some(1000),
+            duration: Some(4000.0),
+            startNumber: Some(1),
+            availabilityTimeOffset: Some(7.0),
+            availabilityTimeComplete: Some(false),
+            ..Default::default()
+        };
+        let addressing = SegmentAddressing::Template(st.clone());
+        let ctx = TimelineBuildContext {
+            is_dynamic: true,
+            period_window: PeriodWindow {
+                idx: 0,
+                start: Duration::ZERO,
+                end: None,
+            },
+            period_duration: None,
+            media_presentation_duration: None,
+            time_shift_buffer_depth: Some(Duration::from_secs(20)),
+            since_availability_start: Some(Duration::from_secs(12)),
+        };
+        let segments = timeline_segments(&st, &ctx).unwrap();
+        let filtered = filter_segments_by_availability(
+            segments,
+            true,
+            Duration::ZERO,
+            ctx.since_availability_start,
+            &addressing,
+        );
+        let numbers: Vec<_> = filtered.iter().map(|s| s.number).collect();
+        assert_eq!(numbers, vec![1, 2]);
     }
 
     #[test]

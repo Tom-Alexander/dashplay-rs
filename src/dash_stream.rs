@@ -110,6 +110,13 @@ pub(crate) async fn run_adaptation_stream(ctx: AdaptationStreamContext) -> Resul
         }
         _ => manifest::timeline_segments_for_addressing(&addressing, &timeline_ctx)?,
     };
+    let segments_all = manifest::filter_segments_by_availability(
+        segments_all,
+        timeline_ctx.is_dynamic,
+        period_start,
+        timeline_ctx.since_availability_start,
+        &addressing,
+    );
 
     // Align every adaptation set to the same media instant: pick the first segment whose
     // interval (in MPD time) still contains instants after `target`. Using "last segment with

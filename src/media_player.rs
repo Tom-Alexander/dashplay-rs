@@ -7,6 +7,7 @@ use std::future::Future;
 use std::pin::Pin;
 use std::sync::Arc;
 use tokio::sync::broadcast;
+use tokio::sync::watch;
 use tokio::task::JoinHandle;
 use url::Url;
 
@@ -197,9 +198,12 @@ impl MediaPlayer {
         let mut tracks = Vec::with_capacity(adaptation_sets.len());
         for aset in &adaptation_sets {
             let (tx, _rx) = broadcast::channel(32);
+            let (buffer_tx, buffer_rx) = watch::channel(0.0);
             tracks.push(super::types::PlayerTrack {
                 mime_type: aset.mimeType.clone(),
                 tx,
+                buffer_feedback: super::types::BufferFeedback::new(buffer_tx),
+                buffer_rx,
             });
         }
 

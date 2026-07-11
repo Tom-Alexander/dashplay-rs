@@ -1,8 +1,41 @@
 use bytes::Bytes;
+use thiserror::Error;
 use tokio::sync::broadcast;
+use tokio::sync::watch;
 use tokio::task::JoinHandle;
 
 use super::PlayerError;
+
+/// Error returned when buffer feedback can no longer reach the playback pipeline.
+#[derive(Debug, Error)]
+pub enum BufferFeedbackError {
+    #[error("playback stream ended")]
+    StreamEnded,
+}
+
+/// Reports playback buffer occupancy (seconds of media buffered ahead) to the ABR controller.
+///
+/// Call [`Self::report`] periodically as the consumer decodes or renders media so adaptive
+/// bitrate decisions reflect actual playback state rather than download timing alone.
+#[derive(Clone)]
+pub struct BufferFeedback {
+    tx: watch::Sender<f64>,
+}
+
+impl BufferFeedback {
+    pub(crate) fn new(tx: watch::Sender<f64>) -> Self {
+        Self { tx }
+    }
+
+    /// Report the current buffer level in seconds.
+    ///
+    /// Values are clamped internally by the ABR algorithm. Report `0.0` when stalled or empty.
+    pub fn report(&self, buffer_s: f64) -> Result<(), BufferFeedbackError> {
+        self.tx
+            .send(buffer_s)
+            .map_err(|_| BufferFeedbackError::StreamEnded)
+    }
+}
 
 /// Events emitted on a single DASH adaptation-set stream (dash.js: stream / fragment events).
 #[derive(Debug, Clone)]
@@ -25,6 +58,8 @@ pub struct PlayerTrack {
     /// `AdaptationSet@mimeType` when present (e.g. `video/mp4`, `audio/mp4`).
     pub mime_type: Option<String>,
     pub(crate) tx: broadcast::Sender<PlayerEvent>,
+    pub(crate) buffer_feedback: BufferFeedback,
+    pub(crate) buffer_rx: watch::Receiver<f64>,
 }
 
 impl PlayerTrack {
@@ -35,6 +70,11 @@ impl PlayerTrack {
 
     pub fn receiver_count(&self) -> usize {
         self.tx.receiver_count()
+    }
+
+    /// Send buffer occupancy updates for this track's ABR controller.
+    pub fn buffer_feedback(&self) -> BufferFeedback {
+        self.buffer_feedback.clone()
     }
 }
 

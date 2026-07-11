@@ -23,7 +23,7 @@ Status legend: `[ ]` not started · `[~]` partial · `[x]` done.
 | Timeline / live edge | `[x]` | SegmentTemplate + SegmentTimeline, UTCTiming, TSBD filtering |
 | Segment fetch + BaseURL failover | `[x]` | Blacklisting on failure |
 | Multi-period (live) | `[x]` | Init re-emission on transition |
-| ABR (BOLA) | `[~]` | Works, but drives off a synthetic buffer estimate |
+| ABR (BOLA) | `[x]` | Consumer-reported buffer via [`BufferFeedback`] |
 | DRM | `[~]` | Widevine only; requires external CDM device |
 | Track selection | `[~]` | MIME type only (`audio/mp4`, `video/mp4`) |
 | Segment addressing | `[~]` | `SegmentTemplate`, `SegmentList` / `SegmentURL`, `SegmentBase` + byte ranges |
@@ -47,7 +47,7 @@ These close the largest gaps between "delivers some streams" and "handles confor
   `indexRange` (single-file `sidx`-indexed representations).
 - [x] **Full template variable set.** `$Bandwidth$` and width/format specifiers such as
   `$Number%05d$` / `$Time%0Nd$`.
-- [ ] **Real buffer feedback for ABR.** Replace the synthetic `abr.update_buffer(10.0)`
+- [x] **Real buffer feedback for ABR.** Replace the synthetic `abr.update_buffer(10.0)`
   seed with a buffer level reported by the consumer, so ABR reflects actual playback
   state rather than download timing alone.
 - [ ] **Representation fallback on segment failure.** README claims it, but only BaseURL

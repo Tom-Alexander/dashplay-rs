@@ -151,6 +151,34 @@ One DASH adaptation set exposed as a `tokio::sync::broadcast` channel.
 | `mime_type` | `AdaptationSet@mimeType` when present (e.g. `video/mp4`) |
 | `subscribe()` | Create a new event receiver |
 | `receiver_count()` | Number of active subscribers |
+| `buffer_feedback()` | Report playback buffer occupancy for ABR |
+
+---
+
+### `BufferFeedback`
+
+Consumer-reported buffer level (seconds of media buffered ahead of the playhead) used by
+the internal BOLA ABR controller.
+
+| Method | Description |
+|--------|-------------|
+| `report(buffer_s)` | Update the buffer level seen by ABR for this track |
+
+Report periodically as the decoder or renderer consumes media so bitrate decisions reflect
+actual playback state.
+
+---
+
+### `PlayerTrackOutputs`
+
+Returned by [`Player::start_tracks`](#player):
+
+| Field / method | Description |
+|----------------|-------------|
+| `tracks` | One [`PlayerTrackOutput`](#playertrackoutput) per adaptation set |
+| `join` | Background task running the stream controller loop |
+| `buffer_feedback(idx)` | [`BufferFeedback`](#bufferfeedback) for a track index |
+| `subscribe(idx)` | Subscribe to a track's broadcast channel |
 
 ---
 
@@ -174,6 +202,7 @@ Per-track handle returned in `PlayerTrackOutputs.tracks`:
 | `track_index` | Adaptation-set index |
 | `mime_type` | MIME type of the adaptation set |
 | `into_receiver()` | Take ownership of the broadcast receiver |
+| `buffer_feedback()` | Report playback buffer occupancy for ABR |
 | `events()` | Stream wrapper over track events |
 
 ---

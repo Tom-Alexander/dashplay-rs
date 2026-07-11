@@ -62,6 +62,7 @@ impl AbrController {
         self.bola.decide()
     }
 
+    #[allow(dead_code)]
     pub fn buffer_s(&self) -> f64 {
         self.bola.buffer_s()
     }

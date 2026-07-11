@@ -14,9 +14,13 @@
 //! let outputs = player.start_tracks().await?;
 //!
 //! if let Some(mut rx) = outputs.subscribe(0) {
+//!     let buffer = outputs.buffer_feedback(0).expect("track");
 //!     while let Ok(event) = rx.recv().await {
 //!         match event {
-//!             PlayerEvent::Init(_) | PlayerEvent::Segment { .. } => { /* decode */ }
+//!             PlayerEvent::Init(_) | PlayerEvent::Segment { .. } => {
+//!                 // decode, then report buffered seconds ahead of the playhead
+//!                 let _ = buffer.report(4.0);
+//!             }
 //!             PlayerEvent::End => break,
 //!         }
 //!     }
@@ -47,7 +51,7 @@ mod utc_timing;
 
 pub use media_player::{MediaPlayer, WidevineLicenseFetcher};
 pub use player::{Player, PlayerTrackOutput};
-pub use types::{PlayerEvent, PlayerOutputs, PlayerTrack};
+pub use types::{BufferFeedback, BufferFeedbackError, PlayerEvent, PlayerOutputs, PlayerTrack};
 
 use crate::drm::LicenseError;
 use crate::drm::mpd::MpdDrmError;

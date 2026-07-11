@@ -20,6 +20,7 @@ use bytes::Bytes;
 use dash_mpd::{AdaptationSet, Period, Representation};
 use reqwest::Client;
 use tokio::sync::broadcast;
+use tokio::sync::watch;
 
 pub(crate) struct AdaptationStreamContext {
     pub client: Client,
@@ -36,6 +37,8 @@ pub(crate) struct AdaptationStreamContext {
     pub license: Option<Arc<License>>,
     /// Representation-specific Widevine sessions (effective DRM at Representation level).
     pub wv_by_rep: HashMap<String, Arc<License>>,
+    /// Latest buffer occupancy reported by the consumer (seconds).
+    pub buffer_rx: watch::Receiver<f64>,
 }
 
 /// Run the fragment loop for one adaptation set until segments are exhausted for this manifest snapshot.
@@ -54,6 +57,7 @@ pub(crate) async fn run_adaptation_stream(ctx: AdaptationStreamContext) -> Resul
         blacklist,
         license,
         wv_by_rep,
+        buffer_rx,
     } = ctx;
 
     let addressing = manifest::segment_addressing_for_timeline(&period, &adaptation_set)?;
@@ -111,7 +115,7 @@ pub(crate) async fn run_adaptation_stream(ctx: AdaptationStreamContext) -> Resul
         return Ok(());
     };
 
-    abr.update_buffer(10.0);
+    abr.update_buffer(latest_buffer_s(&buffer_rx));
 
     let init_taken = have_init[aset_idx]
         .compare_exchange(false, true, Ordering::AcqRel, Ordering::Acquire)
@@ -157,9 +161,9 @@ pub(crate) async fn run_adaptation_stream(ctx: AdaptationStreamContext) -> Resul
     }
 
     let mut sidx_segments_by_rep: HashMap<String, Vec<manifest::TimelineSegment>> = HashMap::new();
-    let mut buffer_s = abr.buffer_s();
 
     for (local_idx, seg) in segments.into_iter().enumerate() {
+        abr.update_buffer(latest_buffer_s(&buffer_rx));
         let decision = abr.decide();
         let rep_idx = abr.representation_index_for_quality_index(decision.quality_index);
         let rep = &adaptation_set.representations[rep_idx];
@@ -223,8 +227,7 @@ pub(crate) async fn run_adaptation_stream(ctx: AdaptationStreamContext) -> Resul
         let throughput_bps = (bytes.len() as f64 * 8.0) / elapsed_s;
 
         abr.observe_throughput(throughput_bps);
-        buffer_s = (buffer_s + seg_for_fetch.duration_s - elapsed_s).max(0.0);
-        abr.update_buffer(buffer_s);
+        abr.update_buffer(latest_buffer_s(&buffer_rx));
 
         let mut data = Bytes::from(bytes);
         if let (Some(lic), Some(init_bytes)) = (&rep_license, init_for_decrypt) {
@@ -251,6 +254,10 @@ pub(crate) async fn run_adaptation_stream(ctx: AdaptationStreamContext) -> Resul
     }
 
     Ok(())
+}
+
+fn latest_buffer_s(buffer_rx: &watch::Receiver<f64>) -> f64 {
+    *buffer_rx.borrow()
 }
 
 fn init_target_for_addressing(

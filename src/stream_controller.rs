@@ -114,6 +114,7 @@ impl PlaybackLoopState {
                     .get(aset_idx)
                     .cloned()
                     .unwrap_or_default();
+                let buffer_rx = tracks[aset_idx].buffer_rx.clone();
 
                 let period = period.clone();
                 tasks.push(tokio::spawn(async move {
@@ -131,6 +132,7 @@ impl PlaybackLoopState {
                         blacklist,
                         license,
                         wv_by_rep,
+                        buffer_rx,
                     })
                     .await
                 }));

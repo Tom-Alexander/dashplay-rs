@@ -7,6 +7,7 @@ use tokio_stream::Stream;
 use tokio_stream::wrappers::ReceiverStream;
 
 use super::media_player::{MediaPlayer, WidevineLicenseFetcher};
+use super::types::BufferFeedback;
 use super::{PlayerError, PlayerEvent, PlayerOutputs, PlayerTrack};
 
 type MergedByteStream = Pin<Box<dyn Stream<Item = Result<Bytes, std::io::Error>> + Send>>;
@@ -89,6 +90,7 @@ impl Player {
                 track_index: i,
                 mime_type: t.mime_type.clone(),
                 rx: t.tx.subscribe(),
+                buffer_feedback: t.buffer_feedback(),
             });
         }
 
@@ -155,6 +157,11 @@ impl PlayerTrackOutputs {
         self.senders.get(idx).map(|t| t.subscribe())
     }
 
+    /// Buffer feedback handle for a track (same index as [`Self::tracks`] / [`Self::subscribe`]).
+    pub fn buffer_feedback(&self, idx: usize) -> Option<BufferFeedback> {
+        self.senders.get(idx).map(|t| t.buffer_feedback())
+    }
+
     pub fn into_parts(
         self,
     ) -> (
@@ -175,11 +182,17 @@ pub struct PlayerTrackOutput {
     pub track_index: usize,
     pub mime_type: Option<String>,
     rx: broadcast::Receiver<PlayerEvent>,
+    buffer_feedback: BufferFeedback,
 }
 
 impl PlayerTrackOutput {
     pub fn into_receiver(self) -> broadcast::Receiver<PlayerEvent> {
         self.rx
+    }
+
+    /// Report buffer occupancy for this track's adaptive bitrate controller.
+    pub fn buffer_feedback(&self) -> BufferFeedback {
+        self.buffer_feedback.clone()
     }
 
     /// Stream events for a single adaptation set (init + segments).

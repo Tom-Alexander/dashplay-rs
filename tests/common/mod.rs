@@ -487,6 +487,26 @@ async fn collect_events(
     events
 }
 
+/// Simulates 1× playback consumption by draining buffer occupancy over wall-clock time.
+pub fn spawn_playback_buffer_simulation(
+    buffer_feedback: dashplayrs::BufferFeedback,
+    initial_buffer_s: f64,
+) -> JoinHandle<()> {
+    tokio::spawn(async move {
+        let mut buffer_s = initial_buffer_s;
+        let _ = buffer_feedback.report(buffer_s);
+        let mut interval = tokio::time::interval(StdDuration::from_millis(100));
+        interval.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Skip);
+        loop {
+            interval.tick().await;
+            buffer_s = (buffer_s - 0.1).max(0.0);
+            if buffer_feedback.report(buffer_s).is_err() {
+                break;
+            }
+        }
+    })
+}
+
 pub async fn play_single_track(
     manifest_url: &Url,
     timeout: std::time::Duration,
@@ -508,8 +528,19 @@ async fn play_single_track_with_options(
     timeout: std::time::Duration,
     drop_receiver_before_join: bool,
 ) -> Result<Vec<dashplayrs::PlayerEvent>, dashplayrs::PlayerError> {
+    play_single_track_with_buffer(manifest_url, timeout, drop_receiver_before_join, 25.0).await
+}
+
+pub async fn play_single_track_with_buffer(
+    manifest_url: &Url,
+    timeout: std::time::Duration,
+    drop_receiver_before_join: bool,
+    initial_buffer_s: f64,
+) -> Result<Vec<dashplayrs::PlayerEvent>, dashplayrs::PlayerError> {
     let player = dashplayrs::Player::new(manifest_url.as_str(), None)?;
     let outputs = player.start_tracks().await?;
+    let buffer_feedback = outputs.buffer_feedback(0).expect("one track");
+    let drain = spawn_playback_buffer_simulation(buffer_feedback, initial_buffer_s);
     let mut rx = outputs
         .tracks
         .into_iter()
@@ -520,6 +551,7 @@ async fn play_single_track_with_options(
     if drop_receiver_before_join {
         drop(rx);
     }
+    drain.abort();
     outputs.join.await.unwrap()?;
     Ok(events)
 }
@@ -531,6 +563,12 @@ pub async fn play_all_tracks(
     let player = dashplayrs::Player::new(manifest_url.as_str(), None)?;
     let outputs = player.start_tracks().await?;
     let track_count = outputs.tracks.len();
+    let mut drains = Vec::with_capacity(track_count);
+    for i in 0..track_count {
+        if let Some(feedback) = outputs.buffer_feedback(i) {
+            drains.push(spawn_playback_buffer_simulation(feedback, 25.0));
+        }
+    }
     let mut receivers: Vec<_> = outputs
         .tracks
         .into_iter()
@@ -542,6 +580,9 @@ pub async fn play_all_tracks(
         all_events.push(collect_events(rx, timeout).await);
     }
 
+    for drain in drains {
+        drain.abort();
+    }
     outputs.join.await.unwrap()?;
     Ok(all_events)
 }

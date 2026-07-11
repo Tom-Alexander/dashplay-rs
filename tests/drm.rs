@@ -1,7 +1,13 @@
 mod common;
 
+use common::drm::{
+    RotatingDrmMockServer, counting_license_fetcher, play_single_track_with_license_fetcher,
+};
 use common::read_fixture;
 use dashplayrs::drm::mpd::parse_mpd_drm_info;
+use dashplayrs::drm::{License, WidevineSessionKey};
+use std::sync::Arc;
+use std::sync::atomic::AtomicUsize;
 
 #[test]
 fn parse_widevine_drm_from_mpd_fixture() {
@@ -74,5 +80,117 @@ fn drm_mpd_inheritance_prefers_representation_content_protection() {
     assert_eq!(
         rep.effective.license_urls,
         vec!["https://license.example/wv".to_string()]
+    );
+}
+
+#[test]
+fn rotated_mpds_have_distinct_widevine_session_keys() {
+    let xml_v1 = read_fixture("drm_widevine_rotate", "manifest_v1.mpd");
+    let xml_v2 = read_fixture("drm_widevine_rotate", "manifest_v2.mpd");
+    let v1 = parse_mpd_drm_info(&xml_v1).expect("parse v1");
+    let v2 = parse_mpd_drm_info(&xml_v2).expect("parse v2");
+    let pssh_v1 = &v1.periods[0].adaptation_sets[0].effective.widevine_pssh[0];
+    let pssh_v2 = &v2.periods[0].adaptation_sets[0].effective.widevine_pssh[0];
+    assert_ne!(
+        WidevineSessionKey::from_pssh(pssh_v1),
+        WidevineSessionKey::from_pssh(pssh_v2)
+    );
+}
+
+/// Merges a second CONTENT KID when a second license response is applied to the same session.
+#[test]
+fn apply_license_accumulates_content_keys() {
+    let device_path = match std::env::var("DEVICE_PATH") {
+        Ok(v) if !v.is_empty() => v,
+        _ => return,
+    };
+    let _ = device_path;
+
+    let license_path = common::fixture_dir("dashif_drm_encrypted").join("license-response.bin");
+    if !license_path.exists() {
+        return;
+    }
+    let license_bytes = std::fs::read(&license_path).expect("read license");
+
+    let xml = read_fixture("drm_widevine", "manifest.mpd");
+    let info = parse_mpd_drm_info(&xml).expect("parse drm");
+    let pssh = &info.periods[0].adaptation_sets[0].effective.widevine_pssh[0];
+
+    let license = License::new_from_pssh(pssh).expect("license request");
+    license.apply_license(&license_bytes).expect("first apply");
+    let kids_after_first = license.loaded_kids().expect("kids");
+    assert!(!kids_after_first.is_empty());
+
+    license.apply_license(&license_bytes).expect("second apply");
+    let kids_after_second = license.loaded_kids().expect("kids");
+    assert_eq!(kids_after_first, kids_after_second);
+}
+
+/// Live MPD refresh with rotating PSSH acquires one license per distinct PSSH, then reuses cache.
+#[tokio::test]
+async fn live_key_rotation_mpd_refresh_acquires_both_pssh_sessions() {
+    let device_path = match std::env::var("DEVICE_PATH") {
+        Ok(v) if !v.is_empty() => v,
+        _ => return,
+    };
+    let _ = device_path;
+
+    let license_path = common::fixture_dir("dashif_drm_encrypted").join("license-response.bin");
+    if !license_path.exists() {
+        return;
+    }
+    let license_bytes = std::fs::read(&license_path).expect("read license");
+
+    let server = RotatingDrmMockServer::spawn("drm_widevine_rotate", license_bytes.clone()).await;
+    let counter = server.license_post_count.clone();
+    let fetcher = counting_license_fetcher(license_bytes, counter.clone());
+
+    let _events = play_single_track_with_license_fetcher(
+        &server.manifest_url,
+        std::time::Duration::from_secs(4),
+        fetcher,
+    )
+    .await
+    .expect("playback with key rotation");
+
+    let posts = counter.load(std::sync::atomic::Ordering::Relaxed);
+    assert_eq!(
+        posts, 2,
+        "expected one license POST per distinct PSSH (v1 then v2), got {posts}"
+    );
+}
+
+/// Unchanged PSSH on manifest refresh must not trigger another license POST.
+#[tokio::test]
+async fn license_manager_reuses_session_on_unchanged_pssh() {
+    let device_path = match std::env::var("DEVICE_PATH") {
+        Ok(v) if !v.is_empty() => v,
+        _ => return,
+    };
+    let _ = device_path;
+
+    let license_path = common::fixture_dir("dashif_drm_encrypted").join("license-response.bin");
+    if !license_path.exists() {
+        return;
+    }
+    let license_bytes = std::fs::read(&license_path).expect("read license");
+
+    let counter = Arc::new(AtomicUsize::new(0));
+    let fetcher = counting_license_fetcher(license_bytes.clone(), counter.clone());
+    let server =
+        common::drm::spawn_drm_fixture_with_mock_license("drm_widevine", license_bytes).await;
+
+    let _events = play_single_track_with_license_fetcher(
+        &server.manifest_url,
+        std::time::Duration::from_secs(2),
+        fetcher,
+    )
+    .await
+    .expect("static drm playback");
+
+    assert_eq!(
+        counter.load(std::sync::atomic::Ordering::Relaxed),
+        1,
+        "static VOD should acquire exactly one Widevine license"
     );
 }

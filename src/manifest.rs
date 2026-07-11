@@ -5,7 +5,6 @@ use chrono::{DateTime, Utc};
 use dash_mpd::{
     AdaptationSet, BaseURL, MPD, Period, Representation, SegmentBase, SegmentList, SegmentTemplate,
 };
-use reqwest::Client;
 use url::Url;
 
 use super::PlayerError;
@@ -145,12 +144,6 @@ pub(crate) fn align_start_index_to_sap(
         }
     }
     i
-}
-
-pub(crate) async fn fetch_mpd(client: &Client, manifest_uri: &Url) -> Result<MPD, PlayerError> {
-    let response = client.get(manifest_uri.clone()).send().await?;
-    let text = response.text().await?;
-    Ok(dash_mpd::parse(&text)?)
 }
 
 pub(crate) fn mpd(manifest: &Option<MPD>) -> Result<&MPD, PlayerError> {

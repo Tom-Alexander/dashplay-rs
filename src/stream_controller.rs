@@ -1,7 +1,6 @@
 //! Orchestrates manifest refresh, period selection, and parallel adaptation-set streams
 //! (dash.js: `StreamController` coordinating multiple `Stream` instances).
 
-use std::collections::HashMap;
 use std::sync::Arc;
 use std::sync::Mutex;
 use std::sync::atomic::{AtomicBool, Ordering};
@@ -11,7 +10,7 @@ use reqwest::Client;
 use tokio::time::sleep;
 use url::Url;
 
-use super::drm::License;
+use super::drm::coordinator::DrmSessionCoordinator;
 
 use super::PlayerError;
 use super::dash_stream::{AdaptationStreamContext, run_adaptation_stream};
@@ -25,15 +24,18 @@ pub(crate) struct PlaybackLoopState {
     pub client: Client,
     pub manifest_uri: Url,
     pub manifest: Option<dash_mpd::MPD>,
-    pub adaptation_wv_sessions: Vec<Option<Arc<License>>>,
-    pub adaptation_wv_sessions_by_rep: Vec<HashMap<String, Arc<License>>>,
+    pub mpd_xml: Option<String>,
+    pub drm: DrmSessionCoordinator,
     pub(crate) last_period_idx: Option<usize>,
 }
 
 impl PlaybackLoopState {
     pub async fn fetch_manifest(&mut self) -> Result<(), PlayerError> {
-        let mpd = manifest::fetch_mpd(&self.client, &self.manifest_uri).await?;
+        let resp = self.client.get(self.manifest_uri.clone()).send().await?;
+        let text = resp.text().await?;
+        let mpd = dash_mpd::parse(&text)?;
         self.manifest = Some(mpd);
+        self.mpd_xml = Some(text);
         Ok(())
     }
 
@@ -82,6 +84,15 @@ impl PlaybackLoopState {
                     }
                 }
                 self.last_period_idx = Some(current_window.idx);
+
+                if let Some(xml) = self.mpd_xml.as_deref() {
+                    self.drm.sync_from_mpd(xml, current_window.idx).await?;
+                }
+                self.drm.poll_renewals().await?;
+
+                let (adaptation_wv_sessions, adaptation_wv_sessions_by_rep) =
+                    self.drm.adaptation_sessions();
+
                 let period_start = current_window.start;
                 let period = mpd_ref.periods[current_window.idx].clone();
                 let segment_base_ctx = manifest::SegmentBaseContext {
@@ -125,12 +136,8 @@ impl PlaybackLoopState {
                     let client = self.client.clone();
                     let segment_base_ctx = segment_base_ctx.clone();
                     let blacklist = blacklist.clone();
-                    let license = self
-                        .adaptation_wv_sessions
-                        .get(aset_idx)
-                        .and_then(|x| x.clone());
-                    let wv_by_rep = self
-                        .adaptation_wv_sessions_by_rep
+                    let license = adaptation_wv_sessions.get(aset_idx).and_then(|x| x.clone());
+                    let wv_by_rep = adaptation_wv_sessions_by_rep
                         .get(aset_idx)
                         .cloned()
                         .unwrap_or_default();

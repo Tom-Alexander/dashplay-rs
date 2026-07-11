@@ -16,3 +16,5 @@ vpn-config
 .wrangler/
 *.mpd
 out/
+tests/conformance/schematron/tmp/
+tests/conformance/schematron/output/

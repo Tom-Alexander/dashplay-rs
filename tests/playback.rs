@@ -219,22 +219,6 @@ async fn vod_time_template_addressing_playback() {
 }
 
 #[tokio::test]
-async fn dashif_simple_segment_template_smoke_test() {
-    // Structure adapted from DASH-IF livesim2 testpic_2s Manifest_endNumber.mpd.
-    let server = FixtureServer::spawn("dashif_simple").await;
-    let events = play_single_track(&server.manifest_url, TIMEOUT)
-        .await
-        .expect("playback");
-
-    assert_eq!(
-        init_payload(&events).as_deref(),
-        Some(b"dashplay-dashif-init".as_ref())
-    );
-    assert_eq!(segment_payloads(&events).len(), 4);
-    assert!(has_end(&events));
-}
-
-#[tokio::test]
 async fn all_base_urls_fail_surfaces_segment_error() {
     let server = FixtureServer::spawn_with_options("base_url_all_bad", &["/a", "/b"]).await;
 

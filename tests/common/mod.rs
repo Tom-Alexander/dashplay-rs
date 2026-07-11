@@ -2,6 +2,8 @@
 
 #![allow(dead_code)]
 
+pub mod drm;
+
 use axum::{
     Router,
     body::Body,
@@ -441,6 +443,10 @@ fn load_fixture_files(root: &FsPath) -> HashMap<String, Vec<u8>> {
     files
 }
 
+pub(crate) fn load_fixture_files_public(root: &FsPath) -> HashMap<String, Vec<u8>> {
+    load_fixture_files(root)
+}
+
 fn collect_files(root: &FsPath, dir: &FsPath, out: &mut HashMap<String, Vec<u8>>) {
     for entry in std::fs::read_dir(dir).unwrap_or_else(|e| panic!("read_dir {dir:?}: {e}")) {
         let entry = entry.expect("dir entry");
@@ -460,7 +466,7 @@ fn collect_files(root: &FsPath, dir: &FsPath, out: &mut HashMap<String, Vec<u8>>
     }
 }
 
-async fn collect_events(
+pub async fn collect_events(
     rx: &mut tokio::sync::broadcast::Receiver<dashplayrs::PlayerEvent>,
     timeout: std::time::Duration,
 ) -> Vec<dashplayrs::PlayerEvent> {

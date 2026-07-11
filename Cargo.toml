@@ -22,7 +22,7 @@ pssh-box = "0.2.4"
 quick-xml = "0.39.2"
 reqwest = { version = "0.13", default-features = false, features = ["rustls", "gzip", "cookies"] }
 thiserror = "1.0"
-tokio = { version = "1", features = ["sync", "rt", "time", "macros", "net"] }
+tokio = { version = "1", features = ["sync", "rt", "rt-multi-thread", "time", "macros", "net"] }
 tokio-stream = { version = "0.1", features = ["sync"] }
 tokio-util = { version = "0.7", features = ["io"] }
 url = "2.5"
@@ -30,6 +30,9 @@ widevine = "0.1.0"
 
 [dev-dependencies]
 axum = "0.8"
+dash-mpd = "0.20.2"
+reqwest = { version = "0.13", default-features = false, features = ["rustls", "gzip"] }
+roxmltree = "0.20"
 tokio = { version = "1", features = ["macros", "rt-multi-thread"] }
 
 [lib]

@@ -102,8 +102,11 @@ These close the largest gaps between "delivers some streams" and "handles confor
 
 ## P5 — Conformance and quality
 
-- [ ] **DASH-IF conformance suite.** Expand beyond the single simplified smoke test to a
-  broader set of DASH-IF test vectors.
+- [x] **DASH-IF conformance suite.** `tests/dashif.rs` covers playback vectors, Rust IOP
+  schematron validation (`tests/conformance/iop_validate.rs`, rules from DASH-IF
+  Conformance-Software), CENC encrypted local vector (`dashif_drm_encrypted`), optional
+  full Widevine playback with `DEVICE_PATH` + captured `license-response.bin`, and remote
+  vectors (`cargo test --test dashif -- --ignored`).
 - [ ] **Regression tests for each fix.** Per `AGENTS.md`, every bug fix ships with a
   deterministic regression test.
 - [ ] **API surface cleanup.** Resolve the several `#[allow(dead_code)]` public helpers

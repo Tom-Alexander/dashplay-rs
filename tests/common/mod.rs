@@ -249,6 +249,7 @@ async fn serve_partial_live_manifest() -> Response {
     <AdaptationSet mimeType="video/mp4" contentType="video">
       <SegmentTemplate timescale="1000" duration="4000" initialization="init.mp4" media="seg-$Number$.m4s" startNumber="1" availabilityTimeOffset="7" availabilityTimeComplete="false"/>
       <Representation id="1" bandwidth="100000" codecs="avc1.42E01E" width="640" height="360"/>
+      <ProducerReferenceTime id="0" type="encoder" wallClockTime="2020-05-01T12:00:00Z" presentationTime="0"/>
     </AdaptationSet>
   </Period>
 </MPD>

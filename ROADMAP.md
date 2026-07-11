@@ -94,9 +94,14 @@ These close the largest gaps between "delivers some streams" and "handles confor
 ## P4 — Additional DRM and advanced DASH
 
 - [ ] **Additional DRM systems.** ClearKey
-- [~] **Low-Latency DASH.** `availabilityTimeComplete`, `ServiceDescription`, resync
-  points, and chunked/partial segment transfer. *(Availability timing, `ServiceDescription`
-  target latency, and chunked CMAF partial transfer done; resync points remain.)*
+- [x] **Low-Latency DASH.** `availabilityTimeComplete`, `ServiceDescription`, resync
+  points, and chunked/partial segment transfer.
+- [ ] **In-band producer reference time.** Parse `prft` boxes for
+  `ProducerReferenceTime@inband=true` clock correction.
+- [ ] **Mid-segment resync.** Use `Resync@type` 2/3 random-access points during seek
+  and playback recovery.
+- [ ] **Producer-reference integration coverage.** Test live-window selection when
+  `ProducerReferenceTime` intentionally diverges from `UTCTiming`.
 - [x] **In-band and MPD events.** `EventStream`, `emsg`, and SCTE-35 ad markers.
 - [ ] **Content steering / MPD updates.** `Location`, content steering, and MPD patch
   (`urn:mpeg:dash:mpd-patch`) updates.

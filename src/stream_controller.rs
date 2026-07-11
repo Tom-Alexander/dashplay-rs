@@ -98,12 +98,6 @@ impl PlaybackLoopState {
                     seek_target_override = Some(seek);
                 }
 
-                let target_time = if let Some(seek) = seek_target_override {
-                    Some(seek)
-                } else {
-                    manifest::target_presentation_time_at(mpd_ref, wall_now)?
-                };
-
                 let period_windows = manifest::period_windows(mpd_ref)?;
                 let periods_to_play: Vec<manifest::PeriodWindow> = if is_dynamic {
                     vec![manifest::current_period_window_at(mpd_ref, wall_now)?]
@@ -162,17 +156,36 @@ impl PlaybackLoopState {
                         period_base_urls: period.BaseURL.clone(),
                     };
 
-                    let since_ast = manifest::since_availability_start_at(mpd_ref, wall_now)?;
-                    let timeline_ctx = manifest::TimelineBuildContext {
-                        is_dynamic,
-                        period_window: current_window,
-                        period_duration: period.duration,
-                        media_presentation_duration: mpd_ref.mediaPresentationDuration,
-                        time_shift_buffer_depth: mpd_ref.timeShiftBufferDepth,
-                        since_availability_start: since_ast,
-                    };
-
+                    let since_ast_utc = manifest::since_availability_start_at(mpd_ref, wall_now)?;
                     let adaptation_sets = select_adaptation_sets(&period, &track_selection);
+
+                    let reference_since_ast = adaptation_sets
+                        .first()
+                        .and_then(|selected| {
+                            selected
+                                .adaptation_set
+                                .representations
+                                .first()
+                                .and_then(|rep| {
+                                    super::resync::resync_corrected_since_ast(
+                                        mpd_ref,
+                                        wall_now,
+                                        &period,
+                                        period_start,
+                                        selected.adaptation_set,
+                                        rep,
+                                    )
+                                })
+                        })
+                        .or(since_ast_utc);
+
+                    let period_target_time = if let Some(seek) = seek_target_override {
+                        Some(seek)
+                    } else if let Some(s) = reference_since_ast {
+                        Some(manifest::target_presentation_time_from_since(mpd_ref, s))
+                    } else {
+                        manifest::target_presentation_time_at(mpd_ref, wall_now)?
+                    };
 
                     let mut streams = Vec::new();
                     for (track_idx, selected) in adaptation_sets.into_iter().enumerate() {
@@ -181,6 +194,30 @@ impl PlaybackLoopState {
                         }
                         let adaptation_set = selected.adaptation_set.clone();
                         let period_adaptation_index = selected.info.period_adaptation_index;
+                        let rep = adaptation_set.representations.first();
+                        let since_ast = rep
+                            .and_then(|r| {
+                                super::resync::resync_corrected_since_ast(
+                                    mpd_ref,
+                                    wall_now,
+                                    &period,
+                                    period_start,
+                                    &adaptation_set,
+                                    r,
+                                )
+                            })
+                            .or(since_ast_utc);
+                        let resync_hints = rep
+                            .and_then(|r| super::resync::resync_hints(&period, &adaptation_set, r));
+                        let timeline_ctx = manifest::TimelineBuildContext {
+                            is_dynamic,
+                            period_window: current_window,
+                            period_duration: period.duration,
+                            media_presentation_duration: mpd_ref.mediaPresentationDuration,
+                            time_shift_buffer_depth: mpd_ref.timeShiftBufferDepth,
+                            since_availability_start: since_ast,
+                            resync_hints,
+                        };
 
                         let tx = tracks[track_idx].tx.clone();
                         let have_init = have_init.clone();
@@ -199,7 +236,7 @@ impl PlaybackLoopState {
                             run_adaptation_stream(AdaptationStreamContext {
                                 client,
                                 segment_base_ctx,
-                                target_time,
+                                target_time: period_target_time,
                                 period_start,
                                 period,
                                 timeline_ctx,

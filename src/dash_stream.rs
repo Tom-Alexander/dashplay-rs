@@ -134,10 +134,12 @@ pub(crate) async fn run_adaptation_stream(ctx: AdaptationStreamContext) -> Resul
                 .unwrap_or(0);
             let start_idx =
                 manifest::align_start_index_to_sap(&segments_all, start_idx, &adaptation_set);
+            let start_idx = align_start_index_with_resync(&segments_all, start_idx, &timeline_ctx);
             let start_idx = delivered_tracker.advance_start_index(&segments_all, start_idx);
             (segments_all[start_idx..].to_vec(), start_idx)
         } else {
             let start_idx = manifest::align_start_index_to_sap(&segments_all, 0, &adaptation_set);
+            let start_idx = align_start_index_with_resync(&segments_all, start_idx, &timeline_ctx);
             let start_idx = delivered_tracker.advance_start_index(&segments_all, start_idx);
             (segments_all[start_idx..].to_vec(), start_idx)
         }
@@ -528,6 +530,18 @@ async fn decrypt_media_fragment(
                 Err(PlayerError::License(e))
             }
         }
+    }
+}
+
+fn align_start_index_with_resync(
+    segments: &[manifest::TimelineSegment],
+    start_idx: usize,
+    timeline_ctx: &TimelineBuildContext,
+) -> usize {
+    if let Some(hints) = timeline_ctx.resync_hints {
+        manifest::align_start_index_to_resync(segments, start_idx, hints)
+    } else {
+        start_idx
     }
 }
 

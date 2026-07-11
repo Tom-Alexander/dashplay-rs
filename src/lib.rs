@@ -56,6 +56,7 @@ mod mp4_box;
 mod partial_segment;
 mod playback_control;
 mod player;
+mod resync;
 mod segment_blacklist;
 mod segment_fetcher;
 mod stream_controller;

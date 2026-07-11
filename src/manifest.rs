@@ -27,6 +27,7 @@ pub(crate) struct TimelineBuildContext {
     pub media_presentation_duration: Option<Duration>,
     pub time_shift_buffer_depth: Option<Duration>,
     pub since_availability_start: Option<Duration>,
+    pub resync_hints: Option<super::resync::ResyncHints>,
 }
 
 impl TimelineBuildContext {
@@ -129,6 +130,37 @@ pub(crate) fn align_start_index_to_sap(
         }
     }
     i
+}
+
+/// When [`super::resync::ResyncHints::random_access_interval_s`] is set, snap `start_idx` to the
+/// nearest segment on the resync grid (DASH-IF IOP §9.X.6.2.8).
+pub(crate) fn align_start_index_to_resync(
+    segments: &[TimelineSegment],
+    start_idx: usize,
+    hints: super::resync::ResyncHints,
+) -> usize {
+    let Some(interval_s) = hints
+        .random_access_interval_s
+        .filter(|x| x.is_finite() && *x > 0.0)
+    else {
+        return start_idx;
+    };
+    if segments.is_empty() {
+        return 0;
+    }
+    let anchor_t = segments[start_idx.min(segments.len() - 1)].presentation_time_s;
+    let grid_t = (anchor_t / interval_s).floor() * interval_s;
+    segments
+        .iter()
+        .enumerate()
+        .filter(|(_, s)| s.presentation_time_s <= grid_t + 1e-6)
+        .max_by(|(_, a), (_, b)| {
+            a.presentation_time_s
+                .partial_cmp(&b.presentation_time_s)
+                .unwrap_or(std::cmp::Ordering::Equal)
+        })
+        .map(|(i, _)| i)
+        .unwrap_or(start_idx)
 }
 
 pub(crate) fn mpd(manifest: &Option<MPD>) -> Result<&MPD, PlayerError> {
@@ -1477,22 +1509,24 @@ pub(crate) fn filter_segments_by_availability(
         .collect()
 }
 
-pub(crate) fn target_presentation_time_at(
-    mpd: &MPD,
-    wall_now: DateTime<Utc>,
-) -> Result<Option<Duration>, PlayerError> {
-    let Some(mut t) = since_availability_start_at(mpd, wall_now)? else {
-        return Ok(None);
-    };
-
-    // Prefer ServiceDescription target latency, then suggestedPresentationDelay.
+pub(crate) fn target_presentation_time_from_since(mpd: &MPD, since_ast: Duration) -> Duration {
+    let mut t = since_ast;
     if let Some(latency) = target_latency_from_mpd(mpd) {
         t = t.saturating_sub(latency);
     } else if let Some(delay) = mpd.suggestedPresentationDelay {
         t = t.saturating_sub(delay);
     }
+    t
+}
 
-    Ok(Some(t))
+pub(crate) fn target_presentation_time_at(
+    mpd: &MPD,
+    wall_now: DateTime<Utc>,
+) -> Result<Option<Duration>, PlayerError> {
+    let Some(since_ast) = since_availability_start_at(mpd, wall_now)? else {
+        return Ok(None);
+    };
+    Ok(Some(target_presentation_time_from_since(mpd, since_ast)))
 }
 
 #[cfg(test)]
@@ -1512,6 +1546,51 @@ mod timeline_tests {
             media_presentation_duration: None,
             time_shift_buffer_depth: None,
             since_availability_start: None,
+            resync_hints: None,
+        }
+    }
+
+    #[test]
+    fn align_start_index_to_resync_snaps_to_grid() {
+        let segments = vec![
+            TimelineSegment {
+                number: 1,
+                presentation_time_s: 0.0,
+                duration_s: 2.0,
+                ..default_timeline_segment()
+            },
+            TimelineSegment {
+                number: 2,
+                presentation_time_s: 2.0,
+                duration_s: 2.0,
+                ..default_timeline_segment()
+            },
+            TimelineSegment {
+                number: 3,
+                presentation_time_s: 5.0,
+                duration_s: 2.0,
+                ..default_timeline_segment()
+            },
+        ];
+        let hints = super::super::resync::ResyncHints {
+            chunk_duration_s: None,
+            random_access_interval_s: Some(2.0),
+            random_access_markers: false,
+        };
+        assert_eq!(align_start_index_to_resync(&segments, 2, hints), 1);
+        assert_eq!(align_start_index_to_resync(&segments, 1, hints), 1);
+    }
+
+    fn default_timeline_segment() -> TimelineSegment {
+        TimelineSegment {
+            number: 0,
+            time: 0,
+            duration: 0,
+            duration_s: 0.0,
+            presentation_time_s: 0.0,
+            sub_number: None,
+            media_url: None,
+            media_range: None,
         }
     }
 
@@ -1651,6 +1730,7 @@ mod timeline_tests {
             media_presentation_duration: None,
             time_shift_buffer_depth: Some(Duration::from_secs(2)),
             since_availability_start: Some(Duration::from_secs(5)),
+            resync_hints: None,
         };
         let segs = timeline_segments(&st, &ctx).unwrap();
         assert_eq!(segs.len(), 3);
@@ -2186,6 +2266,7 @@ mod manifest_logic_tests {
             media_presentation_duration: None,
             time_shift_buffer_depth: Some(Duration::from_secs(20)),
             since_availability_start: Some(Duration::from_secs(12)),
+            resync_hints: None,
         };
         let segments = timeline_segments(&st, &ctx).unwrap();
         let filtered = filter_segments_by_availability(
@@ -2221,6 +2302,7 @@ mod manifest_logic_tests {
             media_presentation_duration: None,
             time_shift_buffer_depth: Some(Duration::from_secs(20)),
             since_availability_start: Some(Duration::from_secs(11)),
+            resync_hints: None,
         };
         let segments = timeline_segments(&st, &ctx).unwrap();
         let filtered = filter_segments_by_availability(
@@ -2322,6 +2404,7 @@ mod manifest_logic_tests {
             media_presentation_duration: Some(Duration::from_secs(8)),
             time_shift_buffer_depth: None,
             since_availability_start: None,
+            resync_hints: None,
         };
 
         let segs = timeline_segments(&st, &ctx).unwrap();
@@ -2350,6 +2433,7 @@ mod manifest_logic_tests {
             media_presentation_duration: None,
             time_shift_buffer_depth: Some(Duration::from_secs(8)),
             since_availability_start: Some(Duration::from_secs(20)),
+            resync_hints: None,
         };
 
         let segs = timeline_segments(&st, &ctx).unwrap();
@@ -2389,6 +2473,7 @@ mod manifest_logic_tests {
             media_presentation_duration: Some(Duration::from_secs(8)),
             time_shift_buffer_depth: None,
             since_availability_start: None,
+            resync_hints: None,
         };
 
         let segs = timeline_segments_from_list(&sl, &ctx).unwrap();

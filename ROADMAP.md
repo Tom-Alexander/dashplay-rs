@@ -22,7 +22,7 @@ Status legend: `[ ]` not started · `[~]` partial · `[x]` done.
 | MPD parse (`dash-mpd`) | `[x]` | Parsed; SegmentTemplate inheritance flattened at Period/AS/Rep |
 | Timeline / live edge | `[x]` | SegmentTemplate + SegmentTimeline, UTCTiming, TSBD filtering |
 | Segment fetch + BaseURL failover | `[x]` | Blacklisting on failure |
-| Multi-period (live) | `[x]` | Init re-emission on transition |
+| Multi-period (live + VOD) | `[x]` | Init re-emission on period transition |
 | ABR (BOLA) | `[x]` | Consumer-reported buffer via [`BufferFeedback`] |
 | DRM | `[~]` | Widevine only; requires external CDM device |
 | Track selection | `[~]` | MIME type only (`audio/mp4`, `video/mp4`) |
@@ -64,7 +64,7 @@ These close the largest gaps between "delivers some streams" and "handles confor
   caller-driven or document/expose it as an explicit concurrency contract.
 - [ ] **Downloaded-segment dedup.** Track already-delivered segments across manifest
   refreshes so live refresh cannot re-emit or skip fragments.
-- [ ] **Static multi-period VOD.** Live multi-period is covered; add VOD multi-period
+- [x] **Static multi-period VOD.** Live multi-period is covered; add VOD multi-period
   handling and tests.
 - [ ] **License renewal / key rotation.** Handle Widevine key rotation and license
   renewal during long live sessions.

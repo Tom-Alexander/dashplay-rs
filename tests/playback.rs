@@ -1,7 +1,8 @@
 mod common;
 
 use common::{
-    FixtureServer, has_end, init_payload, play_all_tracks, play_single_track, segment_payloads,
+    FixtureServer, has_end, init_payload, init_payloads, play_all_tracks, play_single_track,
+    segment_payloads,
 };
 
 const TIMEOUT: std::time::Duration = std::time::Duration::from_secs(10);
@@ -114,6 +115,31 @@ async fn vod_audio_video_parallel_tracks() {
         ]
     );
     assert!(has_end(audio));
+}
+
+#[tokio::test]
+async fn vod_multi_period_emits_inits_and_segments_in_order() {
+    let server = FixtureServer::spawn("vod_multi_period").await;
+    let events = play_single_track(&server.manifest_url, TIMEOUT)
+        .await
+        .expect("playback");
+
+    let inits = init_payloads(&events);
+    assert_eq!(inits.len(), 2, "expected init per period, got {inits:?}");
+    assert_eq!(inits[0], b"dashplay-period1-init".to_vec());
+    assert_eq!(inits[1], b"dashplay-period2-init".to_vec());
+
+    let segments = segment_payloads(&events);
+    assert_eq!(
+        segments,
+        vec![
+            b"dashplay-period1-seg-1".to_vec(),
+            b"dashplay-period1-seg-2".to_vec(),
+            b"dashplay-period2-seg-1".to_vec(),
+            b"dashplay-period2-seg-2".to_vec(),
+        ]
+    );
+    assert!(has_end(&events));
 }
 
 #[tokio::test]

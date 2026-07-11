@@ -203,16 +203,19 @@ pub(crate) fn period_windows(mpd: &MPD) -> Result<Vec<PeriodWindow>, PlayerError
     Ok(windows)
 }
 
+pub(crate) fn is_dynamic_mpd(mpd: &MPD) -> bool {
+    mpd.mpdtype.as_deref() == Some("dynamic")
+}
+
 pub(crate) fn current_period_window_at(
     mpd: &MPD,
     wall_now: DateTime<Utc>,
 ) -> Result<PeriodWindow, PlayerError> {
     let windows = period_windows(mpd)?;
 
-    // No availabilityStartTime => cannot map wall-clock to a Period reliably.
-    // Fall back to the last Period window.
+    // Static VOD has no availability timeline; playback starts at the first Period.
     let Some(since_ast) = since_availability_start_at(mpd, wall_now)? else {
-        return Ok(*windows.last().expect("checked non-empty"));
+        return Ok(windows[0]);
     };
 
     for w in windows {
@@ -1891,6 +1894,28 @@ mod manifest_logic_tests {
         assert_eq!(windows[0].end, Some(Duration::from_secs(10)));
         assert_eq!(windows[1].start, Duration::from_secs(10));
         assert_eq!(windows[1].end, Some(Duration::from_secs(15)));
+    }
+
+    #[test]
+    fn current_period_window_static_mpd_starts_at_first_period() {
+        let mpd = MPD {
+            mpdtype: Some("static".into()),
+            periods: vec![
+                Period {
+                    duration: Some(Duration::from_secs(10)),
+                    ..Default::default()
+                },
+                Period {
+                    start: Some(Duration::from_secs(10)),
+                    duration: Some(Duration::from_secs(5)),
+                    ..Default::default()
+                },
+            ],
+            ..Default::default()
+        };
+
+        let now = Utc.with_ymd_and_hms(2020, 5, 1, 12, 0, 0).unwrap();
+        assert_eq!(current_period_window_at(&mpd, now).unwrap().idx, 0);
     }
 
     #[test]

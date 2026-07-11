@@ -102,12 +102,14 @@ impl MediaPlayer {
         for selected in adaptation_sets {
             let (tx, _rx) = broadcast::channel(32);
             let (buffer_tx, buffer_rx) = watch::channel(0.0);
+            let metrics = super::metrics::TrackMetrics::new();
             tracks.push(super::types::PlayerTrack {
                 mime_type: selected.info.mime_type.clone(),
                 info: selected.info,
                 tx,
-                buffer_feedback: super::types::BufferFeedback::new(buffer_tx),
+                buffer_feedback: super::types::BufferFeedback::new(buffer_tx, metrics.clone()),
                 buffer_rx,
+                metrics,
             });
         }
 

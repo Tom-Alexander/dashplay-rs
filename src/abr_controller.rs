@@ -82,6 +82,10 @@ impl AbrController {
         self.rep_by_quality[quality_index]
     }
 
+    pub fn bitrate_bps_for_quality_index(&self, quality_index: usize) -> f64 {
+        self.bola.qualities()[quality_index].bitrate_bps
+    }
+
     /// Quality indices from `start` down to the lowest rung (inclusive), for representation fallback.
     pub fn quality_indices_for_fallback(
         &self,

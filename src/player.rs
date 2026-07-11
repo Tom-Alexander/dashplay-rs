@@ -8,6 +8,7 @@ use tokio_stream::Stream;
 use tokio_stream::wrappers::ReceiverStream;
 
 use super::media_player::{MediaPlayer, WidevineLicenseFetcher};
+use super::metrics::TrackMetrics;
 use super::playback_control::{PlaybackControlError, PlaybackController, PlaybackState};
 use super::track_selection::{TrackInfo, TrackSelection};
 use super::types::BufferFeedback;
@@ -119,6 +120,7 @@ impl Player {
                 rx: t.tx.subscribe(),
                 tx: t.tx.clone(),
                 buffer_feedback: t.buffer_feedback(),
+                metrics: t.metrics(),
             });
         }
 
@@ -215,6 +217,11 @@ impl PlayerTrackOutputs {
         self.senders.get(idx).map(|t| t.buffer_feedback())
     }
 
+    /// Metrics handle for a track (same index as [`Self::tracks`] / [`Self::subscribe`]).
+    pub fn metrics(&self, idx: usize) -> Option<TrackMetrics> {
+        self.senders.get(idx).map(|t| t.metrics())
+    }
+
     pub fn into_parts(
         self,
     ) -> (
@@ -240,6 +247,7 @@ pub struct PlayerTrackOutput {
     rx: broadcast::Receiver<PlayerEvent>,
     tx: broadcast::Sender<PlayerEvent>,
     buffer_feedback: BufferFeedback,
+    metrics: TrackMetrics,
 }
 
 impl PlayerTrackOutput {
@@ -250,6 +258,11 @@ impl PlayerTrackOutput {
     /// Report buffer occupancy for this track's adaptive bitrate controller.
     pub fn buffer_feedback(&self) -> BufferFeedback {
         self.buffer_feedback.clone()
+    }
+
+    /// Playback metrics for this track.
+    pub fn metrics(&self) -> TrackMetrics {
+        self.metrics.clone()
     }
 
     /// Stream events for a single adaptation set (init + segments).

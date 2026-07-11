@@ -5,6 +5,7 @@ use tokio::sync::watch;
 use tokio::task::JoinHandle;
 
 use super::PlayerError;
+use super::metrics::TrackMetrics;
 use super::playback_control::PlaybackController;
 use super::stream_controller::PlaybackLoopState;
 use super::track_selection::TrackInfo;
@@ -23,17 +24,19 @@ pub enum BufferFeedbackError {
 #[derive(Clone)]
 pub struct BufferFeedback {
     tx: watch::Sender<f64>,
+    metrics: TrackMetrics,
 }
 
 impl BufferFeedback {
-    pub(crate) fn new(tx: watch::Sender<f64>) -> Self {
-        Self { tx }
+    pub(crate) fn new(tx: watch::Sender<f64>, metrics: TrackMetrics) -> Self {
+        Self { tx, metrics }
     }
 
     /// Report the current buffer level in seconds.
     ///
     /// Values are clamped internally by the ABR algorithm. Report `0.0` when stalled or empty.
     pub fn report(&self, buffer_s: f64) -> Result<(), BufferFeedbackError> {
+        self.metrics.record_buffer(buffer_s);
         self.tx
             .send(buffer_s)
             .map_err(|_| BufferFeedbackError::StreamEnded)
@@ -65,6 +68,7 @@ pub struct PlayerTrack {
     pub(crate) tx: broadcast::Sender<PlayerEvent>,
     pub(crate) buffer_feedback: BufferFeedback,
     pub(crate) buffer_rx: watch::Receiver<f64>,
+    pub(crate) metrics: TrackMetrics,
 }
 
 impl PlayerTrack {
@@ -79,6 +83,11 @@ impl PlayerTrack {
     /// Send buffer occupancy updates for this track's ABR controller.
     pub fn buffer_feedback(&self) -> BufferFeedback {
         self.buffer_feedback.clone()
+    }
+
+    /// Playback metrics for this track (throughput, buffer, startup delay, rebuffer, switches).
+    pub fn metrics(&self) -> TrackMetrics {
+        self.metrics.clone()
     }
 }
 

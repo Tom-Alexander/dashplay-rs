@@ -29,7 +29,7 @@ Status legend: `[ ]` not started · `[~]` partial · `[x]` done.
 | Segment addressing | `[~]` | `SegmentTemplate`, `SegmentList` / `SegmentURL`, `SegmentBase` + byte ranges |
 | Playback control (seek/pause/stop) | `[x]` | `PlaybackController` with state machine |
 | Demux / decode | `[ ]` | Out of scope (bytes only) |
-| Metrics / rich events | `[ ]` | Only `Init`/`Segment`/`End` |
+| Metrics / rich events | `[~]` | Per-track [`TrackMetrics`]; fragment events only |
 | Pluggable networking / ABR | `[ ]` | Hard-wired to `reqwest` / BOLA |
 
 ---
@@ -82,7 +82,7 @@ These close the largest gaps between "delivers some streams" and "handles confor
 
 ## P3 — Observability and extensibility
 
-- [ ] **Metrics API.** Throughput history, buffer level, startup delay, rebuffer events,
+- [x] **Metrics API.** Throughput history, buffer level, startup delay, rebuffer events,
   and bitrate-switch history (feeds ABR without influencing playback directly).
 - [ ] **Richer event model.** Add `ManifestLoaded`, `BufferUpdated`, `BitrateChanged`,
   `PlaybackStarted`/`Ended`, and error events alongside the current fragment events.

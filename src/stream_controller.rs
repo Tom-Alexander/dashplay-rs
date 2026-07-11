@@ -161,6 +161,7 @@ impl PlaybackLoopState {
                         let blacklist = blacklist.clone();
                         let drm = drm.clone();
                         let buffer_rx = tracks[track_idx].buffer_rx.clone();
+                        let metrics = tracks[track_idx].metrics.clone();
                         let delivered = delivered[track_idx].clone();
                         let playback = playback.clone();
 
@@ -182,6 +183,7 @@ impl PlaybackLoopState {
                                 blacklist,
                                 drm,
                                 buffer_rx,
+                                metrics,
                                 playback,
                             })
                             .await

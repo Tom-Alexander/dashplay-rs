@@ -44,6 +44,7 @@ mod descriptors;
 pub mod drm;
 mod manifest;
 mod media_player;
+mod metrics;
 mod playback_control;
 mod player;
 mod segment_blacklist;
@@ -54,6 +55,10 @@ mod types;
 mod utc_timing;
 
 pub use media_player::{MediaPlayer, WidevineLicenseFetcher};
+pub use metrics::{
+    BitrateSwitch, BufferSample, RebufferEvent, ThroughputSample, TrackMetrics,
+    TrackMetricsSnapshot,
+};
 pub use playback_control::{PlaybackControlError, PlaybackController, PlaybackState};
 pub use player::{
     Player, PlayerMergedAsyncRead, PlayerMergedOutput, PlayerTrackOutput, PlayerTrackOutputs,

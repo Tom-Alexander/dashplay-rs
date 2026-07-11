@@ -371,3 +371,42 @@ async fn track_subscription_helpers_expose_receivers() {
 
     outputs.join.await.unwrap().expect("join");
 }
+
+#[tokio::test]
+async fn track_metrics_collect_playback_observations() {
+    let server = FixtureServer::spawn("vod_single").await;
+    let player = dashplayrs::Player::new(server.manifest_url.as_str(), None).expect("player");
+    let outputs = player.start_tracks().await.expect("start");
+    let metrics = outputs.metrics(0).expect("track metrics");
+
+    let mut rx = outputs.subscribe(0).expect("track");
+    let _ = tokio::time::timeout(TIMEOUT, rx.recv())
+        .await
+        .expect("init")
+        .expect("event");
+    let _ = tokio::time::timeout(TIMEOUT, rx.recv())
+        .await
+        .expect("segment")
+        .expect("event");
+
+    if let Some(feedback) = outputs.buffer_feedback(0) {
+        let _ = feedback.report(25.0);
+        feedback.report(2.0).expect("buffer report");
+    }
+
+    while tokio::time::timeout(std::time::Duration::from_millis(500), rx.recv())
+        .await
+        .ok()
+        .and_then(Result::ok)
+        .is_some_and(|ev| !matches!(ev, dashplayrs::PlayerEvent::End))
+    {}
+
+    outputs.join.await.unwrap().expect("join");
+
+    let snap = metrics.snapshot();
+    assert!(snap.startup_delay.is_some());
+    assert!(!snap.throughput_history.is_empty());
+    assert!(snap.throughput_bps > 0.0);
+    assert!(!snap.buffer_history.is_empty());
+    assert_eq!(snap.rebuffer_events.len(), 1);
+}

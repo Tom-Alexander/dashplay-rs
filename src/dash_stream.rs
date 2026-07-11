@@ -14,6 +14,7 @@ use super::delivered_segments::DeliveredSegmentTracker;
 use super::drm::License;
 use super::drm::coordinator::DrmSessionCoordinator;
 use super::manifest::{self, TimelineBuildContext};
+use super::metrics::TrackMetrics;
 use super::playback_control::{PlaybackController, PlaybackState};
 use super::segment_blacklist::SegmentBlacklist;
 use super::segment_fetcher::{
@@ -46,6 +47,7 @@ pub(crate) struct AdaptationStreamContext {
     pub drm: Arc<AsyncMutex<DrmSessionCoordinator>>,
     /// Latest buffer occupancy reported by the consumer (seconds).
     pub buffer_rx: watch::Receiver<f64>,
+    pub metrics: TrackMetrics,
     pub playback: PlaybackController,
 }
 
@@ -67,6 +69,7 @@ pub(crate) async fn run_adaptation_stream(ctx: AdaptationStreamContext) -> Resul
         blacklist,
         drm,
         buffer_rx,
+        metrics,
         playback,
     } = ctx;
 
@@ -134,6 +137,7 @@ pub(crate) async fn run_adaptation_stream(ctx: AdaptationStreamContext) -> Resul
     };
 
     abr.update_buffer(latest_buffer_s(&buffer_rx));
+    metrics.record_buffer(latest_buffer_s(&buffer_rx));
 
     let init_taken = have_init[track_idx]
         .compare_exchange(false, true, Ordering::AcqRel, Ordering::Acquire)
@@ -162,6 +166,7 @@ pub(crate) async fn run_adaptation_stream(ctx: AdaptationStreamContext) -> Resul
             )
             .await?;
             let _ = rep_id;
+            metrics.set_quality_index(decision.quality_index);
             Ok(())
         }
         .await;
@@ -172,6 +177,7 @@ pub(crate) async fn run_adaptation_stream(ctx: AdaptationStreamContext) -> Resul
     }
 
     let mut sidx_segments_by_rep: HashMap<String, Vec<manifest::TimelineSegment>> = HashMap::new();
+    let mut last_quality_index = metrics.last_quality_index();
 
     for (local_idx, seg) in segments.into_iter().enumerate() {
         playback.wait_while_paused().await;
@@ -187,6 +193,7 @@ pub(crate) async fn run_adaptation_stream(ctx: AdaptationStreamContext) -> Resul
         }
 
         abr.update_buffer(latest_buffer_s(&buffer_rx));
+        metrics.record_buffer(latest_buffer_s(&buffer_rx));
         let decision = abr.decide();
         let list_idx = segment_start_index + local_idx;
         let t0 = Instant::now();
@@ -204,10 +211,27 @@ pub(crate) async fn run_adaptation_stream(ctx: AdaptationStreamContext) -> Resul
         )
         .await?;
         let elapsed_s = t0.elapsed().as_secs_f64().max(1e-6);
+        let download_duration = t0.elapsed();
         let throughput_bps = (bytes.len() as f64 * 8.0) / elapsed_s;
+
+        metrics.record_throughput(throughput_bps, bytes.len(), download_duration);
+        if let Some(prev_q) = last_quality_index {
+            if prev_q != used_quality_index {
+                metrics.record_bitrate_switch(
+                    prev_q,
+                    used_quality_index,
+                    abr.bitrate_bps_for_quality_index(prev_q),
+                    abr.bitrate_bps_for_quality_index(used_quality_index),
+                );
+            }
+        } else {
+            metrics.set_quality_index(used_quality_index);
+        }
+        last_quality_index = Some(used_quality_index);
 
         abr.observe_segment_download(throughput_bps, bytes.len(), used_quality_index);
         abr.update_buffer(latest_buffer_s(&buffer_rx));
+        metrics.record_buffer(latest_buffer_s(&buffer_rx));
 
         let rep_idx = abr.representation_index_for_quality_index(used_quality_index);
         let rep = &adaptation_set.representations[rep_idx];
@@ -250,6 +274,7 @@ pub(crate) async fn run_adaptation_stream(ctx: AdaptationStreamContext) -> Resul
             sub_number: seg_for_fetch.sub_number,
             data,
         });
+        metrics.record_segment_delivered();
 
         if playback.state() != PlaybackState::Playing {
             playback.set_state(PlaybackState::Playing);

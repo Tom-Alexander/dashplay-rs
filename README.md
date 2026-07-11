@@ -95,6 +95,9 @@ controller. Clone handles (`outputs.playback.clone()`) share one session.
 | [`PlayerTrack`](#playertrack) | One adaptation-set broadcast channel |
 | [`PlayerOutputs`](#playeroutputs) | Tracks and playback controller from [`MediaPlayer::start`](#mediaplayer) |
 | [`PlayerTrackOutput`](#playertrackoutput) | Per-track handle from [`Player::start_tracks`](#player) |
+| [`PlayerTrackOutputs`](#playertrackoutputs) | Multi-track session from [`Player::start_tracks`](#player) |
+| [`PlayerMergedOutput`](#playermergedoutput) | Merged byte stream from [`Player::start_merged`](#player) |
+| [`PlayerMergedAsyncRead`](#playermergedoutput) | `AsyncRead` adapter for piping merged output |
 | [`PlaybackController`](#playbackcontroller) | Seek, pause, resume, stop, and lifecycle state |
 | [`PlaybackState`](#playbackstate) | Explicit playback lifecycle enum |
 | [`PlaybackControlError`](#playbackcontrolerror) | Errors from playback control commands |
@@ -152,6 +155,18 @@ Player::start_merged(self) -> Result<PlayerMergedOutput, PlayerError>
 
 Same as `start_tracks`, but merges all track fragments into a single byte stream in arrival
 order. Use when you do not need separate audio and video inputs.
+
+---
+
+### `PlayerMergedOutput`
+
+Returned by [`Player::start_merged`](#player):
+
+| Field / method | Description |
+|----------------|-------------|
+| `stream` | Merged init + media fragments as a [`ReceiverStream`](https://docs.rs/tokio-stream/latest/tokio_stream/wrappers/struct.ReceiverStream.html) |
+| `join` | Background task running the stream controller and fragment forwarding |
+| `into_async_read()` | Convert to [`PlayerMergedAsyncRead`](#playermergedoutput) for piping into a child process (e.g. `ffmpeg -i pipe:0`) |
 
 ---
 
@@ -227,6 +242,7 @@ Returned by [`Player::start_tracks`](#player):
 | `playback_state` / `subscribe_playback_state` | Current or watched [`PlaybackState`](#playbackstate) |
 | `buffer_feedback(idx)` | [`BufferFeedback`](#bufferfeedback) for a track index |
 | `subscribe(idx)` | Subscribe to a track's broadcast channel |
+| `track_count()` | Number of adaptation-set tracks in this session |
 
 ---
 

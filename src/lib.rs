@@ -53,7 +53,9 @@ mod utc_timing;
 
 pub use media_player::{MediaPlayer, WidevineLicenseFetcher};
 pub use playback_control::{PlaybackControlError, PlaybackController, PlaybackState};
-pub use player::{Player, PlayerTrackOutput};
+pub use player::{
+    Player, PlayerMergedAsyncRead, PlayerMergedOutput, PlayerTrackOutput, PlayerTrackOutputs,
+};
 pub use types::{BufferFeedback, BufferFeedbackError, PlayerEvent, PlayerOutputs, PlayerTrack};
 
 use crate::drm::LicenseError;

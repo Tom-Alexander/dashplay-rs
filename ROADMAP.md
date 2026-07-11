@@ -110,6 +110,6 @@ These close the largest gaps between "delivers some streams" and "handles confor
   vectors (`cargo test --test dashif -- --ignored`).
 - [ ] **Regression tests for each fix.** Per `AGENTS.md`, every bug fix ships with a
   deterministic regression test.
-- [ ] **API surface cleanup.** Resolve the several `#[allow(dead_code)]` public helpers
-  (`start_merged`, `into_async_read`, track subscription helpers) once the public API
-  stabilises.
+- [x] **API surface cleanup.** Public helpers (`start_merged`, `into_async_read`, track
+  subscription helpers) are exported from the crate root and covered by integration tests;
+  stale `#[allow(dead_code)]` attributes removed.

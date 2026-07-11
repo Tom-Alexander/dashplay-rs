@@ -2,7 +2,7 @@ mod common;
 
 use common::{
     FixtureServer, has_end, init_payload, init_payloads, play_all_tracks, play_single_track,
-    segment_payloads,
+    segment_payloads, trim_payload,
 };
 
 const TIMEOUT: std::time::Duration = std::time::Duration::from_secs(10);
@@ -233,4 +233,106 @@ async fn all_base_urls_fail_surfaces_segment_error() {
         ),
         "unexpected error: {err:?}"
     );
+}
+
+#[tokio::test]
+async fn vod_merged_stream_emits_fragments() {
+    use futures_util::StreamExt;
+
+    let server = FixtureServer::spawn("vod_single").await;
+    let player = dashplayrs::Player::new(server.manifest_url.as_str(), None).expect("player");
+    let mut merged = player.start_merged().await.expect("start merged");
+
+    let mut chunks = Vec::new();
+    let deadline = tokio::time::Instant::now() + TIMEOUT;
+    while tokio::time::Instant::now() < deadline {
+        match tokio::time::timeout(std::time::Duration::from_millis(500), merged.stream.next())
+            .await
+        {
+            Ok(Some(Ok(bytes))) => chunks.push(bytes.to_vec()),
+            Ok(Some(Err(e))) => panic!("stream error: {e}"),
+            Ok(None) => break,
+            Err(_) if !chunks.is_empty() => break,
+            Err(_) => continue,
+        }
+    }
+
+    merged.join.await.unwrap().expect("join");
+
+    let chunks: Vec<_> = chunks.iter().map(|c| trim_payload(c)).collect();
+    assert_eq!(chunks.len(), 3, "expected init + 2 segments");
+    assert_eq!(chunks[0], b"dashplay-init-v1".to_vec());
+    assert_eq!(chunks[1], b"dashplay-seg-1".to_vec());
+    assert_eq!(chunks[2], b"dashplay-seg-2".to_vec());
+}
+
+#[tokio::test]
+async fn vod_merged_async_read_pipes_bytes() {
+    use tokio::io::AsyncReadExt;
+
+    let server = FixtureServer::spawn("vod_single").await;
+    let player = dashplayrs::Player::new(server.manifest_url.as_str(), None).expect("player");
+    let merged = player.start_merged().await.expect("start merged");
+    let mut async_read = merged.into_async_read();
+
+    let mut buf = Vec::new();
+    async_read
+        .reader
+        .read_to_end(&mut buf)
+        .await
+        .expect("read merged output");
+
+    async_read.join.await.unwrap().expect("join");
+
+    let expected = [
+        b"dashplay-init-v1\n".as_slice(),
+        b"dashplay-seg-1\n".as_slice(),
+        b"dashplay-seg-2\n".as_slice(),
+    ]
+    .concat();
+    assert_eq!(buf, expected);
+}
+
+#[tokio::test]
+async fn track_subscription_helpers_expose_receivers() {
+    use futures_util::StreamExt;
+
+    let server = FixtureServer::spawn("vod_single").await;
+    let player = dashplayrs::Player::new(server.manifest_url.as_str(), None).expect("player");
+    let outputs = player.start_tracks().await.expect("start");
+
+    assert_eq!(outputs.track_count(), 1);
+
+    let mut subscribe_rx = outputs.subscribe(0).expect("track");
+    let first = tokio::time::timeout(TIMEOUT, subscribe_rx.recv())
+        .await
+        .expect("init from subscribe")
+        .expect("event");
+    assert!(
+        matches!(first, dashplayrs::PlayerEvent::Init(_)),
+        "subscribe should receive init"
+    );
+
+    let track_out = outputs.tracks.first().expect("one track output");
+    let next_from_stream = tokio::time::timeout(TIMEOUT, track_out.events().next())
+        .await
+        .expect("segment from events stream")
+        .expect("stream item")
+        .expect("event");
+    assert!(
+        matches!(next_from_stream, dashplayrs::PlayerEvent::Segment { .. }),
+        "events() should receive segments after init"
+    );
+
+    if let Some(feedback) = outputs.buffer_feedback(0) {
+        let _ = feedback.report(25.0);
+    }
+    while tokio::time::timeout(std::time::Duration::from_millis(500), subscribe_rx.recv())
+        .await
+        .ok()
+        .and_then(Result::ok)
+        .is_some_and(|ev| !matches!(ev, dashplayrs::PlayerEvent::End))
+    {}
+
+    outputs.join.await.unwrap().expect("join");
 }

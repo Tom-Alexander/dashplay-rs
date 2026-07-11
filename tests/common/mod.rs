@@ -623,7 +623,7 @@ pub fn segment_payloads(events: &[dashplayrs::PlayerEvent]) -> Vec<Vec<u8>> {
         .collect()
 }
 
-fn trim_payload(bytes: &[u8]) -> Vec<u8> {
+pub fn trim_payload(bytes: &[u8]) -> Vec<u8> {
     let end = bytes
         .iter()
         .rposition(|b| *b != b'\n' && *b != b'\r')

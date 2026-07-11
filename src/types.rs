@@ -65,7 +65,6 @@ pub struct PlayerTrack {
 }
 
 impl PlayerTrack {
-    #[allow(dead_code)]
     pub fn subscribe(&self) -> broadcast::Receiver<PlayerEvent> {
         self.tx.subscribe()
     }

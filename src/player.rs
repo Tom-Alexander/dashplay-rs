@@ -42,7 +42,6 @@ impl Player {
     /// - This merged stream simply forwards fragment bytes in arrival order.
     /// - If you need per-track separation (e.g. audio + video as separate inputs), use
     ///   `start_tracks()` instead.
-    #[allow(dead_code)]
     pub async fn start_merged(self) -> Result<PlayerMergedOutput, PlayerError> {
         let PlayerOutputs {
             tracks,
@@ -109,6 +108,7 @@ impl Player {
                 track_index: i,
                 mime_type: t.mime_type.clone(),
                 rx: t.tx.subscribe(),
+                tx: t.tx.clone(),
                 buffer_feedback: t.buffer_feedback(),
             });
         }
@@ -122,7 +122,6 @@ impl Player {
     }
 }
 
-#[allow(dead_code)]
 pub struct PlayerMergedOutput {
     /// Merged stream of init + media fragments.
     pub stream: ReceiverStream<Result<Bytes, PlayerError>>,
@@ -132,7 +131,6 @@ pub struct PlayerMergedOutput {
     _tracks: Vec<broadcast::Sender<PlayerEvent>>,
 }
 
-#[allow(dead_code)]
 impl PlayerMergedOutput {
     /// Convert the merged fragment stream into an `AsyncRead` for piping into a child process
     /// (e.g. `ffmpeg -i pipe:0 ...`).
@@ -149,7 +147,6 @@ impl PlayerMergedOutput {
     }
 }
 
-#[allow(dead_code)]
 pub struct PlayerMergedAsyncRead {
     pub reader: tokio_util::io::StreamReader<MergedByteStream, Bytes>,
     pub join: JoinHandle<Result<(), PlayerError>>,
@@ -196,12 +193,10 @@ impl PlayerTrackOutputs {
         self.playback.stop()
     }
 
-    #[allow(dead_code)]
     pub fn track_count(&self) -> usize {
         self.senders.len()
     }
 
-    #[allow(dead_code)]
     pub fn subscribe(&self, idx: usize) -> Option<broadcast::Receiver<PlayerEvent>> {
         self.senders.get(idx).map(|t| t.subscribe())
     }
@@ -232,6 +227,7 @@ pub struct PlayerTrackOutput {
     pub track_index: usize,
     pub mime_type: Option<String>,
     rx: broadcast::Receiver<PlayerEvent>,
+    tx: broadcast::Sender<PlayerEvent>,
     buffer_feedback: BufferFeedback,
 }
 
@@ -246,12 +242,14 @@ impl PlayerTrackOutput {
     }
 
     /// Stream events for a single adaptation set (init + segments).
-    #[allow(dead_code)]
+    ///
+    /// Creates a new broadcast subscription, equivalent to
+    /// [`PlayerTrackOutputs::subscribe`] for this track index.
     pub fn events(
-        &mut self,
+        &self,
     ) -> impl Stream<
         Item = Result<PlayerEvent, tokio_stream::wrappers::errors::BroadcastStreamRecvError>,
     > + '_ {
-        tokio_stream::wrappers::BroadcastStream::new(self.rx.resubscribe())
+        tokio_stream::wrappers::BroadcastStream::new(self.tx.subscribe())
     }
 }

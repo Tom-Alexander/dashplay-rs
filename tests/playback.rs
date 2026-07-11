@@ -393,9 +393,11 @@ async fn track_metrics_collect_playback_observations() {
     let _ = recv_matching(&mut rx, TIMEOUT, |ev| matches!(ev, PlayerEvent::Init(_)))
         .await
         .expect("init");
-    let _ = recv_matching(&mut rx, TIMEOUT, |ev| matches!(ev, PlayerEvent::Segment { .. }))
-        .await
-        .expect("segment");
+    let _ = recv_matching(&mut rx, TIMEOUT, |ev| {
+        matches!(ev, PlayerEvent::Segment { .. })
+    })
+    .await
+    .expect("segment");
 
     if let Some(feedback) = outputs.buffer_feedback(0) {
         let _ = feedback.report(25.0);

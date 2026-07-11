@@ -13,6 +13,7 @@ use super::abr_controller::AbrController;
 use super::delivered_segments::DeliveredSegmentTracker;
 use super::drm::License;
 use super::drm::coordinator::DrmSessionCoordinator;
+use super::http::SharedHttpClient;
 use super::manifest::{self, TimelineBuildContext};
 use super::metrics::TrackMetrics;
 use super::playback_control::{PlaybackController, PlaybackState};
@@ -23,13 +24,12 @@ use super::segment_fetcher::{
 use super::types::PlayerEvent;
 use bytes::Bytes;
 use dash_mpd::{AdaptationSet, Period, Representation};
-use reqwest::Client;
 use tokio::sync::Mutex as AsyncMutex;
 use tokio::sync::broadcast;
 use tokio::sync::watch;
 
 pub(crate) struct AdaptationStreamContext {
-    pub client: Client,
+    pub client: SharedHttpClient,
     pub segment_base_ctx: manifest::SegmentBaseContext,
     pub target_time: Option<Duration>,
     pub period_start: Duration,
@@ -355,7 +355,7 @@ fn lock_delivered(
 }
 
 struct RepFetchEnv<'a> {
-    client: &'a Client,
+    client: &'a SharedHttpClient,
     segment_base_ctx: &'a manifest::SegmentBaseContext,
     period: &'a Period,
     adaptation_set: &'a AdaptationSet,
@@ -582,7 +582,7 @@ fn media_target_for_addressing(
 }
 
 async fn fetch_segment_target(
-    client: &Client,
+    client: &SharedHttpClient,
     bases: &[url::Url],
     target: &manifest::SegmentFetchTarget,
     blacklist: &SegmentBlacklist,
@@ -601,7 +601,7 @@ async fn fetch_segment_target(
 }
 
 async fn sidx_segments_for_rep<'a>(
-    client: &Client,
+    client: &SharedHttpClient,
     segment_base_ctx: &manifest::SegmentBaseContext,
     period: &Period,
     adaptation_set: &AdaptationSet,

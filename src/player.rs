@@ -7,6 +7,7 @@ use tokio::task::JoinHandle;
 use tokio_stream::Stream;
 use tokio_stream::wrappers::ReceiverStream;
 
+use super::http::SharedHttpClient;
 use super::media_player::{MediaPlayer, WidevineLicenseFetcher};
 use super::metrics::TrackMetrics;
 use super::playback_control::{PlaybackControlError, PlaybackController, PlaybackState};
@@ -38,6 +39,13 @@ impl Player {
     pub fn with_track_selection(self, selection: TrackSelection) -> Self {
         Self {
             media_player: self.media_player.with_track_selection(selection),
+        }
+    }
+
+    /// Use a custom [`HttpClient`](crate::HttpClient) for manifest, segment, and clock-sync requests.
+    pub fn with_http_client(self, client: SharedHttpClient) -> Self {
+        Self {
+            media_player: self.media_player.with_http_client(client),
         }
     }
 

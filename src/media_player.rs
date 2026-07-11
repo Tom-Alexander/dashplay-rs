@@ -1,6 +1,5 @@
 //! Top-level DASH client facade (dash.js: `MediaPlayer`).
 
-use reqwest::Client;
 use tokio::sync::broadcast;
 use tokio::sync::watch;
 use url::Url;
@@ -8,6 +7,7 @@ use url::Url;
 use super::drm::coordinator::DrmSessionCoordinator;
 
 use super::PlayerError;
+use super::http::{HttpRequest, ReqwestClient, SharedHttpClient, shared};
 use super::manifest;
 use super::playback_control::PlaybackController;
 use super::stream_controller::PlaybackLoopState;
@@ -19,7 +19,7 @@ pub use super::drm::coordinator::WidevineLicenseFetcher;
 
 /// DASH MPD client and playback coordinator (dash.js: `MediaPlayer`).
 pub struct MediaPlayer {
-    client: Client,
+    client: SharedHttpClient,
     manifest_uri: Url,
     #[allow(dead_code)]
     license_uri: Option<Url>,
@@ -33,16 +33,28 @@ pub struct MediaPlayer {
 impl MediaPlayer {
     pub fn new(uri: &str, license_uri: Option<&str>) -> Result<Self, PlayerError> {
         let license_uri = license_uri.map(Url::parse).transpose()?;
+        let client = shared(ReqwestClient::default());
         Ok(Self {
-            client: Client::new(),
+            client: client.clone(),
             manifest_uri: Url::parse(uri)?,
             license_uri: license_uri.clone(),
             license_fetch: None,
             manifest: None,
             mpd_xml: None,
-            drm: DrmSessionCoordinator::new(Client::new(), license_uri, None),
+            drm: DrmSessionCoordinator::new(client, license_uri, None),
             track_selection: TrackSelection::default(),
         })
+    }
+
+    /// Use a custom [`HttpClient`](crate::HttpClient) for manifest, segment, and clock-sync requests.
+    pub fn with_http_client(mut self, client: SharedHttpClient) -> Self {
+        self.client = client.clone();
+        self.drm = DrmSessionCoordinator::new(
+            client,
+            self.license_uri.clone(),
+            self.license_fetch.clone(),
+        );
+        self
     }
 
     /// Use a custom async fetcher for Widevine license requests (e.g. extra headers, cookies, or a proxy).
@@ -63,8 +75,11 @@ impl MediaPlayer {
     }
 
     pub async fn fetch_manifest(&mut self) -> Result<(), PlayerError> {
-        let resp = self.client.get(self.manifest_uri.clone()).send().await?;
-        let text = resp.text().await?;
+        let resp = self
+            .client
+            .send(HttpRequest::get(self.manifest_uri.clone()))
+            .await?;
+        let text = resp.text()?;
         let mpd = dash_mpd::parse(&text)?;
         self.manifest = Some(mpd);
         self.mpd_xml = Some(text);

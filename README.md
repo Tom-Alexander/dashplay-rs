@@ -11,6 +11,7 @@ A pure Rust implementation of an MPEG-DASH player library.
 - **Adaptive bitrate** — BOLA (Buffer Occupancy based Lyapunov Algorithm) with automatic representation switching and init re-emission on quality changes
 - **Widevine DRM** — PSSH and license URL parsing from the MPD, license acquisition, and in-pipeline segment decryption
 - **Custom license handling** — Pluggable async license fetcher for custom headers, cookies, or proxies
+- **Pluggable HTTP client** — [`HttpClient`](#http-client) trait with a default [`ReqwestClient`](#http-client); swap in browser fetch, embedded stacks, or custom TLS
 - **Resilient fetching** — BaseURL resolution and failover, representation fallback, and segment URL blacklisting after failures
 - **Clock sync** — `UTCTiming` resolution for live edge calculation (HTTP, NTP/SNTP, and related schemes)
 - **Modular API** — High-level [`Player`](#player) wrapper or lower-level [`MediaPlayer`](#mediaplayer) for finer control
@@ -57,7 +58,8 @@ async fn main() -> Result<(), dashplayrs::PlayerError> {
 
 For DRM-protected streams, pass a Widevine license server URL as the second argument to
 [`Player::new`](#player), or supply a custom license fetcher with
-[`Player::with_license_fetcher`](#player).
+[`Player::with_license_fetcher`](#player). For custom manifest, segment, or clock-sync HTTP
+handling, use [`Player::with_http_client`](#http-client).
 
 ### Track selection
 
@@ -98,6 +100,74 @@ let outputs = Player::new("https://example.com/manifest.mpd", None)?
 Selected tracks expose `TrackInfo` metadata including language, roles, codecs, and accessibility
 descriptors. Preferences rank candidates; unmatched tracks are fallback candidates. Use
 `max_tracks(0)` to disable a media kind.
+
+### Custom HTTP client
+
+By default, playback uses an internal [`ReqwestClient`](#http-client) for manifest fetches,
+segment downloads, `UTCTiming` clock sync, and Widevine license POSTs (unless you replace
+license handling with [`Player::with_license_fetcher`](#player)).
+
+To configure the underlying `reqwest` client (user agent, proxy, custom TLS, timeouts):
+
+```rust
+use dashplayrs::{Player, ReqwestClient, shared};
+
+# async fn example() -> Result<(), dashplayrs::PlayerError> {
+let reqwest = reqwest::Client::builder()
+    .user_agent("my-app/1.0")
+    .build()
+    .expect("http client");
+
+let outputs = Player::new("https://example.com/manifest.mpd", None)?
+    .with_http_client(shared(ReqwestClient::new(reqwest)))
+    .start_tracks()
+    .await?;
+# outputs.stop()?;
+# outputs.join.await.unwrap()?;
+# Ok(())
+# }
+```
+
+For environments without `reqwest` (browser `fetch`, embedded stacks, corporate proxies),
+implement [`HttpClient`](#http-client) and pass a shared handle via
+[`Player::with_http_client`](#player) or [`MediaPlayer::with_http_client`](#mediaplayer):
+
+```rust
+use dashplayrs::{
+    HttpClient, HttpError, HttpRequest, HttpResponse, Player, shared,
+};
+use std::future::Future;
+use std::pin::Pin;
+
+struct MyHttpClient;
+
+impl HttpClient for MyHttpClient {
+    fn send<'a>(
+        &'a self,
+        request: HttpRequest,
+    ) -> Pin<Box<dyn Future<Output = Result<HttpResponse, HttpError>> + Send + 'a>> {
+        Box::pin(async move {
+            // Dispatch `request` to your stack and map the result to `HttpResponse`.
+            let _ = request;
+            Err(HttpError::Transport("not implemented".into()))
+        })
+    }
+}
+
+# async fn example() -> Result<(), dashplayrs::PlayerError> {
+let outputs = Player::new("https://example.com/manifest.mpd", None)?
+    .with_http_client(shared(MyHttpClient))
+    .start_tracks()
+    .await?;
+# outputs.stop()?;
+# outputs.join.await.unwrap()?;
+# Ok(())
+# }
+```
+
+[`HttpRequest`](#http-client) supports `GET`, `HEAD`, and `POST` with optional headers and
+inclusive byte ranges (`byte_range(start, end)`). HTTP failures surface as
+[`PlayerError::Request`](#playererror) ([`HttpError`](#http-client)).
 
 ### Playback control
 
@@ -156,6 +226,9 @@ controller. Clone handles (`outputs.playback.clone()`) share one session.
 | `TrackInfo` / `TrackKind` | Metadata and media kind for a selected track |
 | `TrackDescriptor` | Accessibility descriptor scheme/value matcher and metadata |
 | [`WidevineLicenseFetcher`](#widevinelicensefetcher) | Custom async Widevine license HTTP handler |
+| [`HttpClient`](#http-client) / [`ReqwestClient`](#http-client) | Pluggable HTTP transport for manifest, segment, and clock-sync requests |
+| [`HttpRequest`](#http-client) / [`HttpResponse`](#http-client) / [`HttpError`](#http-client) | Request/response types for custom HTTP backends |
+| `shared` | Wrap a concrete [`HttpClient`](#http-client) in [`SharedHttpClient`](#http-client) |
 | [`PlayerError`](#playererror) | Unified error type for the playback pipeline |
 | [`bola`](#bola) | BOLA adaptive bitrate algorithm |
 | [`drm`](#drm) | Widevine license handling and MPD DRM parsing |
@@ -176,10 +249,12 @@ server when the manifest does not specify one.
 ```rust
 Player::with_license_fetcher(self, fetcher: WidevineLicenseFetcher) -> Player
 Player::with_track_selection(self, selection: TrackSelection) -> Player
+Player::with_http_client(self, client: SharedHttpClient) -> Player
 ```
 
 Replace the default `reqwest` license POST with a custom fetcher (extra headers, cookies, proxy,
-etc.).
+etc.). `with_http_client` replaces the default [`ReqwestClient`](#http-client) used for manifest,
+segment, and `UTCTiming` requests.
 
 ```rust
 Player::start_tracks(self) -> Result<PlayerTrackOutputs, PlayerError>
@@ -234,6 +309,7 @@ need finer control over manifest loading.
 MediaPlayer::new(uri: &str, license_uri: Option<&str>) -> Result<MediaPlayer, PlayerError>
 MediaPlayer::with_license_fetcher(self, fetcher: WidevineLicenseFetcher) -> MediaPlayer
 MediaPlayer::with_track_selection(self, selection: TrackSelection) -> MediaPlayer
+MediaPlayer::with_http_client(self, client: SharedHttpClient) -> MediaPlayer
 MediaPlayer::fetch_manifest(&mut self) -> Result<(), PlayerError>
 MediaPlayer::start(self) -> Result<PlayerOutputs, PlayerError>
 ```
@@ -461,7 +537,39 @@ Per-track handle returned in `PlayerTrackOutputs.tracks`:
 Arc<dyn Fn(Url, Vec<u8>) -> Pin<Box<dyn Future<Output = Result<Bytes, PlayerError>> + Send>> + Send + Sync>
 ```
 
-Async callback invoked for Widevine license POSTs instead of the built-in `reqwest` client.
+Async callback invoked for Widevine license POSTs instead of the built-in HTTP client when
+[`Player::with_license_fetcher`](#player) is set.
+
+---
+
+### HTTP client
+
+Networking is abstracted behind [`HttpClient`](src/http/mod.rs) so playback is not tied to a
+single HTTP library. The default backend is [`ReqwestClient`](src/http/reqwest.rs).
+
+| Type / function | Description |
+|-----------------|-------------|
+| `HttpClient` | Async trait: `send(HttpRequest) -> Result<HttpResponse, HttpError>` |
+| `SharedHttpClient` | `Arc<dyn HttpClient>` shared across playback tasks |
+| `shared(client)` | Wrap a concrete client for use with `with_http_client` |
+| `ReqwestClient` | Default backend; `ReqwestClient::new(reqwest::Client)` for custom `reqwest` settings |
+| `HttpRequest` | `get` / `head` / `post` builders with `header` and `byte_range` |
+| `HttpResponse` | Status, headers, and body; `is_success()`, `header(name)`, `text()`, `into_bytes()` |
+| `HttpError` | Transport or body decode failure |
+
+Used for:
+
+- MPD manifest fetches
+- Init and media segment downloads (including HTTP `Range` requests)
+- `UTCTiming` clock synchronization (`GET`, `HEAD`)
+- Default Widevine license POSTs (override with [`WidevineLicenseFetcher`](#widevinelicensefetcher))
+
+Configure on [`Player`](#player) or [`MediaPlayer`](#mediaplayer):
+
+```rust
+Player::with_http_client(self, client: SharedHttpClient) -> Player
+MediaPlayer::with_http_client(self, client: SharedHttpClient) -> MediaPlayer
+```
 
 ---
 
@@ -473,7 +581,7 @@ and DRM errors. Notable variants:
 | Variant | When |
 |---------|------|
 | `Manifest` | MPD parse failure |
-| `Request` | HTTP client error |
+| `Request` | HTTP client error ([`HttpError`](#http-client)) |
 | `Url` | Invalid URL |
 | `ManifestNotLoaded` | Operation before manifest fetch |
 | `SegmentRequestFailed { status, url }` | Non-success HTTP response for a segment |

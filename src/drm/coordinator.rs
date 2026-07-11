@@ -1,7 +1,6 @@
 //! Coordinates Widevine license acquisition, key rotation, and renewal during playback.
 
 use bytes::Bytes;
-use reqwest::Client;
 use std::collections::HashMap;
 use std::future::Future;
 use std::pin::Pin;
@@ -13,13 +12,14 @@ use super::mp4::{InBandDrmInfo, extract_in_band_drm};
 use super::mpd::{MpdDrmInfo, parse_mpd_drm_info};
 use super::widevine::{License, WidevineLicenseManager, WidevineSessionKey};
 use crate::PlayerError;
+use crate::http::{HttpRequest, SharedHttpClient};
 
 pub type AdaptationLicenseSessions<'a> = (
     &'a [Option<Arc<License>>],
     &'a [HashMap<String, Arc<License>>],
 );
 
-/// Async license fetch invoked instead of the default `reqwest` POST when set.
+/// Async license fetch invoked instead of the default HTTP POST when set.
 pub type WidevineLicenseFetcher = Arc<
     dyn Fn(Url, Vec<u8>) -> Pin<Box<dyn Future<Output = Result<Bytes, PlayerError>> + Send>>
         + Send
@@ -30,7 +30,7 @@ pub type WidevineLicenseFetcher = Arc<
 pub struct DrmSessionCoordinator {
     manager: WidevineLicenseManager,
     fallback_license_uri: Option<Url>,
-    client: Client,
+    client: SharedHttpClient,
     license_fetch: Option<WidevineLicenseFetcher>,
     adaptation_wv_sessions: Vec<Option<Arc<License>>>,
     adaptation_wv_sessions_by_rep: Vec<HashMap<String, Arc<License>>>,
@@ -42,7 +42,7 @@ pub struct DrmSessionCoordinator {
 
 impl DrmSessionCoordinator {
     pub fn new(
-        client: Client,
+        client: SharedHttpClient,
         fallback_license_uri: Option<Url>,
         license_fetch: Option<WidevineLicenseFetcher>,
     ) -> Self {
@@ -326,14 +326,19 @@ impl DrmSessionCoordinator {
         }
         let resp = self
             .client
-            .post(license_url.clone())
-            .header("Content-Type", "application/octet-stream")
-            .header("Accept", "application/octet-stream")
-            .body(challenge)
-            .send()
+            .send(
+                HttpRequest::post(license_url.clone(), challenge)
+                    .header("Content-Type", "application/octet-stream")
+                    .header("Accept", "application/octet-stream"),
+            )
             .await?;
-        let resp = resp.error_for_status()?;
-        Ok(resp.bytes().await?)
+        if !resp.is_success() {
+            return Err(PlayerError::WidevineLicenseHttp(format!(
+                "license request failed: HTTP {}",
+                resp.status()
+            )));
+        }
+        Ok(resp.into_bytes())
     }
 }
 
@@ -424,8 +429,11 @@ mod tests {
         });
 
         let license_url = Url::parse("https://license.example/wv").expect("license url");
-        let mut coordinator =
-            DrmSessionCoordinator::new(Client::new(), Some(license_url.clone()), Some(fetcher));
+        let mut coordinator = DrmSessionCoordinator::new(
+            crate::http::shared(crate::http::ReqwestClient::default()),
+            Some(license_url.clone()),
+            Some(fetcher),
+        );
 
         let license = License::new_from_pssh(pssh).expect("license");
         license.apply_license(&license_bytes).expect("apply");

@@ -11,15 +11,16 @@ use chrono::{DateTime, NaiveDateTime, TimeZone, Utc};
 use dash_mpd::{MPD, UTCTiming};
 use quick_xml::Reader;
 use quick_xml::events::Event;
-use reqwest::Client;
 use url::Url;
+
+use super::http::{HttpRequest, SharedHttpClient};
 
 const NTP_UNIX_OFFSET: i64 = 2_208_988_800;
 
 /// Resolve wall-clock UTC using MPD `UTCTiming` entries (and nested `ProducerReferenceTime`
 /// timing), then PRT chain. Falls back to the local clock when no entry succeeds.
 pub(crate) async fn wall_clock_utc(
-    client: &Client,
+    client: &SharedHttpClient,
     mpd: &MPD,
     manifest_uri: Option<&Url>,
 ) -> DateTime<Utc> {
@@ -100,7 +101,7 @@ fn classify_scheme(scheme_id_uri: &str) -> Option<UtcScheme> {
 }
 
 async fn resolve_utc_timing(
-    client: &Client,
+    client: &SharedHttpClient,
     u: &UTCTiming,
     manifest_uri: Option<&Url>,
 ) -> Option<DateTime<Utc>> {
@@ -208,13 +209,19 @@ fn parse_http_ntp_bytes(body: &[u8]) -> Option<DateTime<Utc>> {
     None
 }
 
-async fn http_ntp_body(client: &Client, url: &str) -> Option<DateTime<Utc>> {
-    let bytes = client.get(url).send().await.ok()?.bytes().await.ok()?;
+async fn http_ntp_body(client: &SharedHttpClient, url: &str) -> Option<DateTime<Utc>> {
+    let url = Url::parse(url).ok()?;
+    let bytes = client.send(HttpRequest::get(url)).await.ok()?.into_bytes();
     parse_http_ntp_bytes(&bytes)
 }
 
-async fn http_datetime_body(client: &Client, url: &str, xsdate: bool) -> Option<DateTime<Utc>> {
-    let text = client.get(url).send().await.ok()?.text().await.ok()?;
+async fn http_datetime_body(
+    client: &SharedHttpClient,
+    url: &str,
+    xsdate: bool,
+) -> Option<DateTime<Utc>> {
+    let url = Url::parse(url).ok()?;
+    let text = client.send(HttpRequest::get(url)).await.ok()?.text().ok()?;
     let t = text.trim();
     if !xsdate {
         return parse_xs_datetime_loose(t);
@@ -251,12 +258,13 @@ fn first_datetime_in_xml_or_text(xml: &str) -> Option<DateTime<Utc>> {
     None
 }
 
-async fn http_date_header(client: &Client, url: &str) -> Option<DateTime<Utc>> {
-    let mut resp = client.head(url).send().await.ok()?;
-    if !resp.status().is_success() || resp.headers().get(reqwest::header::DATE).is_none() {
-        resp = client.get(url).send().await.ok()?;
+async fn http_date_header(client: &SharedHttpClient, url: &str) -> Option<DateTime<Utc>> {
+    let url = Url::parse(url).ok()?;
+    let mut resp = client.send(HttpRequest::head(url.clone())).await.ok()?;
+    if !resp.is_success() || resp.header("Date").is_none() {
+        resp = client.send(HttpRequest::get(url)).await.ok()?;
     }
-    let date_hdr = resp.headers().get(reqwest::header::DATE)?.to_str().ok()?;
+    let date_hdr = resp.header("Date")?;
     parse_http_date(date_hdr)
 }
 

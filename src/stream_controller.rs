@@ -6,7 +6,6 @@ use std::sync::Mutex;
 use std::sync::atomic::{AtomicBool, Ordering};
 
 use futures::future::join_all;
-use reqwest::Client;
 use tokio::sync::Mutex as AsyncMutex;
 use tokio::time::sleep;
 use url::Url;
@@ -16,6 +15,7 @@ use super::drm::coordinator::DrmSessionCoordinator;
 use super::PlayerError;
 use super::dash_stream::{AdaptationStreamContext, run_adaptation_stream};
 use super::delivered_segments::DeliveredSegmentTracker;
+use super::http::{HttpRequest, SharedHttpClient};
 use super::manifest;
 use super::playback_control::{PlaybackController, PlaybackState};
 use super::segment_blacklist::SegmentBlacklist;
@@ -24,7 +24,7 @@ use super::types::PlayerEvent;
 use super::utc_timing;
 
 pub(crate) struct PlaybackLoopState {
-    pub client: Client,
+    pub client: SharedHttpClient,
     pub manifest_uri: Url,
     pub drm: DrmSessionCoordinator,
     pub playback: PlaybackController,
@@ -67,8 +67,8 @@ impl PlaybackLoopState {
 
                 playback.set_state(PlaybackState::LoadingManifest);
 
-                let resp = client.get(manifest_uri.clone()).send().await?;
-                let text = resp.text().await?;
+                let resp = client.send(HttpRequest::get(manifest_uri.clone())).await?;
+                let text = resp.text()?;
                 manifest = Some(dash_mpd::parse(&text)?);
                 mpd_xml = Some(text);
 

@@ -46,6 +46,7 @@ mod dash_stream;
 mod delivered_segments;
 mod descriptors;
 pub mod drm;
+pub mod http;
 mod manifest;
 mod media_player;
 mod metrics;
@@ -58,6 +59,10 @@ mod track_selection;
 mod types;
 mod utc_timing;
 
+pub use http::{
+    HttpClient, HttpError, HttpMethod, HttpRequest, HttpResponse, ReqwestClient, SharedHttpClient,
+    shared,
+};
 pub use media_player::{MediaPlayer, WidevineLicenseFetcher};
 pub use metrics::{
     BitrateSwitch, BufferSample, RebufferEvent, ThroughputSample, TrackMetrics,
@@ -82,7 +87,7 @@ pub enum PlayerError {
     #[error("manifest: {0}")]
     Manifest(#[from] dash_mpd::DashMpdError),
     #[error("request: {0}")]
-    Request(#[from] reqwest::Error),
+    Request(#[from] HttpError),
     #[error("widevine license HTTP: {0}")]
     WidevineLicenseHttp(String),
     #[error("url: {0}")]

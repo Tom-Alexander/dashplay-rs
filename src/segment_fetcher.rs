@@ -1,14 +1,13 @@
-use reqwest::Client;
-use reqwest::header::RANGE;
 use url::Url;
 
 use super::PlayerError;
+use super::http::{HttpRequest, SharedHttpClient};
 use super::manifest::ByteRange;
 use super::segment_blacklist::SegmentBlacklist;
 
 /// Try each resolved absolute base with the same relative segment path (multi-CDN / redundant hosts).
 pub(crate) async fn fetch_bytes_with_base_failover(
-    client: &Client,
+    client: &SharedHttpClient,
     bases: &[Url],
     relative_path: &str,
     blacklist: &SegmentBlacklist,
@@ -18,7 +17,7 @@ pub(crate) async fn fetch_bytes_with_base_failover(
 
 /// Like [`fetch_bytes_with_base_failover`], but sends an HTTP `Range` header when `range` is set.
 pub(crate) async fn fetch_bytes_with_base_failover_and_range(
-    client: &Client,
+    client: &SharedHttpClient,
     bases: &[Url],
     relative_path: &str,
     range: Option<ByteRange>,
@@ -40,7 +39,7 @@ pub(crate) async fn fetch_bytes_with_base_failover_and_range(
 }
 
 async fn fetch_bytes_range(
-    client: &Client,
+    client: &SharedHttpClient,
     url: Url,
     range: Option<ByteRange>,
     blacklist: &SegmentBlacklist,
@@ -49,27 +48,26 @@ async fn fetch_bytes_range(
         return Err(PlayerError::SegmentBlacklisted(url.to_string()));
     }
 
-    let mut req = client.get(url.clone());
+    let mut req = HttpRequest::get(url.clone());
     if let Some(r) = range {
-        req = req.header(RANGE, format!("bytes={}-{}", r.start, r.end));
+        req = req.byte_range(r.start, r.end);
     }
 
-    let resp = req.send().await?;
-    let status = resp.status();
-    if !status.is_success() {
+    let resp = client.send(req).await?;
+    if !resp.is_success() {
         blacklist.insert_url(&url);
         return Err(PlayerError::SegmentRequestFailed {
-            status: status.as_u16(),
+            status: resp.status(),
             url: url.to_string(),
         });
     }
-    let b = resp.bytes().await?;
-    Ok(b.to_vec())
+    Ok(resp.into_bytes().to_vec())
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::http::ReqwestClient;
     use axum::{Router, body::Body, http::StatusCode, response::IntoResponse, routing::get};
     use std::sync::atomic::{AtomicUsize, Ordering};
     use tokio::sync::oneshot;
@@ -95,7 +93,7 @@ mod tests {
     #[tokio::test]
     async fn fetch_bytes_blacklists_failed_url() {
         let (base, shutdown) = spawn_not_found_server().await;
-        let client = Client::new();
+        let client = crate::http::shared(ReqwestClient::default());
         let blacklist = SegmentBlacklist::new();
         let url = base.join("seg.m4s").unwrap();
 
@@ -156,7 +154,7 @@ mod tests {
 
         let bad = Url::parse(&format!("http://{addr}/bad/")).unwrap();
         let good = Url::parse(&format!("http://{addr}/good/")).unwrap();
-        let client = Client::new();
+        let client = crate::http::shared(ReqwestClient::default());
         let blacklist = SegmentBlacklist::new();
 
         let bytes = fetch_bytes_with_base_failover(&client, &[bad, good], "seg.m4s", &blacklist)
@@ -171,7 +169,7 @@ mod tests {
     #[tokio::test]
     async fn fetch_bytes_with_base_failover_returns_last_error() {
         let (base, shutdown) = spawn_not_found_server().await;
-        let client = Client::new();
+        let client = crate::http::shared(ReqwestClient::default());
         let blacklist = SegmentBlacklist::new();
         let bases = [base.join("a/").unwrap(), base.join("b/").unwrap()];
 

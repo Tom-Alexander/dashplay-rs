@@ -6,6 +6,7 @@ description = "A pure Rust MPEG-DASH player library"
 readme = "README.md"
 keywords = ["dash", "mpeg-dash", "streaming", "video", "abr"]
 categories = ["multimedia::video", "web-programming::http-client"]
+license = "MIT"
 
 [dependencies]
 anyhow = "1.0"

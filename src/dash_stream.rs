@@ -136,18 +136,31 @@ pub(crate) async fn run_adaptation_stream(ctx: AdaptationStreamContext) -> Resul
         if let Some(target) = target_time {
             let target_s = target.as_secs_f64();
             let p0 = period_start.as_secs_f64();
+            let target_in_period = target_s - p0;
             let start_idx = segments_all
                 .iter()
                 .position(|s| p0 + s.presentation_time_s + s.duration_s > target_s)
                 .unwrap_or(0);
             let start_idx =
                 manifest::align_start_index_to_sap(&segments_all, start_idx, &adaptation_set);
-            let start_idx = align_start_index_with_resync(&segments_all, start_idx, &timeline_ctx);
+            let (start_idx, resync_start_chunk) = align_start_index_with_resync(
+                &segments_all,
+                start_idx,
+                &timeline_ctx,
+                Some(target_in_period),
+            );
             let start_idx = delivered_tracker.advance_start_index(&segments_all, start_idx);
-            (segments_all[start_idx..].to_vec(), start_idx)
+            let mut slice = segments_all[start_idx..].to_vec();
+            if let Some(chunk) = resync_start_chunk {
+                if let Some(first) = slice.first_mut() {
+                    first.resync_start_chunk = Some(chunk);
+                }
+            }
+            (slice, start_idx)
         } else {
             let start_idx = manifest::align_start_index_to_sap(&segments_all, 0, &adaptation_set);
-            let start_idx = align_start_index_with_resync(&segments_all, start_idx, &timeline_ctx);
+            let (start_idx, _) =
+                align_start_index_with_resync(&segments_all, start_idx, &timeline_ctx, None);
             let start_idx = delivered_tracker.advance_start_index(&segments_all, start_idx);
             (segments_all[start_idx..].to_vec(), start_idx)
         }
@@ -264,7 +277,11 @@ pub(crate) async fn run_adaptation_stream(ctx: AdaptationStreamContext) -> Resul
                 .ok_or(PlayerError::SegmentExhaustedRepresentations)?;
 
             let fragment_count = fragments.len();
+            let start_chunk = seg.resync_start_chunk.unwrap_or(1);
             for (chunk_idx, fragment) in fragments.into_iter().enumerate() {
+                if (chunk_idx as u64 + 1) < start_chunk {
+                    continue;
+                }
                 if playback.is_stopped() || playback.seek_generation() != seek_generation_at_start {
                     return Ok(());
                 }
@@ -563,12 +580,22 @@ fn align_start_index_with_resync(
     segments: &[manifest::TimelineSegment],
     start_idx: usize,
     timeline_ctx: &TimelineBuildContext,
-) -> usize {
-    if let Some(hints) = timeline_ctx.resync_hints {
-        manifest::align_start_index_to_resync(segments, start_idx, hints)
-    } else {
-        start_idx
+    target_presentation_time_s: Option<f64>,
+) -> (usize, Option<u64>) {
+    let Some(hints) = timeline_ctx.resync_hints else {
+        return (start_idx, None);
+    };
+
+    if hints.random_access_within_segment {
+        if let Some(target) = target_presentation_time_s {
+            return manifest::mid_segment_resync_alignment(segments, start_idx, target, hints);
+        }
     }
+
+    (
+        manifest::align_start_index_to_resync(segments, start_idx, hints),
+        None,
+    )
 }
 
 fn lock_delivered(

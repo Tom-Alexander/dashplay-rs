@@ -62,6 +62,8 @@ pub(crate) struct TimelineSegment {
     pub presentation_time_s: f64,
     /// When `S@k`>1: 1-based index within the segment sequence (`$SubNumber$`). Otherwise `None`.
     pub sub_number: Option<u64>,
+    /// 1-based CMAF chunk index to start emitting from after mid-segment resync (`Resync@type` 2/3).
+    pub resync_start_chunk: Option<u64>,
     /// Explicit `SegmentURL@media` when using `SegmentList` addressing (may be rep-specific).
     pub media_url: Option<String>,
     /// Inclusive byte range for `SegmentBase@indexRange` / `Initialization@range` addressing.
@@ -161,6 +163,61 @@ pub(crate) fn align_start_index_to_resync(
         })
         .map(|(i, _)| i)
         .unwrap_or(start_idx)
+}
+
+/// Presentation-time seconds (relative to Period start) where a segment sequence begins.
+fn segment_sequence_start_presentation_s(seg: &TimelineSegment) -> f64 {
+    if let Some(sub) = seg.sub_number {
+        let prior = sub.saturating_sub(1) as f64;
+        seg.presentation_time_s - prior * seg.duration_s
+    } else {
+        seg.presentation_time_s
+    }
+}
+
+/// Align seek/recovery to the nearest in-segment resync point (`Resync@type` 2/3).
+///
+/// Returns the timeline index and an optional 1-based CMAF chunk index to start emitting from
+/// within the first segment of the trimmed playback window.
+pub(crate) fn mid_segment_resync_alignment(
+    segments: &[TimelineSegment],
+    start_idx: usize,
+    target_presentation_time_s: f64,
+    hints: super::resync::ResyncHints,
+) -> (usize, Option<u64>) {
+    let Some(interval_s) = hints
+        .random_access_interval_s
+        .filter(|x| x.is_finite() && *x > 0.0)
+    else {
+        return (start_idx, None);
+    };
+    if segments.is_empty() {
+        return (0, None);
+    }
+
+    let idx = start_idx.min(segments.len() - 1);
+    let grid_t = (target_presentation_time_s / interval_s).floor() * interval_s;
+
+    let aligned_idx = segments
+        .iter()
+        .enumerate()
+        .filter(|(_, s)| {
+            let start = segment_sequence_start_presentation_s(s);
+            start <= grid_t + 1e-6 && start + s.duration_s > grid_t - 1e-6
+        })
+        .max_by(|(_, a), (_, b)| {
+            segment_sequence_start_presentation_s(a)
+                .partial_cmp(&segment_sequence_start_presentation_s(b))
+                .unwrap_or(std::cmp::Ordering::Equal)
+        })
+        .map(|(i, _)| i)
+        .unwrap_or(idx);
+
+    let seq_start = segment_sequence_start_presentation_s(&segments[aligned_idx]);
+    let offset_s = (grid_t - seq_start).max(0.0);
+    let chunk = (offset_s / interval_s).floor() as u64 + 1;
+
+    (aligned_idx, Some(chunk.max(1)))
 }
 
 pub(crate) fn mpd(manifest: &Option<MPD>) -> Result<&MPD, PlayerError> {
@@ -610,6 +667,7 @@ pub(crate) fn timeline_segments_from_sidx(
             duration_s,
             presentation_time_s,
             sub_number: None,
+            resync_start_chunk: None,
             media_url: None,
             media_range: Some(ByteRange { start, end }),
         });
@@ -885,6 +943,7 @@ fn timeline_segments_from_segment_base(
         duration_s,
         presentation_time_s: 0.0,
         sub_number: None,
+        resync_start_chunk: None,
         media_url: None,
         media_range: None,
     }])
@@ -956,6 +1015,7 @@ fn segments_from_list_urls(sl: &SegmentList) -> Result<Vec<TimelineSegment>, Pla
             duration_s,
             presentation_time_s: i as f64 * duration_s,
             sub_number: None,
+            resync_start_chunk: None,
             media_url: su.media.clone(),
             media_range: None,
         })
@@ -1252,6 +1312,7 @@ fn emit_segment_sequence(
             duration_s,
             presentation_time_s,
             sub_number: if k > 1 { Some(sub) } else { None },
+            resync_start_chunk: None,
             media_url: None,
             media_range: None,
         });
@@ -1373,6 +1434,7 @@ fn segments_from_duration_template(
                 duration_s,
                 presentation_time_s,
                 sub_number: None,
+                resync_start_chunk: None,
                 media_url: None,
                 media_range: None,
             });
@@ -1397,6 +1459,7 @@ fn segments_from_duration_template(
                 duration_s,
                 presentation_time_s,
                 sub_number: None,
+                resync_start_chunk: None,
                 media_url: None,
                 media_range: None,
             });
@@ -1583,9 +1646,56 @@ mod timeline_tests {
             chunk_duration_s: None,
             random_access_interval_s: Some(2.0),
             random_access_markers: false,
+            random_access_within_segment: false,
         };
         assert_eq!(align_start_index_to_resync(&segments, 2, hints), 1);
         assert_eq!(align_start_index_to_resync(&segments, 1, hints), 1);
+    }
+
+    #[test]
+    fn mid_segment_resync_alignment_snaps_to_in_segment_grid() {
+        let segments = vec![
+            TimelineSegment {
+                number: 1,
+                presentation_time_s: 0.0,
+                duration_s: 4.0,
+                ..default_timeline_segment()
+            },
+            TimelineSegment {
+                number: 2,
+                presentation_time_s: 4.0,
+                duration_s: 4.0,
+                ..default_timeline_segment()
+            },
+        ];
+        let hints = super::super::resync::ResyncHints {
+            chunk_duration_s: None,
+            random_access_interval_s: Some(0.5),
+            random_access_markers: false,
+            random_access_within_segment: true,
+        };
+        let (idx, chunk) = mid_segment_resync_alignment(&segments, 1, 5.2, hints);
+        assert_eq!(idx, 1);
+        assert_eq!(chunk, Some(3)); // 4.0 + 2*0.5 = 5.0s resync point → chunk 3
+    }
+
+    #[test]
+    fn mid_segment_resync_alignment_at_segment_start_uses_first_chunk() {
+        let segments = vec![TimelineSegment {
+            number: 1,
+            presentation_time_s: 4.0,
+            duration_s: 4.0,
+            ..default_timeline_segment()
+        }];
+        let hints = super::super::resync::ResyncHints {
+            chunk_duration_s: None,
+            random_access_interval_s: Some(0.5),
+            random_access_markers: false,
+            random_access_within_segment: true,
+        };
+        let (idx, chunk) = mid_segment_resync_alignment(&segments, 0, 4.0, hints);
+        assert_eq!(idx, 0);
+        assert_eq!(chunk, Some(1));
     }
 
     fn default_timeline_segment() -> TimelineSegment {
@@ -1596,6 +1706,7 @@ mod timeline_tests {
             duration_s: 0.0,
             presentation_time_s: 0.0,
             sub_number: None,
+            resync_start_chunk: None,
             media_url: None,
             media_range: None,
         }
@@ -1928,6 +2039,7 @@ mod timeline_tests {
                 duration_s: 1.0,
                 presentation_time_s: 0.0,
                 sub_number: Some(1),
+                resync_start_chunk: None,
                 media_url: None,
                 media_range: None,
             },
@@ -1938,6 +2050,7 @@ mod timeline_tests {
                 duration_s: 1.0,
                 presentation_time_s: 1.0,
                 sub_number: Some(2),
+                resync_start_chunk: None,
                 media_url: None,
                 media_range: None,
             },
@@ -1948,6 +2061,7 @@ mod timeline_tests {
                 duration_s: 1.0,
                 presentation_time_s: 2.0,
                 sub_number: Some(3),
+                resync_start_chunk: None,
                 media_url: None,
                 media_range: None,
             },
@@ -1970,6 +2084,7 @@ mod timeline_tests {
                 duration_s: 1.0,
                 presentation_time_s: 0.0,
                 sub_number: Some(1),
+                resync_start_chunk: None,
                 media_url: None,
                 media_range: None,
             },
@@ -1980,6 +2095,7 @@ mod timeline_tests {
                 duration_s: 1.0,
                 presentation_time_s: 1.0,
                 sub_number: Some(2),
+                resync_start_chunk: None,
                 media_url: None,
                 media_range: None,
             },
@@ -2171,6 +2287,7 @@ mod manifest_logic_tests {
             duration_s: 4.0,
             presentation_time_s: 8.0,
             sub_number: None,
+            resync_start_chunk: None,
             media_url: None,
             media_range: None,
         };
@@ -2201,6 +2318,7 @@ mod manifest_logic_tests {
             duration_s: 4.0,
             presentation_time_s: 8.0,
             sub_number: None,
+            resync_start_chunk: None,
             media_url: None,
             media_range: None,
         };
@@ -2231,6 +2349,7 @@ mod manifest_logic_tests {
             duration_s: 1.0,
             presentation_time_s: 2.0,
             sub_number: Some(3),
+            resync_start_chunk: None,
             media_url: None,
             media_range: None,
         };

@@ -75,6 +75,7 @@ mod tests {
             duration_s,
             presentation_time_s: start_s,
             sub_number: None,
+            resync_start_chunk: None,
             media_url: None,
             media_range: None,
         }

@@ -19,6 +19,9 @@ pub(crate) struct ResyncHints {
     pub random_access_interval_s: Option<f64>,
     /// `@marker=true` on a random-access [`Resync`] entry.
     pub random_access_markers: bool,
+    /// `Resync@type` 2 or 3: random-access points may occur within a segment, not only at
+    /// segment boundaries (`@type` 1).
+    pub random_access_within_segment: bool,
 }
 
 /// Wall-clock / presentation-time anchor from [`ProducerReferenceTime`].
@@ -171,6 +174,7 @@ pub(crate) fn resync_hints(
         chunk_duration_s: None,
         random_access_interval_s: None,
         random_access_markers: false,
+        random_access_within_segment: false,
     };
     let mut any = false;
 
@@ -199,8 +203,16 @@ fn apply_resync_entry(hints: &mut ResyncHints, resync: &Resync, timescale: u64) 
     let rtype = resync.rtype.as_deref().unwrap_or("0");
     match rtype {
         "0" => hints.chunk_duration_s = Some(duration_s),
-        "1" | "2" | "3" => {
+        "1" => {
             hints.random_access_interval_s = Some(duration_s);
+            hints.random_access_within_segment = false;
+            if resync.marker.unwrap_or(false) {
+                hints.random_access_markers = true;
+            }
+        }
+        "2" | "3" => {
+            hints.random_access_interval_s = Some(duration_s);
+            hints.random_access_within_segment = true;
             if resync.marker.unwrap_or(false) {
                 hints.random_access_markers = true;
             }
@@ -282,6 +294,36 @@ mod tests {
             Duration::ZERO,
         );
         assert_eq!(t5, Duration::from_secs(5));
+    }
+
+    #[test]
+    fn resync_hints_type2_enables_within_segment_random_access() {
+        let period = sample_period();
+        let mut ad = sample_adaptation_set();
+        ad.Resync = vec![Resync {
+            rtype: Some("2".into()),
+            dT: Some(500),
+            ..Default::default()
+        }];
+        let rep = &ad.representations[0];
+        let hints = resync_hints(&period, &ad, rep).expect("hints");
+        assert!((hints.random_access_interval_s.unwrap() - 0.5).abs() < 1e-6);
+        assert!(hints.random_access_within_segment);
+    }
+
+    #[test]
+    fn resync_hints_type1_is_segment_boundary_only() {
+        let period = sample_period();
+        let mut ad = sample_adaptation_set();
+        ad.Resync = vec![Resync {
+            rtype: Some("1".into()),
+            dT: Some(2000),
+            ..Default::default()
+        }];
+        let rep = &ad.representations[0];
+        let hints = resync_hints(&period, &ad, rep).expect("hints");
+        assert!((hints.random_access_interval_s.unwrap() - 2.0).abs() < 1e-6);
+        assert!(!hints.random_access_within_segment);
     }
 
     #[test]

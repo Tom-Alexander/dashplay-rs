@@ -16,6 +16,8 @@ A pure Rust implementation of an MPEG-DASH player library.
 - **Modular API** — High-level [`Player`](#player) wrapper or lower-level [`MediaPlayer`](#mediaplayer) for finer control
 - **Playback control** — `seek`, `pause`, `resume`, `stop`, and a [`PlaybackState`](#playbackstate) lifecycle machine
 - **Async delivery** — Tokio-based fragment delivery via broadcast channels (`Init`, `Segment`, `End` events)
+- **Rich event model** — Lifecycle and observability events (`ManifestLoaded`, `BufferUpdated`, `BitrateChanged`, `PlaybackStarted`/`PlaybackEnded`, `Error`) alongside fragment events
+- **Metrics API** — Per-track throughput, buffer level, startup delay, rebuffer events, and bitrate-switch history via [`TrackMetrics`](#metrics)
 
 ## Usage
 
@@ -39,7 +41,11 @@ async fn main() -> Result<(), dashplayrs::PlayerError> {
                 PlayerEvent::Init(data) | PlayerEvent::Segment { data, .. } => {
                     // feed `data` to a demuxer / decoder
                 }
-                PlayerEvent::End => break,
+                PlayerEvent::BitrateChanged { to_bitrate_bps, .. } => {
+                    println!("switched to {to_bitrate_bps} bps");
+                }
+                ev if ev.is_terminal() => break, // End, PlaybackEnded, or Error
+                _ => {} // ManifestLoaded, BufferUpdated, PlaybackStarted
             }
         }
     }
@@ -132,7 +138,8 @@ controller. Clone handles (`outputs.playback.clone()`) share one session.
 |------|-------------|
 | [`Player`](#player) | High-level playback entry point |
 | [`MediaPlayer`](#mediaplayer) | Lower-level DASH coordinator |
-| [`PlayerEvent`](#playerevent) | Fragment events on a track stream |
+| [`PlayerEvent`](#playerevent) | Fragment, lifecycle, and observability events on a track stream |
+| [`PlayerEventError`](#playerevent) | Error message delivered via [`PlayerEvent::Error`](#playerevent) |
 | [`PlayerTrack`](#playertrack) | One adaptation-set broadcast channel |
 | [`PlayerOutputs`](#playeroutputs) | Tracks and playback controller from [`MediaPlayer::start`](#mediaplayer) |
 | [`PlayerTrackOutput`](#playertrackoutput) | Per-track handle from [`Player::start_tracks`](#player) |
@@ -142,6 +149,9 @@ controller. Clone handles (`outputs.playback.clone()`) share one session.
 | [`PlaybackController`](#playbackcontroller) | Seek, pause, resume, stop, and lifecycle state |
 | [`PlaybackState`](#playbackstate) | Explicit playback lifecycle enum |
 | [`PlaybackControlError`](#playbackcontrolerror) | Errors from playback control commands |
+| [`TrackMetrics`](#metrics) | Per-track playback metrics collector |
+| [`TrackMetricsSnapshot`](#metrics) | Point-in-time metrics view (throughput, buffer, switches, rebuffers) |
+| [`ThroughputSample`](#metrics) / [`BufferSample`](#metrics) / [`BitrateSwitch`](#metrics) / [`RebufferEvent`](#metrics) | Individual metric samples |
 | `TrackSelection` / `TrackPreference` | Ordered adaptation-set preferences and per-kind limits |
 | `TrackInfo` / `TrackKind` | Metadata and media kind for a selected track |
 | `TrackDescriptor` | Accessibility descriptor scheme/value matcher and metadata |
@@ -238,13 +248,30 @@ delivery — broadcast channels drop events when there are no receivers.
 
 ### `PlayerEvent`
 
-Events emitted on a single adaptation-set stream:
+Events emitted on a single adaptation-set stream. **Fragment** events carry media bytes;
+**lifecycle** and **observability** events report manifest, buffer, bitrate, and playback state.
 
-| Variant | Payload |
-|---------|---------|
-| `Init(Bytes)` | Initialization segment (`ftyp` + `moov`) |
-| `Segment { number, time, sub_number, data }` | Media segment; `sub_number` is set when `SegmentTimeline/S@k` > 1 |
-| `End` | No more fragments for this adaptation set (VOD / bounded window) |
+| Variant | Kind | Payload / meaning |
+|---------|------|-------------------|
+| `Init(Bytes)` | Fragment | Initialization segment (`ftyp` + `moov`) |
+| `Segment { number, time, sub_number, data }` | Fragment | Media segment; `sub_number` is set when `SegmentTimeline/S@k` > 1 |
+| `ManifestLoaded { is_dynamic, media_presentation_duration }` | Lifecycle | An MPD was fetched and parsed (initial load or live refresh) |
+| `BufferUpdated { buffer_s }` | Observability | Consumer-reported buffer occupancy changed (emitted by [`BufferFeedback::report`](#bufferfeedback)) |
+| `BitrateChanged { from_quality_index, to_quality_index, from_bitrate_bps, to_bitrate_bps }` | Observability | The active representation changed on the ladder |
+| `PlaybackStarted` | Lifecycle | First media segment delivered for this adaptation set |
+| `PlaybackEnded` | Lifecycle | Playback finished (VOD end, stop, or bounded window); precedes `End` |
+| `Error(PlayerEventError)` | Lifecycle | Pipeline failed; the full [`PlayerError`](#playererror) is still returned by `join` |
+| `End` | Fragment | No more fragments for this adaptation set (VOD / bounded window) |
+
+Helper methods classify events without matching every variant:
+
+| Method | Returns `true` for |
+|--------|--------------------|
+| `is_terminal()` | `End`, `PlaybackEnded`, `Error` |
+| `is_fragment()` | `Init`, `Segment` |
+
+`PlayerEventError` is a clone-friendly wrapper around the error message string (`PlayerEventError(pub String)`),
+so track events remain `Clone` even though [`PlayerError`](#playererror) is not.
 
 ---
 
@@ -259,6 +286,7 @@ One DASH adaptation set exposed as a `tokio::sync::broadcast` channel.
 | `subscribe()` | Create a new event receiver |
 | `receiver_count()` | Number of active subscribers |
 | `buffer_feedback()` | Report playback buffer occupancy for ABR |
+| `metrics()` | [`TrackMetrics`](#metrics) collector for this track |
 
 ---
 
@@ -276,6 +304,64 @@ actual playback state.
 
 ---
 
+### Metrics
+
+Per-track playback metrics are collected as a side effect of delivery and buffer feedback.
+Metrics observe download and buffer behaviour without influencing playback or ABR decisions
+directly. Obtain a [`TrackMetrics`](#metrics) handle from `outputs.metrics(idx)`
+([`PlayerTrackOutputs`](#playertrackoutputs)), `track.metrics()` ([`PlayerTrack`](#playertrack)),
+or `output.metrics()` ([`PlayerTrackOutput`](#playertrackoutput)). Clone handles share one
+session.
+
+```rust
+use dashplayrs::Player;
+
+# async fn example() -> Result<(), dashplayrs::PlayerError> {
+let outputs = Player::new("https://example.com/manifest.mpd", None)?
+    .start_tracks()
+    .await?;
+let metrics = outputs.metrics(0).expect("track 0");
+
+// Point-in-time view:
+let snap = metrics.snapshot();
+println!("throughput: {} bps, buffer: {} s", snap.throughput_bps, snap.buffer_s);
+
+// Or watch updates as they are recorded:
+let mut rx = metrics.subscribe();
+while rx.changed().await.is_ok() {
+    let snap = rx.borrow();
+    if let Some(delay) = snap.startup_delay {
+        println!("startup delay: {delay:?}");
+    }
+}
+# Ok(())
+# }
+```
+
+**`TrackMetrics` methods:**
+
+| Method | Description |
+|--------|-------------|
+| `snapshot()` | Current [`TrackMetricsSnapshot`](#metrics) |
+| `subscribe()` | [`watch::Receiver`](https://docs.rs/tokio/latest/tokio/sync/watch/struct.Receiver.html) of snapshots, seeded with the current value |
+
+**`TrackMetricsSnapshot` fields:**
+
+| Field | Description |
+|-------|-------------|
+| `startup_delay: Option<Duration>` | Time from stream start to the first delivered segment |
+| `buffer_s: f64` | Latest consumer-reported buffer level (seconds) |
+| `throughput_bps: f64` | Smoothed (EWMA) download throughput estimate |
+| `throughput_history: Vec<ThroughputSample>` | Per-segment throughput samples (`elapsed`, `throughput_bps`, `bytes`, `download_duration`) |
+| `buffer_history: Vec<BufferSample>` | Reported buffer occupancy over time (`elapsed`, `buffer_s`) |
+| `bitrate_switch_history: Vec<BitrateSwitch>` | Representation switches (`from`/`to` quality index and bitrate) |
+| `rebuffer_events: Vec<RebufferEvent>` | Buffer drops below the low-water mark after playback began (`elapsed`, `buffer_s`) |
+
+History series are bounded (most recent samples retained). Each sample's `elapsed` is measured
+from the start of metrics collection for that track.
+
+---
+
 ### `PlayerTrackOutputs`
 
 Returned by [`Player::start_tracks`](#player):
@@ -288,6 +374,7 @@ Returned by [`Player::start_tracks`](#player):
 | `pause` / `resume` / `seek` / `stop` | Playback control (delegates to `playback`) |
 | `playback_state` / `subscribe_playback_state` | Current or watched [`PlaybackState`](#playbackstate) |
 | `buffer_feedback(idx)` | [`BufferFeedback`](#bufferfeedback) for a track index |
+| `metrics(idx)` | [`TrackMetrics`](#metrics) for a track index |
 | `subscribe(idx)` | Subscribe to a track's broadcast channel |
 | `track_count()` | Number of adaptation-set tracks in this session |
 
@@ -363,6 +450,7 @@ Per-track handle returned in `PlayerTrackOutputs.tracks`:
 | `info` | Selected-track language, roles, codecs, accessibility, ID, and media kind |
 | `into_receiver()` | Take ownership of the broadcast receiver |
 | `buffer_feedback()` | Report playback buffer occupancy for ABR |
+| `metrics()` | [`TrackMetrics`](#metrics) collector for this track |
 | `events()` | Stream wrapper over track events |
 
 ---

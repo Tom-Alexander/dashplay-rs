@@ -1,3 +1,5 @@
+use std::time::Duration;
+
 use bytes::Bytes;
 use thiserror::Error;
 use tokio::sync::broadcast;
@@ -9,6 +11,19 @@ use super::metrics::TrackMetrics;
 use super::playback_control::PlaybackController;
 use super::stream_controller::PlaybackLoopState;
 use super::track_selection::TrackInfo;
+
+/// Playback failure delivered on a track event stream.
+///
+/// The background task [`JoinHandle`] still returns the full [`PlayerError`] for
+/// programmatic handling.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct PlayerEventError(pub String);
+
+impl From<&PlayerError> for PlayerEventError {
+    fn from(err: &PlayerError) -> Self {
+        Self(err.to_string())
+    }
+}
 
 /// Error returned when buffer feedback can no longer reach the playback pipeline.
 #[derive(Debug, Error)]
@@ -25,27 +40,67 @@ pub enum BufferFeedbackError {
 pub struct BufferFeedback {
     tx: watch::Sender<f64>,
     metrics: TrackMetrics,
+    event_tx: broadcast::Sender<PlayerEvent>,
 }
 
 impl BufferFeedback {
-    pub(crate) fn new(tx: watch::Sender<f64>, metrics: TrackMetrics) -> Self {
-        Self { tx, metrics }
+    pub(crate) fn new(
+        tx: watch::Sender<f64>,
+        metrics: TrackMetrics,
+        event_tx: broadcast::Sender<PlayerEvent>,
+    ) -> Self {
+        Self {
+            tx,
+            metrics,
+            event_tx,
+        }
     }
 
     /// Report the current buffer level in seconds.
     ///
     /// Values are clamped internally by the ABR algorithm. Report `0.0` when stalled or empty.
+    /// Emits [`PlayerEvent::BufferUpdated`] on the track event stream.
     pub fn report(&self, buffer_s: f64) -> Result<(), BufferFeedbackError> {
         self.metrics.record_buffer(buffer_s);
+        let _ = self.event_tx.send(PlayerEvent::BufferUpdated { buffer_s });
         self.tx
             .send(buffer_s)
             .map_err(|_| BufferFeedbackError::StreamEnded)
     }
 }
 
-/// Events emitted on a single DASH adaptation-set stream (dash.js: stream / fragment events).
+/// Events emitted on a single DASH adaptation-set stream.
+///
+/// Fragment events ([`Self::Init`], [`Self::Segment`], [`Self::End`]) carry media bytes.
+/// Lifecycle and observability events report manifest, buffer, bitrate, and playback state.
 #[derive(Debug, Clone)]
 pub enum PlayerEvent {
+    /// An MPD was fetched and parsed successfully (initial load or live refresh).
+    ManifestLoaded {
+        /// Whether the MPD is dynamic (live / sliding window).
+        is_dynamic: bool,
+        /// `MPD@mediaPresentationDuration` when present.
+        media_presentation_duration: Option<Duration>,
+    },
+    /// Consumer-reported buffer occupancy changed for this track.
+    BufferUpdated {
+        /// Seconds of media buffered ahead of the playhead.
+        buffer_s: f64,
+    },
+    /// The active representation changed on the adaptation ladder.
+    BitrateChanged {
+        from_quality_index: usize,
+        to_quality_index: usize,
+        from_bitrate_bps: f64,
+        to_bitrate_bps: f64,
+    },
+    /// The first media segment was delivered for this adaptation set.
+    PlaybackStarted,
+    /// Playback finished for this adaptation set (VOD end, stop, or bounded window).
+    PlaybackEnded,
+    /// The playback pipeline failed; see the background task join result for the full error.
+    Error(PlayerEventError),
+    /// Initialization segment (`ftyp` + `moov`).
     Init(Bytes),
     Segment {
         number: u64,
@@ -56,6 +111,21 @@ pub enum PlayerEvent {
     },
     /// No more fragments will be sent for this adaptation set (VOD / bounded static window).
     End,
+}
+
+impl PlayerEvent {
+    /// Returns `true` when this event marks the end of the track event stream.
+    pub fn is_terminal(&self) -> bool {
+        matches!(
+            self,
+            PlayerEvent::End | PlayerEvent::PlaybackEnded | PlayerEvent::Error(_)
+        )
+    }
+
+    /// Returns `true` when this event carries a media fragment payload.
+    pub fn is_fragment(&self) -> bool {
+        matches!(self, PlayerEvent::Init(_) | PlayerEvent::Segment { .. })
+    }
 }
 
 /// One DASH adaptation set (audio or video) exposed as a broadcast stream.
@@ -122,5 +192,35 @@ impl PlayerOutputs {
     /// Prefer [`Self::run`] when the caller owns concurrency and wants a single task.
     pub fn spawn(self) -> JoinHandle<Result<(), PlayerError>> {
         tokio::spawn(async move { self.run().await })
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn terminal_and_fragment_classification() {
+        assert!(PlayerEvent::End.is_terminal());
+        assert!(PlayerEvent::PlaybackEnded.is_terminal());
+        assert!(PlayerEvent::Error(PlayerEventError("fail".into())).is_terminal());
+        assert!(
+            !PlayerEvent::ManifestLoaded {
+                is_dynamic: false,
+                media_presentation_duration: None,
+            }
+            .is_terminal()
+        );
+        assert!(PlayerEvent::Init(Bytes::new()).is_fragment());
+        assert!(
+            PlayerEvent::Segment {
+                number: 1,
+                time: 0,
+                sub_number: None,
+                data: Bytes::new(),
+            }
+            .is_fragment()
+        );
+        assert!(!PlayerEvent::BufferUpdated { buffer_s: 1.0 }.is_fragment());
     }
 }

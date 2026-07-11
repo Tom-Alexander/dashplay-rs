@@ -21,7 +21,11 @@
 //!                 // decode, then report buffered seconds ahead of the playhead
 //!                 let _ = buffer.report(4.0);
 //!             }
-//!             PlayerEvent::End => break,
+//!             PlayerEvent::BufferUpdated { .. }
+//!             | PlayerEvent::BitrateChanged { .. }
+//!             | PlayerEvent::ManifestLoaded { .. }
+//!             | PlayerEvent::PlaybackStarted => {}
+//!             PlayerEvent::End | PlayerEvent::PlaybackEnded | PlayerEvent::Error(_) => break,
 //!         }
 //!     }
 //! }
@@ -64,7 +68,9 @@ pub use player::{
     Player, PlayerMergedAsyncRead, PlayerMergedOutput, PlayerTrackOutput, PlayerTrackOutputs,
 };
 pub use track_selection::{TrackDescriptor, TrackInfo, TrackKind, TrackPreference, TrackSelection};
-pub use types::{BufferFeedback, BufferFeedbackError, PlayerEvent, PlayerOutputs, PlayerTrack};
+pub use types::{
+    BufferFeedback, BufferFeedbackError, PlayerEvent, PlayerEventError, PlayerOutputs, PlayerTrack,
+};
 
 use crate::drm::LicenseError;
 use crate::drm::mp4::Mp4DrmError;

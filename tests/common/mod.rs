@@ -485,8 +485,8 @@ pub async fn collect_events(
         }
 
         match tokio::time::timeout(remaining, rx.recv()).await {
-            Ok(Ok(dashplayrs::PlayerEvent::End)) => {
-                events.push(dashplayrs::PlayerEvent::End);
+            Ok(Ok(ev)) if ev.is_terminal() => {
+                events.push(ev);
                 break;
             }
             Ok(Ok(ev)) => events.push(ev),
@@ -496,6 +496,25 @@ pub async fn collect_events(
     }
 
     events
+}
+
+/// Receive the next event matching `pred`, skipping others until `timeout` elapses.
+pub async fn recv_matching(
+    rx: &mut tokio::sync::broadcast::Receiver<dashplayrs::PlayerEvent>,
+    timeout: std::time::Duration,
+    mut pred: impl FnMut(&dashplayrs::PlayerEvent) -> bool,
+) -> Option<dashplayrs::PlayerEvent> {
+    let deadline = tokio::time::Instant::now() + timeout;
+    while tokio::time::Instant::now() < deadline {
+        let remaining = deadline.saturating_duration_since(tokio::time::Instant::now());
+        match tokio::time::timeout(remaining, rx.recv()).await {
+            Ok(Ok(ev)) if pred(&ev) => return Some(ev),
+            Ok(Ok(_)) => continue,
+            Ok(Err(_)) => return None,
+            Err(_) => return None,
+        }
+    }
+    None
 }
 
 /// Simulates 1× playback consumption by draining buffer occupancy over wall-clock time.
@@ -633,9 +652,7 @@ pub fn trim_payload(bytes: &[u8]) -> Vec<u8> {
 }
 
 pub fn has_end(events: &[dashplayrs::PlayerEvent]) -> bool {
-    events
-        .iter()
-        .any(|ev| matches!(ev, dashplayrs::PlayerEvent::End))
+    events.iter().any(|ev| ev.is_terminal())
 }
 
 pub fn segment_numbers(events: &[dashplayrs::PlayerEvent]) -> Vec<u64> {

@@ -339,17 +339,24 @@ async fn track_subscription_helpers_expose_receivers() {
     assert_eq!(outputs.track_count(), 1);
 
     let mut subscribe_rx = outputs.subscribe(0).expect("track");
-    let first = tokio::time::timeout(TIMEOUT, subscribe_rx.recv())
-        .await
-        .expect("init from subscribe")
-        .expect("event");
+    let first = common::recv_matching(&mut subscribe_rx, TIMEOUT, |ev| {
+        matches!(ev, dashplayrs::PlayerEvent::Init(_))
+    })
+    .await
+    .expect("init from subscribe");
     assert!(
         matches!(first, dashplayrs::PlayerEvent::Init(_)),
         "subscribe should receive init"
     );
 
     let track_out = outputs.tracks.first().expect("one track output");
-    let next_from_stream = tokio::time::timeout(TIMEOUT, track_out.events().next())
+    let mut segment_stream = track_out.events().filter(|res| {
+        futures::future::ready(match res {
+            Ok(ev) => matches!(ev, dashplayrs::PlayerEvent::Segment { .. }),
+            Err(_) => false,
+        })
+    });
+    let next_from_stream = tokio::time::timeout(TIMEOUT, segment_stream.next())
         .await
         .expect("segment from events stream")
         .expect("stream item")
@@ -366,7 +373,7 @@ async fn track_subscription_helpers_expose_receivers() {
         .await
         .ok()
         .and_then(Result::ok)
-        .is_some_and(|ev| !matches!(ev, dashplayrs::PlayerEvent::End))
+        .is_some_and(|ev| !ev.is_terminal())
     {}
 
     outputs.join.await.unwrap().expect("join");
@@ -374,20 +381,21 @@ async fn track_subscription_helpers_expose_receivers() {
 
 #[tokio::test]
 async fn track_metrics_collect_playback_observations() {
+    use common::recv_matching;
+    use dashplayrs::PlayerEvent;
+
     let server = FixtureServer::spawn("vod_single").await;
     let player = dashplayrs::Player::new(server.manifest_url.as_str(), None).expect("player");
     let outputs = player.start_tracks().await.expect("start");
     let metrics = outputs.metrics(0).expect("track metrics");
 
     let mut rx = outputs.subscribe(0).expect("track");
-    let _ = tokio::time::timeout(TIMEOUT, rx.recv())
+    let _ = recv_matching(&mut rx, TIMEOUT, |ev| matches!(ev, PlayerEvent::Init(_)))
         .await
-        .expect("init")
-        .expect("event");
-    let _ = tokio::time::timeout(TIMEOUT, rx.recv())
+        .expect("init");
+    let _ = recv_matching(&mut rx, TIMEOUT, |ev| matches!(ev, PlayerEvent::Segment { .. }))
         .await
-        .expect("segment")
-        .expect("event");
+        .expect("segment");
 
     if let Some(feedback) = outputs.buffer_feedback(0) {
         let _ = feedback.report(25.0);
@@ -398,7 +406,7 @@ async fn track_metrics_collect_playback_observations() {
         .await
         .ok()
         .and_then(Result::ok)
-        .is_some_and(|ev| !matches!(ev, dashplayrs::PlayerEvent::End))
+        .is_some_and(|ev| !ev.is_terminal())
     {}
 
     outputs.join.await.unwrap().expect("join");
@@ -409,4 +417,67 @@ async fn track_metrics_collect_playback_observations() {
     assert!(snap.throughput_bps > 0.0);
     assert!(!snap.buffer_history.is_empty());
     assert_eq!(snap.rebuffer_events.len(), 1);
+}
+
+#[tokio::test]
+async fn richer_lifecycle_events_are_emitted() {
+    use common::recv_matching;
+    use dashplayrs::PlayerEvent;
+
+    let server = FixtureServer::spawn("vod_single").await;
+    let player = dashplayrs::Player::new(server.manifest_url.as_str(), None).expect("player");
+    let outputs = player.start_tracks().await.expect("start");
+    let mut rx = outputs.subscribe(0).expect("track");
+
+    let manifest_loaded = recv_matching(&mut rx, TIMEOUT, |ev| {
+        matches!(ev, PlayerEvent::ManifestLoaded { .. })
+    })
+    .await
+    .expect("manifest loaded");
+    assert!(
+        matches!(
+            manifest_loaded,
+            PlayerEvent::ManifestLoaded {
+                is_dynamic: false,
+                media_presentation_duration: Some(_),
+            }
+        ),
+        "expected static VOD manifest metadata"
+    );
+
+    let _ = recv_matching(&mut rx, TIMEOUT, |ev| matches!(ev, PlayerEvent::Init(_)))
+        .await
+        .expect("init");
+
+    if let Some(feedback) = outputs.buffer_feedback(0) {
+        let buffer_updated = recv_matching(&mut rx, TIMEOUT, |ev| {
+            matches!(ev, PlayerEvent::BufferUpdated { buffer_s: 12.0 })
+        });
+        feedback.report(12.0).expect("buffer report");
+        assert!(
+            buffer_updated.await.is_some(),
+            "buffer feedback should emit BufferUpdated"
+        );
+    }
+
+    let _ = recv_matching(&mut rx, TIMEOUT, |ev| {
+        matches!(ev, PlayerEvent::PlaybackStarted)
+    })
+    .await
+    .expect("playback started");
+
+    let _ = recv_matching(&mut rx, TIMEOUT, |ev| {
+        matches!(ev, PlayerEvent::PlaybackEnded)
+    })
+    .await
+    .expect("playback ended");
+
+    assert!(
+        recv_matching(&mut rx, TIMEOUT, |ev| matches!(ev, PlayerEvent::End))
+            .await
+            .is_some(),
+        "expected End after PlaybackEnded"
+    );
+
+    outputs.join.await.unwrap().expect("join");
 }

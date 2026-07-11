@@ -80,8 +80,10 @@ impl MediaPlayer {
     /// Subscribe to **every** `outputs.tracks[i]` you care about before relying on delivery:
     /// each adaptation set runs in parallel, and a broadcast with no receivers drops events.
     ///
-    /// Each receiver sees `PlayerEvent::Init` then `PlayerEvent::Segment`, then
-    /// `PlayerEvent::End` when the manifest window is exhausted (no `minimumUpdatePeriod`
+    /// Each receiver sees lifecycle events ([`PlayerEvent::ManifestLoaded`], [`PlayerEvent::BufferUpdated`],
+    /// [`PlayerEvent::BitrateChanged`], [`PlayerEvent::PlaybackStarted`]/[`PlayerEvent::PlaybackEnded`],
+    /// [`PlayerEvent::Error`]) plus [`PlayerEvent::Init`] then [`PlayerEvent::Segment`], then
+    /// [`PlayerEvent::End`] when the manifest window is exhausted (no `minimumUpdatePeriod`
     /// refresh). For live manifests, `End` is not sent until the controller stops.
     /// Drop all `Sender`s after the loop finishes if you need `RecvError::Closed`.
     pub async fn start(mut self) -> Result<PlayerOutputs, PlayerError> {
@@ -106,8 +108,8 @@ impl MediaPlayer {
             tracks.push(super::types::PlayerTrack {
                 mime_type: selected.info.mime_type.clone(),
                 info: selected.info,
-                tx,
-                buffer_feedback: super::types::BufferFeedback::new(buffer_tx, metrics.clone()),
+                tx: tx.clone(),
+                buffer_feedback: super::types::BufferFeedback::new(buffer_tx, metrics.clone(), tx),
                 buffer_rx,
                 metrics,
             });

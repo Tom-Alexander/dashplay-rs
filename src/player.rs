@@ -79,7 +79,10 @@ impl Player {
                                     break;
                                 }
                             }
-                            Ok(PlayerEvent::End) => break,
+                            Ok(PlayerEvent::End)
+                            | Ok(PlayerEvent::PlaybackEnded)
+                            | Ok(PlayerEvent::Error(_)) => break,
+                            Ok(_) => {}
                             Err(broadcast::error::RecvError::Lagged(_)) => continue,
                             Err(broadcast::error::RecvError::Closed) => break,
                         }

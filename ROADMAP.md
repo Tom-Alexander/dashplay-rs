@@ -84,7 +84,7 @@ These close the largest gaps between "delivers some streams" and "handles confor
 
 - [x] **Metrics API.** Throughput history, buffer level, startup delay, rebuffer events,
   and bitrate-switch history (feeds ABR without influencing playback directly).
-- [ ] **Richer event model.** Add `ManifestLoaded`, `BufferUpdated`, `BitrateChanged`,
+- [x] **Richer event model.** Add `ManifestLoaded`, `BufferUpdated`, `BitrateChanged`,
   `PlaybackStarted`/`Ended`, and error events alongside the current fragment events.
 - [ ] **Pluggable HTTP client.** Abstract networking behind a trait so `reqwest` is one
   of several backends (WASM/browser fetch, custom TLS, embedded stacks).

@@ -77,6 +77,13 @@ impl PlaybackLoopState {
                     .minimumUpdatePeriod
                     .unwrap_or(std::time::Duration::ZERO);
 
+                for t in &tracks {
+                    let _ = t.tx.send(PlayerEvent::ManifestLoaded {
+                        is_dynamic: manifest::is_dynamic_mpd(mpd_ref),
+                        media_presentation_duration: mpd_ref.mediaPresentationDuration,
+                    });
+                }
+
                 let is_dynamic = manifest::is_dynamic_mpd(mpd_ref);
                 let wall_now =
                     utc_timing::wall_clock_utc(&client, mpd_ref, Some(&manifest_uri)).await;
@@ -202,9 +209,7 @@ impl PlaybackLoopState {
                 }
 
                 if playback.is_stopped() {
-                    for t in &tracks {
-                        let _ = t.tx.send(PlayerEvent::End);
-                    }
+                    send_playback_ended(&tracks);
                     playback.set_state(PlaybackState::Ended);
                     break;
                 }
@@ -214,9 +219,7 @@ impl PlaybackLoopState {
                 }
 
                 if min_update.is_zero() {
-                    for t in &tracks {
-                        let _ = t.tx.send(PlayerEvent::End);
-                    }
+                    send_playback_ended(&tracks);
                     playback.set_state(PlaybackState::Ended);
                     break;
                 }
@@ -225,9 +228,7 @@ impl PlaybackLoopState {
 
                 playback.wait_while_paused().await;
                 if playback.is_stopped() {
-                    for t in &tracks {
-                        let _ = t.tx.send(PlayerEvent::End);
-                    }
+                    send_playback_ended(&tracks);
                     playback.set_state(PlaybackState::Ended);
                     break;
                 }
@@ -239,10 +240,21 @@ impl PlaybackLoopState {
         }
         .await;
 
-        if run_result.is_err() {
+        if let Err(ref err) = run_result {
+            let event_err = super::types::PlayerEventError::from(err);
+            for t in &tracks {
+                let _ = t.tx.send(PlayerEvent::Error(event_err.clone()));
+            }
             playback.mark_error();
         }
         run_result
+    }
+}
+
+fn send_playback_ended(tracks: &[super::types::PlayerTrack]) {
+    for t in tracks {
+        let _ = t.tx.send(PlayerEvent::PlaybackEnded);
+        let _ = t.tx.send(PlayerEvent::End);
     }
 }
 

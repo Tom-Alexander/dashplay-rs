@@ -178,6 +178,7 @@ pub(crate) async fn run_adaptation_stream(ctx: AdaptationStreamContext) -> Resul
 
     let mut sidx_segments_by_rep: HashMap<String, Vec<manifest::TimelineSegment>> = HashMap::new();
     let mut last_quality_index = metrics.last_quality_index();
+    let mut playback_started_emitted = false;
 
     for (local_idx, seg) in segments.into_iter().enumerate() {
         playback.wait_while_paused().await;
@@ -217,12 +218,20 @@ pub(crate) async fn run_adaptation_stream(ctx: AdaptationStreamContext) -> Resul
         metrics.record_throughput(throughput_bps, bytes.len(), download_duration);
         if let Some(prev_q) = last_quality_index {
             if prev_q != used_quality_index {
+                let from_bitrate_bps = abr.bitrate_bps_for_quality_index(prev_q);
+                let to_bitrate_bps = abr.bitrate_bps_for_quality_index(used_quality_index);
                 metrics.record_bitrate_switch(
                     prev_q,
                     used_quality_index,
-                    abr.bitrate_bps_for_quality_index(prev_q),
-                    abr.bitrate_bps_for_quality_index(used_quality_index),
+                    from_bitrate_bps,
+                    to_bitrate_bps,
                 );
+                let _ = tx.send(PlayerEvent::BitrateChanged {
+                    from_quality_index: prev_q,
+                    to_quality_index: used_quality_index,
+                    from_bitrate_bps,
+                    to_bitrate_bps,
+                });
             }
         } else {
             metrics.set_quality_index(used_quality_index);
@@ -275,6 +284,11 @@ pub(crate) async fn run_adaptation_stream(ctx: AdaptationStreamContext) -> Resul
             data,
         });
         metrics.record_segment_delivered();
+
+        if !playback_started_emitted {
+            let _ = tx.send(PlayerEvent::PlaybackStarted);
+            playback_started_emitted = true;
+        }
 
         if playback.state() != PlaybackState::Playing {
             playback.set_state(PlaybackState::Playing);

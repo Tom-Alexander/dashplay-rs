@@ -165,10 +165,7 @@ impl TrackMetrics {
             let elapsed = inner.elapsed();
             push_bounded(
                 &mut inner.buffer_history,
-                BufferSample {
-                    elapsed,
-                    buffer_s,
-                },
+                BufferSample { elapsed, buffer_s },
             );
 
             if inner.has_delivered_segment {
@@ -177,10 +174,7 @@ impl TrackMetrics {
                 } else if inner.was_buffer_healthy {
                     push_bounded(
                         &mut inner.rebuffer_events,
-                        RebufferEvent {
-                            elapsed,
-                            buffer_s,
-                        },
+                        RebufferEvent { elapsed, buffer_s },
                     );
                     inner.was_buffer_healthy = false;
                 }

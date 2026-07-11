@@ -2,7 +2,7 @@ mod common;
 
 use std::time::Duration;
 
-use common::{FixtureServer, init_payload, segment_payloads};
+use common::{FixtureServer, init_payload, recv_matching, segment_payloads};
 use dashplayrs::{PlaybackState, PlayerEvent};
 
 const TIMEOUT: Duration = Duration::from_secs(10);
@@ -25,11 +25,15 @@ async fn stop_halts_segment_delivery() {
     let mut rx = outputs.subscribe(0).expect("one track");
 
     assert!(matches!(
-        recv_event(&mut rx, TIMEOUT).await,
+        recv_matching(&mut rx, TIMEOUT, |ev| matches!(ev, PlayerEvent::Init(_))).await,
         Some(PlayerEvent::Init(_))
     ));
     assert!(matches!(
-        recv_event(&mut rx, TIMEOUT).await,
+        recv_matching(&mut rx, TIMEOUT, |ev| matches!(
+            ev,
+            PlayerEvent::Segment { .. }
+        ))
+        .await,
         Some(PlayerEvent::Segment { .. })
     ));
 
@@ -58,7 +62,7 @@ async fn pause_and_resume_delay_delivery() {
     let mut rx = outputs.subscribe(0).expect("one track");
 
     assert!(matches!(
-        recv_event(&mut rx, TIMEOUT).await,
+        recv_matching(&mut rx, TIMEOUT, |ev| matches!(ev, PlayerEvent::Init(_))).await,
         Some(PlayerEvent::Init(_))
     ));
     assert_eq!(outputs.playback_state(), PlaybackState::Paused);
@@ -94,11 +98,16 @@ async fn seek_repositions_to_later_segment() {
     let mut rx = outputs.subscribe(0).expect("one track");
 
     assert!(matches!(
-        recv_event(&mut rx, TIMEOUT).await,
+        recv_matching(&mut rx, TIMEOUT, |ev| matches!(ev, PlayerEvent::Init(_))).await,
         Some(PlayerEvent::Init(_))
     ));
     assert_eq!(
-        segment_payloads(&[recv_event(&mut rx, TIMEOUT).await.expect("segment")]),
+        segment_payloads(&[recv_matching(&mut rx, TIMEOUT, |ev| matches!(
+            ev,
+            PlayerEvent::Segment { .. }
+        ))
+        .await
+        .expect("segment")]),
         vec![b"dashplay-time-0".to_vec()]
     );
 

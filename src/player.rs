@@ -203,6 +203,16 @@ impl PlayerTrackOutputs {
         self.playback.subscribe_state()
     }
 
+    /// Current presentation time (seconds from the start of the presentation).
+    pub fn presentation_time(&self) -> Option<std::time::Duration> {
+        self.playback.presentation_time()
+    }
+
+    /// Watch presentation time updates.
+    pub fn subscribe_presentation_time(&self) -> watch::Receiver<Option<std::time::Duration>> {
+        self.playback.subscribe_presentation_time()
+    }
+
     /// Suspend segment delivery until [`Self::resume`].
     pub fn pause(&self) -> Result<(), PlaybackControlError> {
         self.playback.pause()

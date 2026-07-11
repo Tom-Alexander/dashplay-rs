@@ -107,6 +107,12 @@ impl PlaybackLoopState {
 
                 if let Some(seek) = playback.take_seek_target() {
                     seek_target_override = Some(seek);
+                    let playhead = playback.presentation_time();
+                    for t in &tracks {
+                        let _ = t.tx.send(PlayerEvent::PlayheadUpdated {
+                            presentation_time: playhead,
+                        });
+                    }
                 }
 
                 let period_windows = manifest::period_windows(mpd_ref)?;

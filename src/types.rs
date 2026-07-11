@@ -96,6 +96,11 @@ pub enum PlayerEvent {
         /// Seconds of media buffered ahead of the playhead.
         buffer_s: f64,
     },
+    /// Session presentation time changed (delivery frontier or seek target).
+    PlayheadUpdated {
+        /// Seconds from the start of the presentation; `None` before the first segment.
+        presentation_time: Option<Duration>,
+    },
     /// The active representation changed on the adaptation ladder.
     BitrateChanged {
         from_quality_index: usize,
@@ -116,6 +121,8 @@ pub enum PlayerEvent {
     Segment {
         number: u64,
         time: u64,
+        /// Presentation time of this segment (seconds from the start of the presentation).
+        presentation_time: Duration,
         /// Set when `SegmentTimeline/S@k` > 1 (ISO 23009-1 §5.3.9.6.4); 1-based chunk within the sequence.
         sub_number: Option<u64>,
         /// Progressive low-latency delivery when `@availabilityTimeComplete=false`.
@@ -230,6 +237,7 @@ mod tests {
             PlayerEvent::Segment {
                 number: 1,
                 time: 0,
+                presentation_time: Duration::ZERO,
                 sub_number: None,
                 partial: None,
                 data: Bytes::new(),

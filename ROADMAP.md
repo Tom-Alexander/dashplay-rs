@@ -13,8 +13,6 @@ reliability → maintainability → performance → API ergonomics**.
 
 Status legend: `[ ]` not started · `[~]` partial · `[x]` done · `[—]` out of scope.
 
-Detailed rationale and spec references for backlog items are in [`UNSUPPORTED.md`](UNSUPPORTED.md).
-
 ---
 
 ## Current status
@@ -194,7 +192,7 @@ These close the largest gaps between "delivers some streams" and "handles confor
 - [ ] **Automatic stall detection.** Detect rebuffer without requiring consumer
   `BufferFeedback::report`.
 - [~] **Pause semantics.** Buffer drain signalling; optional in-flight download cancellation.
-- [ ] **Playhead API.** Track and expose current presentation time.
+- [x] **Playhead API.** Track and expose current presentation time.
 - [~] **Live DVR seek.** Expand seek bounds and window handling beyond resolved timeline.
 - [ ] **Dynamic MPD static-duration semantics.** `@type="dynamic"` with static presentation
   duration behaviour.

@@ -140,6 +140,68 @@ async fn seek_repositions_to_later_segment() {
 }
 
 #[tokio::test]
+async fn presentation_time_tracks_delivery_and_seek() {
+    let server = FixtureServer::spawn("vod_time").await;
+    let player = dashplayrs::Player::new(server.manifest_url.as_str(), None).expect("player");
+    let outputs = player.start_tracks().await.expect("start");
+    let mut rx = outputs.subscribe(0).expect("one track");
+
+    assert!(matches!(
+        recv_matching(&mut rx, TIMEOUT, |ev| matches!(ev, PlayerEvent::Init(_))).await,
+        Some(PlayerEvent::Init(_))
+    ));
+    assert!(matches!(
+        recv_matching(&mut rx, TIMEOUT, |ev| matches!(
+            ev,
+            PlayerEvent::Segment { .. }
+        ))
+        .await,
+        Some(PlayerEvent::Segment { .. })
+    ));
+    assert_eq!(
+        outputs.presentation_time(),
+        Some(Duration::from_secs(0)),
+        "first segment starts at t=0"
+    );
+
+    outputs.seek(Duration::from_secs(5)).expect("seek");
+    assert_eq!(
+        outputs.presentation_time(),
+        Some(Duration::from_secs(5)),
+        "seek target is exposed immediately"
+    );
+
+    let mut saw_playhead_event = false;
+    let deadline = tokio::time::Instant::now() + TIMEOUT;
+    while tokio::time::Instant::now() < deadline {
+        if let Some(ev) = recv_event(&mut rx, Duration::from_millis(500)).await {
+            if matches!(
+                ev,
+                PlayerEvent::PlayheadUpdated {
+                    presentation_time: Some(t),
+                } if t == Duration::from_secs(4)
+            ) {
+                saw_playhead_event = true;
+            }
+            if matches!(ev, PlayerEvent::End) {
+                break;
+            }
+        }
+    }
+    assert_eq!(
+        outputs.presentation_time(),
+        Some(Duration::from_secs(4)),
+        "after SAP-aligned delivery, playhead follows segment start"
+    );
+    assert!(
+        saw_playhead_event,
+        "expected PlayheadUpdated when delivery realigns playhead"
+    );
+
+    outputs.join.await.unwrap().expect("join");
+}
+
+#[tokio::test]
 async fn control_errors_when_stopped() {
     let server = FixtureServer::spawn("vod_single").await;
     let player = dashplayrs::Player::new(server.manifest_url.as_str(), None).expect("player");

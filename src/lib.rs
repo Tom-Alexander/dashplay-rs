@@ -25,6 +25,7 @@
 //!             | PlayerEvent::BitrateChanged { .. }
 //!             | PlayerEvent::ManifestLoaded { .. }
 //!             | PlayerEvent::PlaybackStarted
+//!             | PlayerEvent::PlayheadUpdated { .. }
 //!             | PlayerEvent::MediaEvent(_) => {}
 //!             PlayerEvent::End | PlayerEvent::PlaybackEnded | PlayerEvent::Error(_) => break,
 //!         }

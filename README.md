@@ -438,9 +438,10 @@ Events emitted on a single adaptation-set stream. **Fragment** events carry medi
 | Variant | Kind | Payload / meaning |
 |---------|------|-------------------|
 | `Init(Bytes)` | Fragment | Initialization segment when declared (`ftyp` + `moov`, TTML header, fMP4 text init, etc.) |
-| `Segment { number, time, sub_number, data }` | Fragment | Media segment; `sub_number` is set when `SegmentTimeline/S@k` > 1 |
+| `Segment { number, time, presentation_time, sub_number, data }` | Fragment | Media segment; `presentation_time` is seconds from the start of the presentation |
 | `ManifestLoaded { is_dynamic, media_presentation_duration }` | Lifecycle | An MPD was fetched and parsed (initial load or live refresh) |
 | `BufferUpdated { buffer_s }` | Observability | Consumer-reported buffer occupancy changed (emitted by [`BufferFeedback::report`](#bufferfeedback)) |
+| `PlayheadUpdated { presentation_time }` | Observability | Session presentation time changed (delivery frontier or seek target) |
 | `BitrateChanged { from_quality_index, to_quality_index, from_bitrate_bps, to_bitrate_bps }` | Observability | The active representation changed on the ladder |
 | `PlaybackStarted` | Lifecycle | First media segment delivered for this adaptation set |
 | `PlaybackEnded` | Lifecycle | Playback finished (VOD end, stop, or bounded window); precedes `End` |
@@ -580,6 +581,7 @@ Returned by [`Player::start_tracks`](#player):
 | `join` | Background task running the stream controller loop |
 | `pause` / `resume` / `seek` / `stop` | Playback control (delegates to `playback`) |
 | `playback_state` / `subscribe_playback_state` | Current or watched [`PlaybackState`](#playbackstate) |
+| `presentation_time` / `subscribe_presentation_time` | Current or watched session presentation time |
 | `buffer_feedback(idx)` | [`BufferFeedback`](#bufferfeedback) for a track index |
 | `metrics(idx)` | [`TrackMetrics`](#metrics) for a track index |
 | `subscribe(idx)` | Subscribe to a track's broadcast channel |
@@ -611,6 +613,8 @@ the same session.
 | `pause()` | Suspend segment delivery until `resume` |
 | `resume()` | Resume delivery after `pause` |
 | `seek(presentation_time)` | Seek to a presentation time ([`Duration`](https://doc.rust-lang.org/std/time/struct.Duration.html) from the start of the presentation) |
+| `presentation_time()` | Current session presentation time; `None` before the first segment is delivered |
+| `subscribe_presentation_time()` | Watch presentation time updates (delivery frontier or pending seek target) |
 | `stop()` | Stop playback; no further segments are delivered |
 | `state()` | Current [`PlaybackState`](#playbackstate) |
 | `subscribe_state()` | Watch lifecycle state transitions |

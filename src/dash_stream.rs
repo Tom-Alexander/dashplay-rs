@@ -322,6 +322,8 @@ pub(crate) async fn run_adaptation_stream(ctx: AdaptationStreamContext) -> Resul
                     &seg_for_fetch,
                     data,
                     partial,
+                    period_start,
+                    track_idx,
                     &mut playback_started_emitted,
                     &playback,
                     &inband_prt_anchor,
@@ -409,6 +411,8 @@ pub(crate) async fn run_adaptation_stream(ctx: AdaptationStreamContext) -> Resul
             &seg_for_fetch,
             data,
             None,
+            period_start,
+            track_idx,
             &mut playback_started_emitted,
             &playback,
             &inband_prt_anchor,
@@ -442,6 +446,8 @@ fn emit_segment(
     seg: &manifest::TimelineSegment,
     data: Bytes,
     partial: Option<PartialSegmentChunk>,
+    period_start: Duration,
+    track_idx: usize,
     playback_started_emitted: &mut bool,
     playback: &PlaybackController,
     inband_prt_anchor: &Arc<Mutex<Option<ProducerReferenceAnchor>>>,
@@ -467,13 +473,21 @@ fn emit_segment(
         let _ = tx.send(PlayerEvent::MediaEvent(event));
     }
 
+    let presentation_time = segment_presentation_time(period_start, seg);
+
     let _ = tx.send(PlayerEvent::Segment {
         number: seg.number,
         time: seg.time,
+        presentation_time,
         sub_number: seg.sub_number,
         partial,
         data,
     });
+    if playback.record_segment_delivery(track_idx, presentation_time) {
+        let _ = tx.send(PlayerEvent::PlayheadUpdated {
+            presentation_time: playback.presentation_time(),
+        });
+    }
     metrics.record_segment_delivered();
 
     if !*playback_started_emitted {
@@ -484,6 +498,10 @@ fn emit_segment(
     if playback.state() != PlaybackState::Playing {
         playback.set_state(PlaybackState::Playing);
     }
+}
+
+fn segment_presentation_time(period_start: Duration, seg: &manifest::TimelineSegment) -> Duration {
+    period_start + Duration::from_secs_f64(seg.presentation_time_s.max(0.0))
 }
 
 #[allow(clippy::too_many_arguments)]

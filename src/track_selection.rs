@@ -2,6 +2,8 @@
 
 use dash_mpd::{AdaptationSet, Period};
 
+use super::descriptors::{adaptation_descriptor_metadata, is_playback_adaptation_set};
+
 /// The media kind carried by a selected DASH adaptation set.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum TrackKind {
@@ -133,6 +135,10 @@ pub struct TrackInfo {
     pub codecs: Vec<String>,
     /// DASH accessibility descriptors as `(schemeIdUri, value)` pairs.
     pub accessibility: Vec<TrackDescriptor>,
+    /// `EssentialProperty` descriptors aggregated from the adaptation set and its children.
+    pub essential_properties: Vec<TrackDescriptor>,
+    /// `SupplementalProperty` descriptors aggregated from the adaptation set and its children.
+    pub supplemental_properties: Vec<TrackDescriptor>,
 }
 
 pub(crate) struct SelectedAdaptationSet<'a> {
@@ -204,28 +210,45 @@ fn codec_values(adaptation_set: &AdaptationSet) -> Vec<String> {
     codecs
 }
 
+fn role_values(adaptation_set: &AdaptationSet, supplemental_roles: &[String]) -> Vec<String> {
+    let mut roles: Vec<String> = adaptation_set
+        .Role
+        .iter()
+        .chain(
+            adaptation_set
+                .ContentComponent
+                .iter()
+                .flat_map(|component| component.Role.iter()),
+        )
+        .filter_map(|role| role.value.clone())
+        .collect();
+
+    for role in supplemental_roles {
+        if !roles
+            .iter()
+            .any(|existing| existing.eq_ignore_ascii_case(role))
+        {
+            roles.push(role.clone());
+        }
+    }
+    roles
+}
+
 fn track_info(
     adaptation_set: &AdaptationSet,
     period_adaptation_index: usize,
     kind: TrackKind,
 ) -> TrackInfo {
+    let (essential_properties, supplemental_properties, supplemental_roles) =
+        adaptation_descriptor_metadata(adaptation_set);
+
     TrackInfo {
         period_adaptation_index,
         id: adaptation_set.id.clone(),
         kind,
         mime_type: effective_mime_type(adaptation_set),
         language: effective_language(adaptation_set),
-        roles: adaptation_set
-            .Role
-            .iter()
-            .chain(
-                adaptation_set
-                    .ContentComponent
-                    .iter()
-                    .flat_map(|component| component.Role.iter()),
-            )
-            .filter_map(|role| role.value.clone())
-            .collect(),
+        roles: role_values(adaptation_set, &supplemental_roles),
         codecs: codec_values(adaptation_set),
         accessibility: adaptation_set
             .Accessibility
@@ -241,6 +264,8 @@ fn track_info(
                 value: descriptor.value.clone(),
             })
             .collect(),
+        essential_properties,
+        supplemental_properties,
     }
 }
 
@@ -335,6 +360,9 @@ pub(crate) fn select_adaptation_sets<'a>(
     let mut video = Vec::new();
 
     for (document_index, adaptation_set) in period.adaptations.iter().enumerate() {
+        if !is_playback_adaptation_set(adaptation_set) {
+            continue;
+        }
         let Some(kind) = track_kind(adaptation_set) else {
             continue;
         };
@@ -464,6 +492,48 @@ mod tests {
         assert_eq!(selected.len(), 1);
         assert_eq!(selected[0].info.id.as_deref(), Some("video"));
         assert_eq!(selected[0].info.period_adaptation_index, 1);
+    }
+
+    #[test]
+    fn trick_mode_adaptation_set_is_excluded_by_default() {
+        let period = period(
+            r#"<MPD><Period>
+                <AdaptationSet id="main" contentType="video" mimeType="video/mp4"/>
+                <AdaptationSet id="trick" contentType="video" mimeType="video/mp4">
+                  <EssentialProperty schemeIdUri="http://dashif.org/guidelines/trickmode" value="1"/>
+                </AdaptationSet>
+            </Period></MPD>"#,
+        );
+
+        let selected = select_adaptation_sets(&period, &TrackSelection::default());
+        assert_eq!(
+            selected
+                .iter()
+                .map(|track| track.info.id.as_deref())
+                .collect::<Vec<_>>(),
+            vec![Some("main")]
+        );
+    }
+
+    #[test]
+    fn supplemental_role_descriptor_is_used_for_selection() {
+        let period = period(
+            r#"<MPD><Period>
+                <AdaptationSet id="dub" contentType="audio" lang="en">
+                  <SupplementalProperty schemeIdUri="urn:mpeg:dash:role:2011" value="dub"/>
+                </AdaptationSet>
+                <AdaptationSet id="main" contentType="audio" lang="en">
+                  <Role schemeIdUri="urn:mpeg:dash:role:2011" value="main"/>
+                </AdaptationSet>
+            </Period></MPD>"#,
+        );
+        let audio = TrackPreference::default().role("dub").max_tracks(1);
+
+        let selected =
+            select_adaptation_sets(&period, &TrackSelection::default().with_audio(audio));
+        assert_eq!(selected.len(), 1);
+        assert_eq!(selected[0].info.id.as_deref(), Some("dub"));
+        assert_eq!(selected[0].info.roles, vec!["dub"]);
     }
 
     #[test]

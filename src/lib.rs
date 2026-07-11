@@ -40,6 +40,7 @@ mod abr_controller;
 pub mod bola;
 mod dash_stream;
 mod delivered_segments;
+mod descriptors;
 pub mod drm;
 mod manifest;
 mod media_player;

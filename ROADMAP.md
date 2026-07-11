@@ -77,7 +77,7 @@ These close the largest gaps between "delivers some streams" and "handles confor
 - [ ] **Subtitles / captions.** `text/vtt`, TTML, and in-band caption tracks.
 - [ ] **Thumbnails / trick-play.** Image adaptation sets (`image/jpeg`) and trick-play
   tracks.
-- [ ] **EssentialProperty / SupplementalProperty.** Respect descriptors for codec/scheme
+- [x] **EssentialProperty / SupplementalProperty.** Respect descriptors for codec/scheme
   compatibility and role signalling.
 
 ## P3 — Observability and extensibility

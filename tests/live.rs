@@ -1,9 +1,9 @@
 mod common;
 
 use common::{
-    AdvancingLiveServer, FixtureServer, PartialLiveServer, assert_no_duplicate_segments, has_end,
-    init_payload, init_payloads, partial_segment_payloads, play_single_track_live, segment_numbers,
-    segment_payloads,
+    AdvancingLiveServer, FixtureServer, PartialLiveServer, ProducerReferenceLiveServer,
+    assert_no_duplicate_segments, has_end, init_payload, init_payloads, partial_segment_payloads,
+    play_single_track_live, segment_numbers, segment_payloads,
 };
 
 const LIVE_TIMEOUT: std::time::Duration = std::time::Duration::from_millis(800);
@@ -142,6 +142,36 @@ async fn live_multi_period_transition_re_emits_init() {
             .any(|seg| seg.starts_with(b"dashplay-period2-seg-")),
         "expected period-2 segments after manifest refresh, got {segments:?}"
     );
+    assert!(!has_end(&events));
+}
+
+#[tokio::test]
+async fn live_producer_reference_time_overrides_utc_timing_for_window() {
+    let server = ProducerReferenceLiveServer::spawn().await;
+    let events = play_single_track_live(&server.manifest_url, LIVE_TIMEOUT)
+        .await
+        .expect("playback");
+
+    assert_eq!(
+        init_payload(&events).as_deref(),
+        Some(b"dashplay-init-v1".as_ref())
+    );
+    let segments = segment_payloads(&events);
+    assert!(
+        segments.len() >= 2,
+        "expected live segments, got {segments:?}"
+    );
+    // UTCTiming alone (20s since AST) would start at seg-5/seg-6; PRT anchor (4s media) starts earlier.
+    assert_eq!(
+        &segments[..2],
+        [
+            b"dashplay-live-seg-1".as_ref(),
+            b"dashplay-live-seg-2".as_ref(),
+        ],
+        "live window must follow ProducerReferenceTime, not UTCTiming"
+    );
+    let numbers = segment_numbers(&events);
+    assert_eq!(&numbers[..2], [1, 2]);
     assert!(!has_end(&events));
 }
 

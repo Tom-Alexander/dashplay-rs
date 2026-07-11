@@ -100,7 +100,7 @@ These close the largest gaps between "delivers some streams" and "handles confor
   `ProducerReferenceTime@inband=true` clock correction.
 - [ ] **Mid-segment resync.** Use `Resync@type` 2/3 random-access points during seek
   and playback recovery.
-- [ ] **Producer-reference integration coverage.** Test live-window selection when
+- [x] **Producer-reference integration coverage.** Test live-window selection when
   `ProducerReferenceTime` intentionally diverges from `UTCTiming`.
 - [x] **In-band and MPD events.** `EventStream`, `emsg`, and SCTE-35 ad markers.
 - [ ] **Content steering / MPD updates.** `Location`, content steering, and MPD patch

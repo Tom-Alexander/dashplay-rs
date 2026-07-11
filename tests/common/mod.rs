@@ -305,6 +305,103 @@ fn build_cmaf_chunk(payload: &[u8]) -> Vec<u8> {
 }
 
 #[derive(Clone)]
+struct ProducerReferenceLiveState {
+    files: Arc<HashMap<String, Vec<u8>>>,
+}
+
+/// Dynamic live server where `ProducerReferenceTime` intentionally diverges from `UTCTiming`.
+///
+/// `UTCTiming` reports 20s since `availabilityStartTime`, but the encoder anchor says only 4s
+/// of media have elapsed at that same wall instant — live-window selection must follow PRT.
+pub struct ProducerReferenceLiveServer {
+    pub manifest_url: Url,
+    shutdown: Option<oneshot::Sender<()>>,
+    handle: JoinHandle<()>,
+}
+
+impl ProducerReferenceLiveServer {
+    pub async fn spawn() -> Self {
+        let root = fixture_dir("live_duration");
+        let files = Arc::new(load_fixture_files(&root));
+        let state = ProducerReferenceLiveState { files };
+
+        let app = Router::new()
+            .route("/manifest.mpd", get(serve_producer_reference_live_manifest))
+            .route("/{*path}", get(serve_producer_reference_live_path))
+            .with_state(state);
+
+        let listener = tokio::net::TcpListener::bind("127.0.0.1:0")
+            .await
+            .expect("bind test server");
+        let addr = listener.local_addr().expect("local addr");
+
+        let (shutdown_tx, shutdown_rx) = oneshot::channel();
+        let handle = tokio::spawn(async move {
+            axum::serve(listener, app)
+                .with_graceful_shutdown(async move {
+                    let _ = shutdown_rx.await;
+                })
+                .await
+                .expect("serve");
+        });
+
+        let manifest_url =
+            Url::parse(&format!("http://{addr}/manifest.mpd")).expect("manifest url");
+
+        Self {
+            manifest_url,
+            shutdown: Some(shutdown_tx),
+            handle,
+        }
+    }
+}
+
+impl Drop for ProducerReferenceLiveServer {
+    fn drop(&mut self) {
+        if let Some(tx) = self.shutdown.take() {
+            let _ = tx.send(());
+        }
+        self.handle.abort();
+    }
+}
+
+async fn serve_producer_reference_live_manifest() -> Response {
+    let body = r#"<?xml version="1.0" encoding="UTF-8"?>
+<MPD xmlns="urn:mpeg:dash:schema:mpd:2011"
+     type="dynamic"
+     minimumUpdatePeriod="PT0.5S"
+     availabilityStartTime="2020-05-01T12:00:00Z"
+     timeShiftBufferDepth="PT20S"
+     suggestedPresentationDelay="PT4S"
+     minBufferTime="PT2S">
+  <UTCTiming schemeIdUri="urn:mpeg:dash:utc:direct:2014" value="2020-05-01T12:00:20Z"/>
+  <Period>
+    <AdaptationSet mimeType="video/mp4" contentType="video">
+      <SegmentTemplate timescale="1000" duration="4000" initialization="init.mp4" media="seg-$Number$.m4s" startNumber="1"/>
+      <Representation id="1" bandwidth="100000" codecs="avc1.42E01E" width="640" height="360"/>
+      <ProducerReferenceTime id="0" type="encoder" wallClockTime="2020-05-01T12:00:20Z" presentationTime="4000"/>
+    </AdaptationSet>
+  </Period>
+</MPD>
+"#;
+
+    Response::builder()
+        .status(StatusCode::OK)
+        .header("Content-Type", "application/dash+xml")
+        .body(Body::from(body))
+        .unwrap_or_else(|_| StatusCode::INTERNAL_SERVER_ERROR.into_response())
+}
+
+async fn serve_producer_reference_live_path(
+    State(state): State<ProducerReferenceLiveState>,
+    Path(path): Path<String>,
+    uri: Uri,
+    headers: axum::http::HeaderMap,
+) -> Response {
+    serve_static_path(&state.files, &path, &uri, &headers)
+}
+
+#[derive(Clone)]
 struct MultiPeriodLiveState {
     files: Arc<HashMap<String, Vec<u8>>>,
     fetch_count: Arc<AtomicUsize>,

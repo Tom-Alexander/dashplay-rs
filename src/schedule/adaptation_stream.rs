@@ -29,9 +29,10 @@ use super::segment_emit::{
     emit_segment, latest_buffer_s, partial_chunk_meta, record_quality_switch_and_throughput,
 };
 use super::segment_fetch::{
-    MediaFetchParams, RepFetchEnv, fetch_cmaf_media_with_rep_fallback,
-    fetch_init_with_rep_fallback, fetch_media_with_rep_fallback, fetch_segment_target,
+    RepFetchEnv, fetch_cmaf_media_with_rep_fallback, fetch_init_with_rep_fallback,
+    fetch_media_with_rep_fallback, fetch_segment_target,
 };
+use super::segment_plan::{SegmentPlanContext, plan_init, plan_segment};
 
 fn align_start_index_with_resync(
     segments: &[manifest::TimelineSegment],
@@ -257,17 +258,17 @@ pub(crate) async fn run_adaptation_stream(ctx: AdaptationStreamContext) -> Resul
         tx: &tx,
     };
     if init_taken {
+        let init_plan = plan_init(abr.as_mut(), latest_buffer_s(&buffer_rx));
         let init_res: Result<(), PlayerError> = async {
-            let decision = abr.decide();
             let (_, rep_id) = fetch_init_with_rep_fallback(
                 &fetch_env,
                 abr.as_ref(),
-                decision.quality_index,
+                init_plan.quality_index,
                 &mut encrypted_init_by_rep,
             )
             .await?;
             let _ = rep_id;
-            metrics.set_quality_index(decision.quality_index);
+            metrics.set_quality_index(init_plan.quality_index);
             Ok(())
         }
         .await;
@@ -298,24 +299,27 @@ pub(crate) async fn run_adaptation_stream(ctx: AdaptationStreamContext) -> Resul
 
         abr.update_buffer(latest_buffer_s(&buffer_rx));
         metrics.record_buffer(latest_buffer_s(&buffer_rx));
-        let decision = abr.decide();
-        let list_idx = segment_start_index + local_idx;
-        let set_availability = manifest::SegmentAvailability::from_addressing(&addressing);
-        let chunked = timeline_ctx.is_dynamic
-            && manifest::uses_chunked_segment_transfer(&set_availability, &seg);
+        let plan = plan_segment(
+            abr.as_mut(),
+            latest_buffer_s(&buffer_rx),
+            &seg,
+            local_idx,
+            &SegmentPlanContext {
+                segment_start_index,
+                adaptation_set: &adaptation_set,
+                addressing: &addressing,
+                timeline_ctx: &timeline_ctx,
+                cached_inits: &encrypted_init_by_rep,
+            },
+        );
 
         let t0 = Instant::now();
-        if chunked {
+        if plan.chunked {
             let (fragments, used_quality_index, seg_for_fetch) =
                 fetch_cmaf_media_with_rep_fallback(
                     &fetch_env,
                     abr.as_ref(),
-                    MediaFetchParams {
-                        start_quality_index: decision.quality_index,
-                        seg: &seg,
-                        local_idx,
-                        list_idx,
-                    },
+                    &plan,
                     &mut encrypted_init_by_rep,
                 )
                 .await?;
@@ -408,12 +412,7 @@ pub(crate) async fn run_adaptation_stream(ctx: AdaptationStreamContext) -> Resul
         let (bytes, used_quality_index, seg_for_fetch) = fetch_media_with_rep_fallback(
             &fetch_env,
             abr.as_ref(),
-            MediaFetchParams {
-                start_quality_index: decision.quality_index,
-                seg: &seg,
-                local_idx,
-                list_idx,
-            },
+            &plan,
             &mut encrypted_init_by_rep,
             &mut sidx_segments_by_rep,
             &mut per_segment_index_ranges_by_rep,

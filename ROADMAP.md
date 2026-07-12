@@ -159,7 +159,7 @@ without changing playback behaviour.
   into per-submodule `tests.rs` files (mirroring `timeline/tests.rs`).
 - [ ] **DRM renewal split.** Separate `renewal.rs` CDM protocol parsing (`kctl`, license
   policy) from session scheduling (`RenewalState`, backoff, poll timing).
-- [ ] **Scheduler / fetch separation.** Introduce a synchronous `SegmentPlan` type
+- [x] **Scheduler / fetch separation.** Introduce a synchronous `SegmentPlan` type
   (segment index, rep, init needed, byte range) produced by scheduling logic and consumed
   by fetch/decrypt/emit — prerequisite for buffer-target scheduling (P7).
 - [ ] **`TrackSessionState` consolidation.** Replace the many `Arc<Mutex<…>>` handles

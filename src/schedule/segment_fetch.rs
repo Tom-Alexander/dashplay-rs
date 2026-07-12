@@ -21,6 +21,8 @@ use crate::segment_fetcher::{
 };
 use crate::types::PlayerEvent;
 
+use super::segment_plan::SegmentPlan;
+
 pub(super) struct RepFetchEnv<'a> {
     pub(super) client: &'a SharedHttpClient,
     pub(super) segment_base_ctx: &'a manifest::SegmentBaseContext,
@@ -30,13 +32,6 @@ pub(super) struct RepFetchEnv<'a> {
     pub(super) drm: &'a Arc<AsyncMutex<DrmSessionCoordinator>>,
     pub(super) period_adaptation_index: usize,
     pub(super) tx: &'a broadcast::Sender<PlayerEvent>,
-}
-
-pub(super) struct MediaFetchParams<'a> {
-    pub(super) start_quality_index: usize,
-    pub(super) seg: &'a manifest::TimelineSegment,
-    pub(super) local_idx: usize,
-    pub(super) list_idx: usize,
 }
 
 pub(super) async fn fetch_init_with_rep_fallback(
@@ -63,13 +58,13 @@ pub(super) async fn fetch_init_with_rep_fallback(
 pub(super) async fn fetch_media_with_rep_fallback(
     env: &RepFetchEnv<'_>,
     abr: &dyn AbrController,
-    params: MediaFetchParams<'_>,
+    plan: &SegmentPlan,
     encrypted_init_by_rep: &mut HashMap<String, Bytes>,
     sidx_segments_by_rep: &mut HashMap<String, Vec<manifest::TimelineSegment>>,
     per_segment_index_ranges_by_rep: &mut HashMap<String, HashMap<u64, manifest::ByteRange>>,
 ) -> Result<(Vec<u8>, usize, manifest::TimelineSegment), PlayerError> {
     let mut last_err = PlayerError::SegmentExhaustedRepresentations;
-    for quality_index in quality_indices_for_fallback(params.start_quality_index) {
+    for quality_index in quality_indices_for_fallback(plan.quality_index) {
         let rep_idx = abr.representation_index_for_quality_index(quality_index);
         let rep = &env.adaptation_set.representations[rep_idx];
         let bases = manifest::segment_bases_for_representation(
@@ -87,7 +82,10 @@ pub(super) async fn fetch_media_with_rep_fallback(
 
         let rep_addressing =
             manifest::segment_addressing_for_representation(env.period, env.adaptation_set, rep)?;
-        let mut seg_for_fetch = params.seg.clone();
+        let mut seg_for_fetch = plan.segment.clone();
+        if let Some(media_range) = plan.media_range {
+            seg_for_fetch.media_range = Some(media_range);
+        }
         match rep_addressing {
             manifest::SegmentAddressing::Base(ref sb) if sb.indexRange.is_some() => {
                 let rep_segs = sidx_segments_for_rep(
@@ -100,7 +98,7 @@ pub(super) async fn fetch_media_with_rep_fallback(
                     sidx_segments_by_rep,
                 )
                 .await?;
-                if let Some(rep_seg) = rep_segs.get(params.local_idx) {
+                if let Some(rep_seg) = rep_segs.get(plan.local_index) {
                     seg_for_fetch.media_range = rep_seg.media_range;
                 }
             }
@@ -117,7 +115,7 @@ pub(super) async fn fetch_media_with_rep_fallback(
                     sidx_segments_by_rep,
                 )
                 .await?;
-                if let Some(rep_seg) = rep_segs.get(params.local_idx) {
+                if let Some(rep_seg) = rep_segs.get(plan.local_index) {
                     seg_for_fetch.media_range = rep_seg.media_range;
                 }
             }
@@ -149,7 +147,7 @@ pub(super) async fn fetch_media_with_rep_fallback(
         let seg_target = media_target_for_addressing(
             &rep_addressing,
             &seg_for_fetch,
-            params.list_idx,
+            plan.list_index,
             &template_vars,
         )?;
         match fetch_segment_target(env.client, &bases, &seg_target, env.blacklist).await {
@@ -163,11 +161,11 @@ pub(super) async fn fetch_media_with_rep_fallback(
 pub(super) async fn fetch_cmaf_media_with_rep_fallback(
     env: &RepFetchEnv<'_>,
     abr: &dyn AbrController,
-    params: MediaFetchParams<'_>,
+    plan: &SegmentPlan,
     encrypted_init_by_rep: &mut HashMap<String, Bytes>,
 ) -> Result<(Vec<Bytes>, usize, manifest::TimelineSegment), PlayerError> {
     let mut last_err = PlayerError::SegmentExhaustedRepresentations;
-    for quality_index in quality_indices_for_fallback(params.start_quality_index) {
+    for quality_index in quality_indices_for_fallback(plan.quality_index) {
         let rep_idx = abr.representation_index_for_quality_index(quality_index);
         let rep = &env.adaptation_set.representations[rep_idx];
         let bases = manifest::segment_bases_for_representation(
@@ -185,7 +183,7 @@ pub(super) async fn fetch_cmaf_media_with_rep_fallback(
 
         let rep_addressing =
             manifest::segment_addressing_for_representation(env.period, env.adaptation_set, rep)?;
-        let seg_for_fetch = params.seg.clone();
+        let seg_for_fetch = plan.segment.clone();
         let base_vars = manifest::template_vars_for_representation(rep, env.adaptation_set);
         let init_path = manifest::resolved_initialization_path(&rep_addressing, &base_vars);
         let template_vars = manifest::TemplateVars {
@@ -198,7 +196,7 @@ pub(super) async fn fetch_cmaf_media_with_rep_fallback(
         let seg_target = media_target_for_addressing(
             &rep_addressing,
             &seg_for_fetch,
-            params.list_idx,
+            plan.list_index,
             &template_vars,
         )?;
         match partial_segment::fetch_cmaf_fragments_for_target(

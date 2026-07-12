@@ -181,7 +181,7 @@ without changing playback behaviour.
   separate index documents.
 - [x] **Per-segment `SegmentTemplate@index` URLs.** Support `$Number$` / `$Time$`
   substitution in index templates that point to one index document per media segment.
-- [ ] **`RepresentationIndex` addressing.** Fetch and parse `RepresentationIndex`
+- [x] **`RepresentationIndex` addressing.** Fetch and parse `RepresentationIndex`
   child elements as an alternative to `@index` / `@indexRange`.
 - [ ] **`SegmentTemplate@maxDuration`.** Validate or bound segment durations.
 - [ ] **Bitstream switching.** Honour `SegmentTemplate@bitstreamSwitching` /

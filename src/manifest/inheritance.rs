@@ -1,4 +1,14 @@
-use dash_mpd::{SegmentBase, SegmentList, SegmentTemplate};
+use dash_mpd::{RepresentationIndex, SegmentBase, SegmentList, SegmentTemplate};
+
+pub(super) fn merge_representation_index(
+    parent: &RepresentationIndex,
+    child: &RepresentationIndex,
+) -> RepresentationIndex {
+    RepresentationIndex {
+        sourceURL: child.sourceURL.clone().or_else(|| parent.sourceURL.clone()),
+        range: child.range.clone().or_else(|| parent.range.clone()),
+    }
+}
 
 /// Merge two `SegmentTemplate` nodes: `child` attributes override `parent` when present.
 pub(super) fn merge_segment_template(

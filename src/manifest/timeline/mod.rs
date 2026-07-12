@@ -44,7 +44,7 @@ fn timeline_segments_from_segment_base(
     sb: &SegmentBase,
     _ctx: &TimelineBuildContext,
 ) -> Result<Vec<TimelineSegment>, PlayerError> {
-    if sb.indexRange.is_some() {
+    if super::addressing::segment_base_uses_sidx_index(sb) {
         return Err(PlayerError::SegmentBaseIndexNotLoaded);
     }
 

@@ -127,7 +127,7 @@ pub(crate) async fn run_adaptation_stream(ctx: AdaptationStreamContext) -> Resul
     });
 
     let segments_all = match &addressing {
-        manifest::SegmentAddressing::Base(sb) if sb.indexRange.is_some() => {
+        manifest::SegmentAddressing::Base(sb) if manifest::segment_base_uses_sidx_index(sb) => {
             let rep = adaptation_set
                 .representations
                 .first()
@@ -137,21 +137,20 @@ pub(crate) async fn run_adaptation_stream(ctx: AdaptationStreamContext) -> Resul
                 &adaptation_set,
                 rep,
             )?;
-            let rep_addressing =
-                manifest::segment_addressing_for_representation(&period, &adaptation_set, rep)?;
-            let merged_sb = match rep_addressing {
-                manifest::SegmentAddressing::Base(b) => b,
-                _ => sb.clone(),
-            };
-            let index_range = merged_sb
-                .indexRange
-                .as_deref()
-                .ok_or(PlayerError::MissingSegmentBaseIndexRange)?;
-            let br = manifest::parse_byte_range(index_range)?;
-            let index_bytes =
+            let merged_sb =
+                manifest::segment_base_for_representation(&period, &adaptation_set, rep)?;
+            let vars = manifest::template_vars_for_representation(rep, &adaptation_set);
+            let index_target = manifest::segment_base_index_target(&merged_sb, &vars)?;
+            let index_bytes = if index_target.range.is_some() && index_target.path.is_empty() {
+                let br = index_target
+                    .range
+                    .ok_or(PlayerError::MissingSegmentBaseIndexRange)?;
                 fetch_bytes_with_base_failover_and_range(&client, &bases, "", Some(br), &blacklist)
-                    .await?;
-            manifest::parse_sidx_index(&merged_sb, &index_bytes)?
+                    .await?
+            } else {
+                fetch_segment_target(&client, &bases, &index_target, &blacklist).await?
+            };
+            manifest::parse_sidx_index_for_segment_base(&merged_sb, &index_bytes)?
         }
         manifest::SegmentAddressing::Template(st)
             if manifest::segment_template_uses_global_sidecar_index(st) =>

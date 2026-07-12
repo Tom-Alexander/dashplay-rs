@@ -88,7 +88,9 @@ pub(super) async fn fetch_media_with_rep_fallback(
             seg_for_fetch.media_range = Some(media_range);
         }
         match rep_addressing {
-            manifest::SegmentAddressing::Base(ref sb) if sb.indexRange.is_some() => {
+            manifest::SegmentAddressing::Base(ref sb)
+                if manifest::segment_base_uses_sidx_index(sb) =>
+            {
                 let rep_segs = sidx_segments_for_rep(
                     env.client,
                     env.segment_base_ctx,
@@ -446,23 +448,24 @@ async fn sidx_segments_for_rep<'a>(
 ) -> Result<&'a [manifest::TimelineSegment], PlayerError> {
     let rep_id = rep.id.as_deref().unwrap_or_default().to_string();
     if let std::collections::hash_map::Entry::Vacant(e) = cache.entry(rep_id) {
-        let rep_addressing =
-            manifest::segment_addressing_for_representation(period, adaptation_set, rep)?;
-        let sb = match rep_addressing {
-            manifest::SegmentAddressing::Base(sb) => sb,
-            _ => return Ok(&[]),
-        };
-        let index_range = sb
-            .indexRange
-            .as_deref()
-            .ok_or(PlayerError::MissingSegmentBaseIndexRange)?;
+        let sb = manifest::segment_base_for_representation(period, adaptation_set, rep)?;
+        if !manifest::segment_base_uses_sidx_index(&sb) {
+            return Ok(&[]);
+        }
         let bases =
             manifest::segment_bases_for_representation(segment_base_ctx, adaptation_set, rep)?;
-        let br = manifest::parse_byte_range(index_range)?;
-        let index_bytes =
+        let vars = manifest::template_vars_for_representation(rep, adaptation_set);
+        let index_target = manifest::segment_base_index_target(&sb, &vars)?;
+        let index_bytes = if index_target.range.is_some() && index_target.path.is_empty() {
+            let br = index_target
+                .range
+                .ok_or(PlayerError::MissingSegmentBaseIndexRange)?;
             fetch_bytes_with_base_failover_and_range(client, &bases, "", Some(br), blacklist)
-                .await?;
-        let segs = manifest::parse_sidx_index(&sb, &index_bytes)?;
+                .await?
+        } else {
+            fetch_segment_target(client, &bases, &index_target, blacklist).await?
+        };
+        let segs = manifest::parse_sidx_index_for_segment_base(&sb, &index_bytes)?;
         e.insert(segs);
     }
     Ok(cache

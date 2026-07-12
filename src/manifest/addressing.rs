@@ -14,9 +14,14 @@ fn segment_template_has_timeline_source(st: &SegmentTemplate) -> bool {
     st.SegmentTimeline.is_some() || st.duration.is_some()
 }
 
-/// `SegmentTemplate@index` + `@indexRange`: timeline comes from a separate index document.
+/// Timeline comes from a separate index document (`@index` + `@indexRange` or `RepresentationIndex`).
 pub(crate) fn segment_template_uses_sidecar_index(st: &SegmentTemplate) -> bool {
-    st.index.is_some() && st.indexRange.is_some()
+    st.representation_index.is_some() || (st.index.is_some() && st.indexRange.is_some())
+}
+
+/// `SegmentBase@indexRange` or `RepresentationIndex`: timeline comes from an sidx index.
+pub(crate) fn segment_base_uses_sidx_index(sb: &SegmentBase) -> bool {
+    sb.indexRange.is_some() || sb.representation_index.is_some()
 }
 
 /// Single sidecar index document listing all segments (no `$Number$` / `$Time$` in `@index`).
@@ -30,8 +35,16 @@ pub(crate) fn segment_template_uses_per_segment_index(st: &SegmentTemplate) -> b
 }
 
 pub(super) fn segment_template_index_uses_segment_identifiers(st: &SegmentTemplate) -> bool {
-    st.index
+    if st
+        .index
         .as_deref()
+        .is_some_and(template_contains_number_or_time_ident)
+    {
+        return true;
+    }
+    st.representation_index
+        .as_ref()
+        .and_then(|ri| ri.sourceURL.as_deref())
         .is_some_and(template_contains_number_or_time_ident)
 }
 
@@ -91,11 +104,11 @@ pub(crate) fn segment_template_for_timeline(
         .is_none_or(|st| !segment_template_has_addressing_source(st))
     {
         for rep in &adaptation_set.representations {
-            if let Some(rep_st) = &rep.SegmentTemplate {
-                if segment_template_has_addressing_source(rep_st) {
+            if let Ok(rep_st) = segment_template_for_representation(period, adaptation_set, rep) {
+                if segment_template_has_addressing_source(&rep_st) {
                     merged = Some(match merged {
-                        None => rep_st.clone(),
-                        Some(parent) => merge_segment_template(&parent, rep_st),
+                        None => rep_st,
+                        Some(parent) => merge_segment_template(&parent, &rep_st),
                     });
                     break;
                 }
@@ -139,16 +152,18 @@ fn adaptation_set_uses_segment_template(period: &Period, adaptation_set: &Adapta
         || adaptation_set
             .representations
             .iter()
-            .any(|r| r.SegmentTemplate.is_some())
+            .any(|r| r.SegmentTemplate.is_some() || r.representation_index.is_some())
 }
 
 fn adaptation_set_uses_segment_base(period: &Period, adaptation_set: &AdaptationSet) -> bool {
     period.SegmentBase.is_some()
         || adaptation_set.SegmentBase.is_some()
-        || adaptation_set
-            .representations
-            .iter()
-            .any(|r| r.SegmentBase.is_some())
+        || adaptation_set.representations.iter().any(|r| {
+            r.SegmentBase.is_some()
+                || (r.representation_index.is_some()
+                    && r.SegmentTemplate.is_none()
+                    && r.SegmentList.is_none())
+        })
 }
 
 fn has_segment_template_in_chain(
@@ -176,18 +191,37 @@ pub(crate) fn segment_base_for_timeline(
     period: &Period,
     adaptation_set: &AdaptationSet,
 ) -> Result<SegmentBase, PlayerError> {
-    merge_segment_base_chain(&[
+    let mut merged = merge_segment_base_chain(&[
         period.SegmentBase.as_ref(),
         adaptation_set.SegmentBase.as_ref(),
-    ])
-    .or_else(|| {
-        adaptation_set
-            .representations
-            .iter()
-            .find_map(|r| r.SegmentBase.as_ref())
-            .cloned()
-    })
-    .ok_or(PlayerError::MissingSegmentBase)
+    ]);
+
+    if merged
+        .as_ref()
+        .is_none_or(|sb| !segment_base_uses_sidx_index(sb))
+    {
+        for rep in &adaptation_set.representations {
+            if let Ok(rep_sb) = segment_base_for_representation(period, adaptation_set, rep) {
+                if segment_base_uses_sidx_index(&rep_sb) {
+                    merged = Some(match merged {
+                        None => rep_sb,
+                        Some(parent) => super::inheritance::merge_segment_base(&parent, &rep_sb),
+                    });
+                    break;
+                }
+            }
+        }
+    }
+
+    merged
+        .or_else(|| {
+            adaptation_set
+                .representations
+                .iter()
+                .find_map(|r| r.SegmentBase.as_ref())
+                .cloned()
+        })
+        .ok_or(PlayerError::MissingSegmentBase)
 }
 
 /// Effective `SegmentBase` for fetching init/media of one representation.
@@ -196,12 +230,19 @@ pub(crate) fn segment_base_for_representation(
     adaptation_set: &AdaptationSet,
     representation: &Representation,
 ) -> Result<SegmentBase, PlayerError> {
-    merge_segment_base_chain(&[
+    let mut sb = merge_segment_base_chain(&[
         period.SegmentBase.as_ref(),
         adaptation_set.SegmentBase.as_ref(),
         representation.SegmentBase.as_ref(),
     ])
-    .ok_or(PlayerError::MissingSegmentBase)
+    .ok_or(PlayerError::MissingSegmentBase)?;
+    if let Some(ri) = &representation.representation_index {
+        sb.representation_index = Some(match sb.representation_index {
+            Some(parent) => super::inheritance::merge_representation_index(&parent, ri),
+            None => ri.clone(),
+        });
+    }
+    Ok(sb)
 }
 
 pub(crate) fn segment_list_for_timeline(
@@ -325,12 +366,19 @@ pub(crate) fn segment_template_for_representation(
     adaptation_set: &AdaptationSet,
     representation: &Representation,
 ) -> Result<SegmentTemplate, PlayerError> {
-    merge_segment_template_chain(&[
+    let mut st = merge_segment_template_chain(&[
         period.SegmentTemplate.as_ref(),
         adaptation_set.SegmentTemplate.as_ref(),
         representation.SegmentTemplate.as_ref(),
     ])
-    .ok_or(PlayerError::MissingSegmentTemplate)
+    .ok_or(PlayerError::MissingSegmentTemplate)?;
+    if let Some(ri) = &representation.representation_index {
+        st.representation_index = Some(match st.representation_index {
+            Some(parent) => super::inheritance::merge_representation_index(&parent, ri),
+            None => ri.clone(),
+        });
+    }
+    Ok(st)
 }
 
 pub(crate) fn resolved_initialization_path(

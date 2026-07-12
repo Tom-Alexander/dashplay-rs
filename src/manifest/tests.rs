@@ -798,7 +798,7 @@ mod manifest_logic_tests {
     }
 
     #[test]
-    fn segment_template_sidecar_index_requires_index_and_index_range() {
+    fn segment_template_sidecar_index_requires_index_and_index_range_or_representation_index() {
         assert!(!segment_template_uses_sidecar_index(&SegmentTemplate {
             index: Some("idx.mp4".into()),
             ..Default::default()
@@ -810,6 +810,13 @@ mod manifest_logic_tests {
         assert!(segment_template_uses_sidecar_index(&SegmentTemplate {
             index: Some("idx.mp4".into()),
             indexRange: Some("0-10".into()),
+            ..Default::default()
+        }));
+        assert!(segment_template_uses_sidecar_index(&SegmentTemplate {
+            representation_index: Some(dash_mpd::RepresentationIndex {
+                sourceURL: Some("idx.mp4".into()),
+                range: Some("0-10".into()),
+            }),
             ..Default::default()
         }));
     }
@@ -887,6 +894,112 @@ mod manifest_logic_tests {
                 end: seg1_len as u64 + seg2_len as u64 - 1,
             }
         );
+    }
+
+    #[test]
+    fn parse_sidx_index_from_template_representation_index_uses_first_offset() {
+        let seg1_len = 11u32;
+        let seg2_len = 11u32;
+        let sidx = minimal_sidx_bytes(&[(seg1_len, 2000), (seg2_len, 2000)], 1000);
+        let st = SegmentTemplate {
+            timescale: Some(1000),
+            representation_index: Some(dash_mpd::RepresentationIndex {
+                sourceURL: Some("index.mp4".into()),
+                range: Some(format!("0-{}", sidx.len() - 1)),
+            }),
+            startNumber: Some(1),
+            ..Default::default()
+        };
+        let segs = parse_sidx_index_from_template_representation_index(
+            &st,
+            st.representation_index.as_ref().unwrap(),
+            &sidx,
+        )
+        .unwrap();
+        assert_eq!(segs.len(), 2);
+        assert_eq!(
+            segs[0].media_range,
+            Some(ByteRange {
+                start: 0,
+                end: seg1_len as u64 - 1,
+            })
+        );
+    }
+
+    #[test]
+    fn parse_sidx_index_from_representation_index_base_uses_first_offset() {
+        let seg1_len = 11u32;
+        let seg2_len = 11u32;
+        let mut sidx = minimal_sidx_bytes(&[(seg1_len, 2000), (seg2_len, 2000)], 1000);
+        // first_offset field starts at byte 24 in the full sidx box.
+        sidx[24..28].copy_from_slice(&7u32.to_be_bytes());
+        let sb = SegmentBase {
+            timescale: Some(1000),
+            representation_index: Some(dash_mpd::RepresentationIndex {
+                sourceURL: Some("index.mp4".into()),
+                range: Some(format!("0-{}", sidx.len() - 1)),
+            }),
+            ..Default::default()
+        };
+        let segs = parse_sidx_index_from_representation_index_base(
+            &sb,
+            sb.representation_index.as_ref().unwrap(),
+            &sidx,
+        )
+        .unwrap();
+        assert_eq!(segs.len(), 2);
+        assert_eq!(
+            segs[0].media_range,
+            Some(ByteRange {
+                start: 7,
+                end: 7 + seg1_len as u64 - 1,
+            })
+        );
+    }
+
+    #[test]
+    fn representation_index_fetch_target_interpolates_source_url() {
+        let ri = dash_mpd::RepresentationIndex {
+            sourceURL: Some("idx-$Number$.mp4".into()),
+            range: Some("0-10".into()),
+        };
+        let vars = TemplateVars {
+            representation_id: "1",
+            number: Some(3),
+            ..Default::default()
+        };
+        let target = representation_index_fetch_target(&ri, &vars).unwrap();
+        assert_eq!(target.path, "idx-3.mp4");
+        assert_eq!(target.range, Some(ByteRange { start: 0, end: 10 }));
+    }
+
+    #[test]
+    fn segment_base_index_target_uses_representation_index_source_url() {
+        let sb = SegmentBase {
+            representation_index: Some(dash_mpd::RepresentationIndex {
+                sourceURL: Some("sidecar-index.mp4".into()),
+                range: Some("4-20".into()),
+            }),
+            ..Default::default()
+        };
+        let vars = TemplateVars {
+            representation_id: "1",
+            ..Default::default()
+        };
+        let target = segment_base_index_target(&sb, &vars).unwrap();
+        assert_eq!(target.path, "sidecar-index.mp4");
+        assert_eq!(target.range, Some(ByteRange { start: 4, end: 20 }));
+    }
+
+    #[test]
+    fn segment_template_per_segment_representation_index_detects_number_identifiers() {
+        assert!(segment_template_uses_per_segment_index(&SegmentTemplate {
+            representation_index: Some(dash_mpd::RepresentationIndex {
+                sourceURL: Some("idx-$Number$.mp4".into()),
+                ..Default::default()
+            }),
+            ..Default::default()
+        }));
     }
 
     #[test]

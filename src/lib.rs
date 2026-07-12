@@ -132,6 +132,8 @@ pub enum PlayerError {
     MissingSegmentTemplateIndexRange,
     #[error("missing SegmentTemplate@index (sidecar index)")]
     MissingSegmentTemplateIndex,
+    #[error("missing RepresentationIndex@sourceURL")]
+    MissingRepresentationIndexSourceUrl,
     #[error("SegmentTemplate@index sidecar timeline requires fetched sidx index")]
     SegmentTemplateIndexNotLoaded,
     #[error("SegmentTemplate@index with $Number$ or $Time$ requires segment number or time")]

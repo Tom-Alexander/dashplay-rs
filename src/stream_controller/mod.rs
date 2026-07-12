@@ -21,7 +21,7 @@ use super::delivered_segments::DeliveredSegmentTracker;
 use super::http::SharedHttpClient;
 use super::manifest_lifecycle::ManifestSession;
 use super::playback_control::{PlaybackController, PlaybackState};
-use super::schedule::{AdaptationStreamContext, run_adaptation_stream};
+use super::schedule::{AdaptationStreamContext, BufferTarget, run_adaptation_stream};
 use super::segment_blacklist::SegmentBlacklist;
 use super::track_selection::TrackSelection;
 use super::types::PlayerEvent;
@@ -103,6 +103,8 @@ impl PlaybackLoopState {
                 let periods_to_play = periods_to_play(tick.mpd, tick.is_dynamic, tick.wall_now)?;
                 let seek_generation_at_start = playback.seek_generation();
                 let mut seek_interrupted = false;
+
+                let buffer_target = BufferTarget::from_mpd(tick.mpd);
 
                 for current_window in periods_to_play {
                     if playback.is_stopped() {
@@ -194,6 +196,7 @@ impl PlaybackLoopState {
                                 blacklist,
                                 drm,
                                 buffer_rx,
+                                buffer_target,
                                 metrics,
                                 playback,
                                 abr_factory,

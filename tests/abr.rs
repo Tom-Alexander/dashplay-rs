@@ -157,6 +157,7 @@ async fn custom_abr_factory_selects_fixed_representation() -> Result<(), dashpla
     let outputs = player.start_tracks().await?;
     let buffer_feedback = outputs.buffer_feedback(0).expect("one track");
     let _ = buffer_feedback.report(25.0);
+    let _drain = common::spawn_playback_buffer_simulation(buffer_feedback, 25.0);
     let mut rx = outputs
         .tracks
         .into_iter()

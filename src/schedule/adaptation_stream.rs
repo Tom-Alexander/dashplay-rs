@@ -24,6 +24,7 @@ use crate::segment_blacklist::SegmentBlacklist;
 use crate::segment_fetcher::fetch_bytes_with_base_failover_and_range;
 use crate::types::PlayerEvent;
 
+use super::buffer_target::{BufferTarget, wait_for_fetch_capacity};
 use super::segment_decrypt::decrypt_media_fragment;
 use super::segment_emit::{
     emit_segment, latest_buffer_s, partial_chunk_meta, record_quality_switch_and_throughput,
@@ -83,6 +84,8 @@ pub(crate) struct AdaptationStreamContext {
     pub drm: Arc<AsyncMutex<DrmSessionCoordinator>>,
     /// Latest buffer occupancy reported by the consumer (seconds).
     pub buffer_rx: watch::Receiver<f64>,
+    /// Prefetch thresholds from `MPD@minBufferTime` and the BOLA buffer ceiling.
+    pub buffer_target: BufferTarget,
     pub metrics: TrackMetrics,
     pub playback: PlaybackController,
     pub abr_factory: SharedAbrFactory,
@@ -111,7 +114,8 @@ pub(crate) async fn run_adaptation_stream(ctx: AdaptationStreamContext) -> Resul
         delivered,
         blacklist,
         drm,
-        buffer_rx,
+        mut buffer_rx,
+        buffer_target,
         metrics,
         playback,
         abr_factory,
@@ -283,6 +287,7 @@ pub(crate) async fn run_adaptation_stream(ctx: AdaptationStreamContext) -> Resul
         HashMap::new();
     let mut last_quality_index = metrics.last_quality_index();
     let mut playback_started_emitted = false;
+    let mut media_segments_delivered = 0usize;
 
     for (local_idx, seg) in segments.into_iter().enumerate() {
         playback.wait_while_paused().await;
@@ -295,6 +300,18 @@ pub(crate) async fn run_adaptation_stream(ctx: AdaptationStreamContext) -> Resul
             if delivered_tracker.is_delivered(&seg) {
                 continue;
             }
+        }
+
+        wait_for_fetch_capacity(
+            &buffer_target,
+            &mut buffer_rx,
+            media_segments_delivered,
+            &playback,
+            seek_generation_at_start,
+        )
+        .await;
+        if playback.is_stopped() || playback.seek_generation() != seek_generation_at_start {
+            return Ok(());
         }
 
         abr.update_buffer(latest_buffer_s(&buffer_rx));
@@ -406,6 +423,7 @@ pub(crate) async fn run_adaptation_stream(ctx: AdaptationStreamContext) -> Resul
 
             let mut delivered_tracker = lock_delivered(&delivered);
             delivered_tracker.mark_delivered(&seg_for_fetch);
+            media_segments_delivered += 1;
             continue;
         }
 
@@ -490,6 +508,7 @@ pub(crate) async fn run_adaptation_stream(ctx: AdaptationStreamContext) -> Resul
 
         let mut delivered_tracker = lock_delivered(&delivered);
         delivered_tracker.mark_delivered(&seg_for_fetch);
+        media_segments_delivered += 1;
     }
 
     Ok(())

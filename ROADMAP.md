@@ -32,7 +32,7 @@ Status legend: `[ ]` not started · `[~]` partial · `[x]` done · `[—]` out o
 | Metrics / rich events | `[~]` | Per-track [`TrackMetrics`]; fragment + [`MediaEvent`] events |
 | Pluggable networking / ABR | `[x]` | HTTP client trait + `ReqwestClient`; ABR trait + `BolaAbrFactory` |
 | MPD model / remote documents | `[ ]` | xlink, Preselection, metadata elements |
-| Buffer-target scheduling | `[ ]` | Downloads not throttled by buffer or `minBufferTime` |
+| Buffer-target scheduling | `[x]` | Throttles prefetch at 25 s; honours `MPD@minBufferTime` for rebuffer |
 | Bitstream / AS switching | `[ ]` | Init always re-emitted; no cross-AS switch |
 | Containers beyond fMP4/CMAF | `[ ]` | mp2t, WebM, additional image MIME types |
 
@@ -208,7 +208,7 @@ without changing playback behaviour.
   random-access hints beyond SAP-aligned seek.
 - [ ] **MPD metadata elements.** `ProgramInformation`, `Metrics` (DASH reporting
   descriptors), `AssetIdentifier`, `Rating`, `Period/Label`, `Representation/Label`.
-- [~] **`MPD@minBufferTime` and `@maxSegmentDuration`.** Use for startup delay, buffer
+- [x] **`MPD@minBufferTime` and `@maxSegmentDuration`.** Use for startup delay, buffer
   targets, scheduling validation.
 - [~] **Profile-specific playback.** `mp2t-main`, `mp2t-simple`, DVB, HbbTV, AC-4, MHA1,
   VP9, VP9-HDR paths beyond conformance validation.
@@ -221,7 +221,7 @@ without changing playback behaviour.
 
 ## P7 — Scheduling, ABR, and playback semantics (unsupported backlog)
 
-- [ ] **Buffer-target scheduling.** Throttle downloads when consumer buffer is full;
+- [x] **Buffer-target scheduling.** Throttle downloads when consumer buffer is full;
   honour `MPD@minBufferTime` for startup and rebuffer recovery.
 - [ ] **Manifest-derived BOLA parameters.** Derive segment duration and buffer limits from
   MPD segment durations instead of hardcoded 4 s / 25 s assumptions.

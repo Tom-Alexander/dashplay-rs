@@ -18,3 +18,4 @@ vpn-config
 out/
 tests/conformance/schematron/tmp/
 tests/conformance/schematron/output/
+wasm/dashplay-wasm/dist/pkg/

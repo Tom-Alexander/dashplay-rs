@@ -10,8 +10,9 @@ use tokio::sync::broadcast;
 
 use crate::PlayerError;
 use crate::abr::{AbrController, quality_indices_for_fallback};
+use crate::drm::DrmSessionCoordinator;
+#[cfg(feature = "drm")]
 use crate::drm::License;
-use crate::drm::coordinator::DrmSessionCoordinator;
 use crate::http::SharedHttpClient;
 use crate::manifest;
 use crate::mp4::partial_segment;
@@ -240,6 +241,7 @@ async fn ensure_init_for_rep(
     let init_bytes = Bytes::from(bytes);
     encrypted_init_by_rep.insert(rep_id.to_string(), init_bytes.clone());
 
+    #[cfg(feature = "drm")]
     {
         let mut guard = env.drm.lock().await;
         guard
@@ -247,36 +249,40 @@ async fn ensure_init_for_rep(
             .await?;
     }
 
-    let license = {
-        let guard = env.drm.lock().await;
-        guard.license_for_rep(env.period_adaptation_index, rep_id)
-    };
-
-    let out = if let Some(ref lic) = license {
-        match lic.decrypt(&init_bytes, Option::<&Bytes>::None) {
-            Ok(decrypted) => decrypted,
-            Err(e) if License::is_likely_missing_key(&e) => {
-                let mut guard = env.drm.lock().await;
-                guard
-                    .recover_from_decrypt_failure(
-                        env.period_adaptation_index,
-                        rep_id,
-                        &init_bytes,
-                        &[],
-                    )
-                    .await?;
-                let refreshed = guard.license_for_rep(env.period_adaptation_index, rep_id);
-                drop(guard);
-                refreshed
-                    .ok_or(PlayerError::License(e))?
-                    .decrypt(&init_bytes, Option::<&Bytes>::None)
-                    .map_err(PlayerError::License)?
+    #[cfg(feature = "drm")]
+    let out = {
+        let license = {
+            let guard = env.drm.lock().await;
+            guard.license_for_rep(env.period_adaptation_index, rep_id)
+        };
+        if let Some(ref lic) = license {
+            match lic.decrypt(&init_bytes, Option::<&Bytes>::None) {
+                Ok(decrypted) => decrypted,
+                Err(e) if License::is_likely_missing_key(&e) => {
+                    let mut guard = env.drm.lock().await;
+                    guard
+                        .recover_from_decrypt_failure(
+                            env.period_adaptation_index,
+                            rep_id,
+                            &init_bytes,
+                            &[],
+                        )
+                        .await?;
+                    let refreshed = guard.license_for_rep(env.period_adaptation_index, rep_id);
+                    drop(guard);
+                    refreshed
+                        .ok_or(PlayerError::License(e))?
+                        .decrypt(&init_bytes, Option::<&Bytes>::None)
+                        .map_err(PlayerError::License)?
+                }
+                Err(e) => return Err(PlayerError::License(e)),
             }
-            Err(e) => return Err(PlayerError::License(e)),
+        } else {
+            init_bytes.clone()
         }
-    } else {
-        init_bytes.clone()
     };
+    #[cfg(not(feature = "drm"))]
+    let out = init_bytes.clone();
     let _ = env.tx.send(PlayerEvent::Init(out));
     Ok(init_bytes)
 }

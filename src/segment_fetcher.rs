@@ -67,6 +67,7 @@ async fn fetch_bytes_range(
 #[cfg(test)]
 mod tests {
     use super::*;
+    #[cfg(feature = "reqwest-http")]
     use crate::http::ReqwestClient;
     use axum::{Router, body::Body, http::StatusCode, response::IntoResponse, routing::get};
     use std::sync::atomic::{AtomicUsize, Ordering};

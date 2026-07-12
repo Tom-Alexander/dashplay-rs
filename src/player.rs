@@ -77,7 +77,7 @@ impl Player {
         let (out_tx, out_rx) = mpsc::channel::<Result<Bytes, PlayerError>>(256);
         let senders: Vec<_> = tracks.iter().map(|t| t.tx.clone()).collect();
 
-        let join = tokio::spawn(async move {
+        let join = crate::platform::spawn(async move {
             let mut forwarders = Vec::with_capacity(tracks.len());
             for t in &tracks {
                 let mut rx = t.tx.subscribe();

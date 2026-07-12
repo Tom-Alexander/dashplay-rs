@@ -9,9 +9,10 @@ use std::sync::Arc;
 
 use futures::future::join_all;
 use tokio::sync::Mutex as AsyncMutex;
-use tokio::time::sleep;
 
-use super::drm::coordinator::DrmSessionCoordinator;
+use crate::platform::sleep;
+
+use super::drm::DrmSessionCoordinator;
 
 use super::PlayerError;
 use super::abr::SharedAbrFactory;

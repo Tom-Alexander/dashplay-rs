@@ -6,9 +6,12 @@ use bytes::Bytes;
 use tokio::sync::Mutex as AsyncMutex;
 
 use crate::PlayerError;
-use crate::drm::License;
-use crate::drm::coordinator::DrmSessionCoordinator;
+use crate::drm::DrmSessionCoordinator;
 
+#[cfg(feature = "drm")]
+use crate::drm::License;
+
+#[cfg(feature = "drm")]
 pub(super) async fn decrypt_media_fragment(
     drm: &Arc<AsyncMutex<DrmSessionCoordinator>>,
     period_adaptation_index: usize,
@@ -54,4 +57,15 @@ pub(super) async fn decrypt_media_fragment(
             }
         }
     }
+}
+
+#[cfg(not(feature = "drm"))]
+pub(super) async fn decrypt_media_fragment(
+    _drm: &Arc<AsyncMutex<DrmSessionCoordinator>>,
+    _period_adaptation_index: usize,
+    _rep_id: &str,
+    _init_bytes: &Bytes,
+    data: Bytes,
+) -> Result<Bytes, PlayerError> {
+    Ok(data)
 }

@@ -4,22 +4,24 @@
 //! [`crate::MediaPlayer::with_http_client`] or [`crate::Player::with_http_client`] to integrate
 //! browser fetch, embedded stacks, or custom TLS.
 
-use std::future::Future;
-use std::pin::Pin;
 use std::sync::Arc;
 
 mod body_stream;
 mod error;
 mod request;
+#[cfg(feature = "reqwest-http")]
 mod reqwest;
 mod response;
+mod unconfigured;
 
 pub(crate) use body_stream::HttpBodyStream;
 
 pub use error::HttpError;
 pub use request::HttpRequest;
+#[cfg(feature = "reqwest-http")]
 pub use reqwest::ReqwestClient;
 pub use response::HttpResponse;
+pub use unconfigured::UnconfiguredHttpClient;
 
 /// HTTP method supported by [`HttpClient`].
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -32,16 +34,15 @@ pub enum HttpMethod {
 /// Shared handle to an [`HttpClient`] implementation.
 pub type SharedHttpClient = Arc<dyn HttpClient>;
 
-type OpenBodyFuture<'a> =
-    Pin<Box<dyn Future<Output = Result<(u16, HttpBodyStream), HttpError>> + Send + 'a>>;
+/// Boxed HTTP future with platform-appropriate `Send` bounds.
+pub type HttpFuture<'a, T> = crate::platform::BoxedFuture<'a, T>;
+
+type OpenBodyFuture<'a> = HttpFuture<'a, Result<(u16, HttpBodyStream), HttpError>>;
 
 /// Async HTTP transport used throughout the playback pipeline.
-pub trait HttpClient: Send + Sync {
+pub trait HttpClient: crate::platform::HttpClientBounds {
     /// Execute `request` and return the full response.
-    fn send<'a>(
-        &'a self,
-        request: HttpRequest,
-    ) -> Pin<Box<dyn Future<Output = Result<HttpResponse, HttpError>> + Send + 'a>>;
+    fn send<'a>(&'a self, request: HttpRequest) -> HttpFuture<'a, Result<HttpResponse, HttpError>>;
 
     /// Open a response body for progressive reads (Low-Latency DASH partial segments).
     ///
@@ -85,7 +86,7 @@ mod tests {
         fn send<'a>(
             &'a self,
             request: HttpRequest,
-        ) -> Pin<Box<dyn Future<Output = Result<HttpResponse, HttpError>> + Send + 'a>> {
+        ) -> HttpFuture<'a, Result<HttpResponse, HttpError>> {
             let url = request.url.to_string();
             Box::pin(async move {
                 self.responses

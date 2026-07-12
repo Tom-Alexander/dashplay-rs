@@ -1,10 +1,9 @@
-use std::future::Future;
-use std::pin::Pin;
-
 use futures_util::StreamExt;
 use reqwest::Client;
 
-use super::{HttpBodyStream, HttpClient, HttpError, HttpMethod, HttpRequest, HttpResponse};
+use super::{
+    HttpBodyStream, HttpClient, HttpError, HttpFuture, HttpMethod, HttpRequest, HttpResponse,
+};
 
 /// Default [`HttpClient`] backed by [`reqwest`](https://docs.rs/reqwest).
 #[derive(Debug, Clone)]
@@ -33,10 +32,7 @@ impl ReqwestClient {
 }
 
 impl HttpClient for ReqwestClient {
-    fn send<'a>(
-        &'a self,
-        request: HttpRequest,
-    ) -> Pin<Box<dyn Future<Output = Result<HttpResponse, HttpError>> + Send + 'a>> {
+    fn send<'a>(&'a self, request: HttpRequest) -> HttpFuture<'a, Result<HttpResponse, HttpError>> {
         Box::pin(async move {
             let mut builder = match request.method {
                 HttpMethod::Get => self.inner.get(request.url),

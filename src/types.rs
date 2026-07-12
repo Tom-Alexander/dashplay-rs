@@ -212,7 +212,7 @@ impl PlayerOutputs {
     ///
     /// Prefer [`Self::run`] when the caller owns concurrency and wants a single task.
     pub fn spawn(self) -> JoinHandle<Result<(), PlayerError>> {
-        tokio::spawn(async move { self.run().await })
+        crate::platform::spawn(async move { self.run().await })
     }
 }
 

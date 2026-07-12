@@ -54,6 +54,8 @@ mod media_events;
 mod media_player;
 mod metrics;
 mod mp4;
+#[doc(hidden)]
+pub mod platform;
 mod playback_control;
 mod player;
 mod schedule;
@@ -69,8 +71,11 @@ pub use abr::{
     quality_ladder_from_adaptation_set, shared as shared_abr_factory,
 };
 pub use dash_mpd::SubtitleType;
+#[cfg(feature = "reqwest-http")]
+pub use http::ReqwestClient;
+pub use http::UnconfiguredHttpClient;
 pub use http::{
-    HttpClient, HttpError, HttpMethod, HttpRequest, HttpResponse, ReqwestClient, SharedHttpClient,
+    HttpClient, HttpError, HttpFuture, HttpMethod, HttpRequest, HttpResponse, SharedHttpClient,
     shared,
 };
 pub use media_events::{MediaEvent, MediaEventSource, Scte35Cue};
@@ -89,8 +94,11 @@ pub use types::{
     PlayerOutputs, PlayerTrack,
 };
 
+#[cfg(feature = "drm")]
 use crate::drm::LicenseError;
+#[cfg(feature = "drm")]
 use crate::drm::mp4::Mp4DrmError;
+#[cfg(feature = "drm")]
 use crate::drm::mpd::MpdDrmError;
 
 /// Errors that can occur anywhere in the playback pipeline.
@@ -166,10 +174,13 @@ pub enum PlayerError {
     SegmentRequestFailed { status: u16, url: String },
     #[error("all representation attempts failed for a segment")]
     SegmentExhaustedRepresentations,
+    #[cfg(feature = "drm")]
     #[error("widevine license/decrypt: {0}")]
     License(#[from] LicenseError),
+    #[cfg(feature = "drm")]
     #[error("mpd drm parse: {0}")]
     DrmMpd(#[from] MpdDrmError),
+    #[cfg(feature = "drm")]
     #[error("in-band mp4 drm parse: {0}")]
     InBandDrm(#[from] Mp4DrmError),
 }

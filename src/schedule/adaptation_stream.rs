@@ -2,7 +2,9 @@
 
 use std::collections::HashMap;
 use std::sync::Arc;
-use std::time::{Duration, Instant};
+use std::time::Duration;
+
+use crate::platform::Instant;
 
 use bytes::Bytes;
 use dash_mpd::{AdaptationSet, Period};
@@ -11,7 +13,7 @@ use tokio::sync::{broadcast, watch};
 
 use crate::PlayerError;
 use crate::abr::SharedAbrFactory;
-use crate::drm::coordinator::DrmSessionCoordinator;
+use crate::drm::DrmSessionCoordinator;
 use crate::http::SharedHttpClient;
 use crate::manifest::{self, TimelineBuildContext};
 use crate::metrics::TrackMetrics;

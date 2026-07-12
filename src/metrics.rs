@@ -4,9 +4,11 @@
 //! decisions directly.
 
 use std::sync::{Arc, Mutex};
-use std::time::{Duration, Instant};
+use std::time::Duration;
 
 use tokio::sync::watch;
+
+use crate::platform::Instant;
 
 /// Maximum number of historical samples retained per series.
 const MAX_HISTORY: usize = 256;

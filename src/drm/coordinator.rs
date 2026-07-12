@@ -2,8 +2,6 @@
 
 use bytes::Bytes;
 use std::collections::HashMap;
-use std::future::Future;
-use std::pin::Pin;
 use std::sync::Arc;
 use std::time::Instant;
 use url::Url;
@@ -20,11 +18,7 @@ pub type AdaptationLicenseSessions<'a> = (
 );
 
 /// Async license fetch invoked instead of the default HTTP POST when set.
-pub type WidevineLicenseFetcher = Arc<
-    dyn Fn(Url, Vec<u8>) -> Pin<Box<dyn Future<Output = Result<Bytes, PlayerError>> + Send>>
-        + Send
-        + Sync,
->;
+pub type WidevineLicenseFetcher = crate::platform::LicenseFetcher;
 
 /// Manages Widevine sessions across manifest refresh and key rotation.
 pub struct DrmSessionCoordinator {

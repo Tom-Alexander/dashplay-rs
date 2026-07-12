@@ -4,11 +4,13 @@ use tokio::sync::broadcast;
 use tokio::sync::watch;
 use url::Url;
 
-use super::drm::coordinator::DrmSessionCoordinator;
-
 use super::PlayerError;
 use super::abr::{BolaAbrFactory, SharedAbrFactory, shared as shared_abr_factory};
-use super::http::{HttpRequest, ReqwestClient, SharedHttpClient, shared};
+#[cfg(feature = "reqwest-http")]
+use super::http::ReqwestClient;
+#[cfg(not(feature = "reqwest-http"))]
+use super::http::UnconfiguredHttpClient;
+use super::http::{HttpRequest, SharedHttpClient, shared};
 use super::manifest;
 use super::playback_control::PlaybackController;
 use super::stream_controller::PlaybackLoopState;
@@ -16,7 +18,7 @@ use super::track_selection::{TrackSelection, select_adaptation_sets};
 use super::types::PlayerOutputs;
 use crate::clock::utc_timing;
 
-pub use super::drm::coordinator::WidevineLicenseFetcher;
+pub use super::drm::{DrmSessionCoordinator, WidevineLicenseFetcher};
 
 /// DASH MPD client and playback coordinator (dash.js: `MediaPlayer`).
 pub struct MediaPlayer {
@@ -35,7 +37,10 @@ pub struct MediaPlayer {
 impl MediaPlayer {
     pub fn new(uri: &str, license_uri: Option<&str>) -> Result<Self, PlayerError> {
         let license_uri = license_uri.map(Url::parse).transpose()?;
+        #[cfg(feature = "reqwest-http")]
         let client = shared(ReqwestClient::default());
+        #[cfg(not(feature = "reqwest-http"))]
+        let client = shared(UnconfiguredHttpClient::default());
         Ok(Self {
             client: client.clone(),
             manifest_uri: Url::parse(uri)?,

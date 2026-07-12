@@ -4,10 +4,13 @@ use crate::PlayerError;
 
 use super::types::parse_byte_range;
 use super::types::{ByteRange, TimelineSegment};
+use parser::SidxBox;
+
+mod parser;
 
 pub(crate) fn timeline_segments_from_sidx(
     sb: &SegmentBase,
-    sidx: &dash_mpd::sidx::SidxBox,
+    sidx: &SidxBox,
     index_start: u64,
 ) -> Result<Vec<TimelineSegment>, PlayerError> {
     let timescale = sb.timescale.unwrap_or(u64::from(sidx.timescale));
@@ -19,7 +22,7 @@ fn timeline_segments_from_sidx_values(
     timescale: u64,
     presentation_time_offset: u64,
     start_number: u64,
-    sidx: &dash_mpd::sidx::SidxBox,
+    sidx: &SidxBox,
     media_start: u64,
 ) -> Result<Vec<TimelineSegment>, PlayerError> {
     if timescale == 0 {
@@ -80,7 +83,7 @@ pub(crate) fn parse_sidx_index(
 fn parse_sidx_from_index_bytes(
     index_bytes: &[u8],
     index_range: &str,
-) -> Result<dash_mpd::sidx::SidxBox, PlayerError> {
+) -> Result<SidxBox, PlayerError> {
     let br = parse_byte_range(index_range)?;
     let expected_len = br.end.saturating_sub(br.start).saturating_add(1) as usize;
     let slice = if index_bytes.len() == expected_len {
@@ -90,7 +93,7 @@ fn parse_sidx_from_index_bytes(
             .get(br.start as usize..=br.end as usize)
             .ok_or_else(|| PlayerError::InvalidByteRange(index_range.to_string()))?
     };
-    dash_mpd::sidx::SidxBox::parse(slice).map_err(|e| PlayerError::SidxParse(e.to_string()))
+    SidxBox::parse(slice)
 }
 pub(crate) fn parse_sidx_index_from_template(
     st: &SegmentTemplate,

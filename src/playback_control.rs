@@ -253,7 +253,7 @@ impl PlaybackController {
 
     pub(crate) async fn wait_while_paused(&self) {
         while self.is_paused() && !self.is_stopped() {
-            tokio::time::sleep(Duration::from_millis(50)).await;
+            crate::platform::sleep(Duration::from_millis(50)).await;
         }
     }
 }

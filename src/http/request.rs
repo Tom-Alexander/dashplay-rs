@@ -13,6 +13,21 @@ pub struct HttpRequest {
 }
 
 impl HttpRequest {
+    /// HTTP method for this request.
+    pub fn method(&self) -> HttpMethod {
+        self.method
+    }
+
+    /// Request URL.
+    pub fn url(&self) -> &Url {
+        &self.url
+    }
+
+    /// Request headers as `(name, value)` pairs.
+    pub fn headers(&self) -> &[(String, String)] {
+        &self.headers
+    }
+
     /// `GET` request for `url`.
     pub fn get(url: Url) -> Self {
         Self {

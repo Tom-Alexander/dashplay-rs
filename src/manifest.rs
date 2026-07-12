@@ -580,8 +580,24 @@ pub(crate) fn segment_template_uses_sidecar_index(st: &SegmentTemplate) -> bool 
     st.index.is_some() && st.indexRange.is_some()
 }
 
+/// Single sidecar index document listing all segments (no `$Number$` / `$Time$` in `@index`).
+pub(crate) fn segment_template_uses_global_sidecar_index(st: &SegmentTemplate) -> bool {
+    segment_template_uses_sidecar_index(st) && !segment_template_index_uses_segment_identifiers(st)
+}
+
+/// One sidecar index document per media segment (`@index` contains `$Number$` or `$Time$`).
+pub(crate) fn segment_template_uses_per_segment_index(st: &SegmentTemplate) -> bool {
+    segment_template_uses_sidecar_index(st) && segment_template_index_uses_segment_identifiers(st)
+}
+
+fn segment_template_index_uses_segment_identifiers(st: &SegmentTemplate) -> bool {
+    st.index
+        .as_deref()
+        .is_some_and(template_contains_number_or_time_ident)
+}
+
 fn segment_template_has_addressing_source(st: &SegmentTemplate) -> bool {
-    segment_template_has_timeline_source(st) || segment_template_uses_sidecar_index(st)
+    segment_template_has_timeline_source(st) || segment_template_uses_global_sidecar_index(st)
 }
 
 /// Inherited `SegmentTemplate@endNumber` for adaptation-set timeline expansion.
@@ -892,6 +908,12 @@ pub(crate) fn segment_template_index_target(
         .index
         .as_deref()
         .ok_or(PlayerError::MissingSegmentTemplateIndex)?;
+    if segment_template_index_uses_segment_identifiers(st)
+        && vars.number.is_none()
+        && vars.time.is_none()
+    {
+        return Err(PlayerError::MissingSegmentTemplateIndexVars);
+    }
     let index_range = st
         .indexRange
         .as_deref()
@@ -900,6 +922,30 @@ pub(crate) fn segment_template_index_target(
     Ok(SegmentFetchTarget {
         path: interpolate_template(index_tpl, vars),
         range: Some(br),
+    })
+}
+
+/// Inclusive media byte range for one per-segment sidecar index (`@index` with `$Number$` / `$Time$`).
+pub(crate) fn media_range_from_per_segment_index(
+    st: &SegmentTemplate,
+    index_bytes: &[u8],
+) -> Result<ByteRange, PlayerError> {
+    let segs = parse_sidx_index_from_template(st, index_bytes)?;
+    let Some(first) = segs.first() else {
+        return Err(PlayerError::SidxParse("empty sidx index".into()));
+    };
+    let Some(first_range) = first.media_range else {
+        return Err(PlayerError::SidxParse(
+            "sidx index missing media range".into(),
+        ));
+    };
+    let last_range = segs
+        .last()
+        .and_then(|s| s.media_range)
+        .unwrap_or(first_range);
+    Ok(ByteRange {
+        start: first_range.start,
+        end: last_range.end,
     })
 }
 
@@ -1141,7 +1187,7 @@ pub(crate) fn timeline_segments_for_addressing(
     end_number: Option<u64>,
 ) -> Result<Vec<TimelineSegment>, PlayerError> {
     match addressing {
-        SegmentAddressing::Template(st) if segment_template_uses_sidecar_index(st) => {
+        SegmentAddressing::Template(st) if segment_template_uses_global_sidecar_index(st) => {
             Err(PlayerError::SegmentTemplateIndexNotLoaded)
         }
         SegmentAddressing::Template(st) => timeline_segments(st, ctx, end_number),
@@ -1391,6 +1437,34 @@ fn dash_format_width(format: Option<&str>) -> usize {
 
 fn format_dash_integer(value: u64, width: usize) -> String {
     format!("{:0width$}", value, width = width.max(1))
+}
+
+fn template_contains_number_or_time_ident(template: &str) -> bool {
+    let mut rest = template;
+    while !rest.is_empty() {
+        let Some(dollar_pos) = rest.find('$') else {
+            break;
+        };
+        rest = &rest[dollar_pos..];
+
+        if rest.starts_with("$$") {
+            rest = &rest[2..];
+            continue;
+        }
+
+        let Some(close) = rest[1..].find('$') else {
+            break;
+        };
+
+        let token = &rest[1..=close];
+        if let Some((ident, _)) = parse_template_ident(token) {
+            if matches!(ident, TemplateIdent::Number | TemplateIdent::Time) {
+                return true;
+            }
+        }
+        rest = &rest[close + 2..];
+    }
+    false
 }
 
 fn parse_template_ident(token: &str) -> Option<(TemplateIdent, Option<&str>)> {
@@ -3311,5 +3385,110 @@ mod manifest_logic_tests {
             indexRange: Some("0-10".into()),
             ..Default::default()
         }));
+    }
+
+    #[test]
+    fn segment_template_per_segment_index_detects_number_and_time_identifiers() {
+        assert!(segment_template_uses_per_segment_index(&SegmentTemplate {
+            index: Some("idx-$Number$.mp4".into()),
+            indexRange: Some("0-10".into()),
+            ..Default::default()
+        }));
+        assert!(segment_template_uses_per_segment_index(&SegmentTemplate {
+            index: Some("idx-$Time%05d$.mp4".into()),
+            indexRange: Some("0-10".into()),
+            ..Default::default()
+        }));
+        assert!(!segment_template_uses_per_segment_index(&SegmentTemplate {
+            index: Some("idx.mp4".into()),
+            indexRange: Some("0-10".into()),
+            ..Default::default()
+        }));
+        assert!(segment_template_uses_global_sidecar_index(
+            &SegmentTemplate {
+                index: Some("idx.mp4".into()),
+                indexRange: Some("0-10".into()),
+                ..Default::default()
+            }
+        ));
+    }
+
+    #[test]
+    fn segment_template_index_target_interpolates_number_and_time() {
+        let st = SegmentTemplate {
+            index: Some("idx-$Number$-$Time$.mp4".into()),
+            indexRange: Some("0-10".into()),
+            ..Default::default()
+        };
+        let vars = TemplateVars {
+            representation_id: "1",
+            number: Some(7),
+            time: Some(42),
+            ..Default::default()
+        };
+        let target = segment_template_index_target(&st, &vars).unwrap();
+        assert_eq!(target.path, "idx-7-42.mp4");
+        assert_eq!(target.range, Some(ByteRange { start: 0, end: 10 }));
+
+        let base_vars = TemplateVars {
+            representation_id: "1",
+            ..Default::default()
+        };
+        assert!(matches!(
+            segment_template_index_target(&st, &base_vars),
+            Err(PlayerError::MissingSegmentTemplateIndexVars)
+        ));
+    }
+
+    #[test]
+    fn media_range_from_per_segment_index_spans_all_sidx_references() {
+        let seg1_len = 11u32;
+        let seg2_len = 13u32;
+        let sidx = minimal_sidx_bytes(&[(seg1_len, 2000), (seg2_len, 2000)], 1000);
+        let st = SegmentTemplate {
+            timescale: Some(1000),
+            index: Some("idx-$Number$.mp4".into()),
+            indexRange: Some(format!("0-{}", sidx.len() - 1)),
+            startNumber: Some(1),
+            ..Default::default()
+        };
+        let media_range = media_range_from_per_segment_index(&st, &sidx).unwrap();
+        assert_eq!(
+            media_range,
+            ByteRange {
+                start: 0,
+                end: seg1_len as u64 + seg2_len as u64 - 1,
+            }
+        );
+    }
+
+    #[test]
+    fn timeline_segments_for_per_segment_index_uses_explicit_timeline() {
+        let st = SegmentTemplate {
+            timescale: Some(1000),
+            duration: Some(4000.0),
+            index: Some("idx-$Number$.mp4".into()),
+            indexRange: Some("0-10".into()),
+            media: Some("seg-$Number$.m4s".into()),
+            startNumber: Some(1),
+            ..Default::default()
+        };
+        let ctx = TimelineBuildContext {
+            is_dynamic: false,
+            period_window: PeriodWindow {
+                idx: 0,
+                start: Duration::ZERO,
+                end: Some(Duration::from_secs(8)),
+            },
+            period_duration: None,
+            media_presentation_duration: None,
+            time_shift_buffer_depth: None,
+            since_availability_start: None,
+            resync_hints: None,
+        };
+        let segs =
+            timeline_segments_for_addressing(&SegmentAddressing::Template(st), &ctx, None).unwrap();
+        assert_eq!(segs.len(), 2);
+        assert!(segs.iter().all(|s| s.media_range.is_none()));
     }
 }

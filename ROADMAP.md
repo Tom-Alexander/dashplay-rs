@@ -140,7 +140,7 @@ These close the largest gaps between "delivers some streams" and "handles confor
   relying solely on Period/MPD duration.
 - [x] **`SegmentTemplate@index` (sidecar index).** Inherited in the model; fetch and use
   separate index documents.
-- [ ] **Per-segment `SegmentTemplate@index` URLs.** Support `$Number$` / `$Time$`
+- [x] **Per-segment `SegmentTemplate@index` URLs.** Support `$Number$` / `$Time$`
   substitution in index templates that point to one index document per media segment.
 - [ ] **`RepresentationIndex` addressing.** Fetch and parse `RepresentationIndex`
   child elements as an alternative to `@index` / `@indexRange`.

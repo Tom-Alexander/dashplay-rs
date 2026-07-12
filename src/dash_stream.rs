@@ -132,7 +132,7 @@ pub(crate) async fn run_adaptation_stream(ctx: AdaptationStreamContext) -> Resul
             manifest::parse_sidx_index(&merged_sb, &index_bytes)?
         }
         manifest::SegmentAddressing::Template(st)
-            if manifest::segment_template_uses_sidecar_index(st) =>
+            if manifest::segment_template_uses_global_sidecar_index(st) =>
         {
             let rep = adaptation_set
                 .representations
@@ -249,6 +249,8 @@ pub(crate) async fn run_adaptation_stream(ctx: AdaptationStreamContext) -> Resul
     }
 
     let mut sidx_segments_by_rep: HashMap<String, Vec<manifest::TimelineSegment>> = HashMap::new();
+    let mut per_segment_index_ranges_by_rep: HashMap<String, HashMap<u64, manifest::ByteRange>> =
+        HashMap::new();
     let mut last_quality_index = metrics.last_quality_index();
     let mut playback_started_emitted = false;
 
@@ -385,6 +387,7 @@ pub(crate) async fn run_adaptation_stream(ctx: AdaptationStreamContext) -> Resul
             },
             &mut encrypted_init_by_rep,
             &mut sidx_segments_by_rep,
+            &mut per_segment_index_ranges_by_rep,
         )
         .await?;
         let elapsed_s = t0.elapsed().as_secs_f64().max(1e-6);
@@ -705,6 +708,7 @@ async fn fetch_media_with_rep_fallback(
     params: MediaFetchParams<'_>,
     encrypted_init_by_rep: &mut HashMap<String, Bytes>,
     sidx_segments_by_rep: &mut HashMap<String, Vec<manifest::TimelineSegment>>,
+    per_segment_index_ranges_by_rep: &mut HashMap<String, HashMap<u64, manifest::ByteRange>>,
 ) -> Result<(Vec<u8>, usize, manifest::TimelineSegment), PlayerError> {
     let mut last_err = PlayerError::SegmentExhaustedRepresentations;
     for quality_index in quality_indices_for_fallback(params.start_quality_index) {
@@ -743,7 +747,7 @@ async fn fetch_media_with_rep_fallback(
                 }
             }
             manifest::SegmentAddressing::Template(ref st)
-                if manifest::segment_template_uses_sidecar_index(st) =>
+                if manifest::segment_template_uses_global_sidecar_index(st) =>
             {
                 let rep_segs = sidx_segments_for_rep_template(
                     env.client,
@@ -757,6 +761,20 @@ async fn fetch_media_with_rep_fallback(
                 .await?;
                 if let Some(rep_seg) = rep_segs.get(params.local_idx) {
                     seg_for_fetch.media_range = rep_seg.media_range;
+                }
+            }
+            manifest::SegmentAddressing::Template(ref st)
+                if manifest::segment_template_uses_per_segment_index(st) =>
+            {
+                if let Some(media_range) = media_range_for_per_segment_index(
+                    env,
+                    rep,
+                    &seg_for_fetch,
+                    per_segment_index_ranges_by_rep,
+                )
+                .await?
+                {
+                    seg_for_fetch.media_range = Some(media_range);
                 }
             }
             _ => {}
@@ -1005,18 +1023,58 @@ async fn sidx_segments_for_rep_template<'a>(
     let rep_id = rep.id.as_deref().unwrap_or_default().to_string();
     if let std::collections::hash_map::Entry::Vacant(e) = cache.entry(rep_id) {
         let merged_st = manifest::segment_template_for_representation(period, adaptation_set, rep)?;
-        let bases =
-            manifest::segment_bases_for_representation(segment_base_ctx, adaptation_set, rep)?;
-        let vars = manifest::template_vars_for_representation(rep, adaptation_set);
-        let index_target = manifest::segment_template_index_target(&merged_st, &vars)?;
-        let index_bytes = fetch_segment_target(client, &bases, &index_target, blacklist).await?;
-        let segs = manifest::parse_sidx_index_from_template(&merged_st, &index_bytes)?;
-        e.insert(segs);
+        if manifest::segment_template_uses_per_segment_index(&merged_st) {
+            e.insert(Vec::new());
+        } else {
+            let bases =
+                manifest::segment_bases_for_representation(segment_base_ctx, adaptation_set, rep)?;
+            let vars = manifest::template_vars_for_representation(rep, adaptation_set);
+            let index_target = manifest::segment_template_index_target(&merged_st, &vars)?;
+            let index_bytes =
+                fetch_segment_target(client, &bases, &index_target, blacklist).await?;
+            let segs = manifest::parse_sidx_index_from_template(&merged_st, &index_bytes)?;
+            e.insert(segs);
+        }
     }
     Ok(cache
         .get(rep.id.as_deref().unwrap_or_default())
         .map(|v| v.as_slice())
         .unwrap_or(&[]))
+}
+
+async fn media_range_for_per_segment_index(
+    env: &RepFetchEnv<'_>,
+    rep: &Representation,
+    seg: &manifest::TimelineSegment,
+    cache: &mut HashMap<String, HashMap<u64, manifest::ByteRange>>,
+) -> Result<Option<manifest::ByteRange>, PlayerError> {
+    let merged_st =
+        manifest::segment_template_for_representation(env.period, env.adaptation_set, rep)?;
+    if !manifest::segment_template_uses_per_segment_index(&merged_st) {
+        return Ok(None);
+    }
+
+    let rep_id = rep.id.as_deref().unwrap_or_default().to_string();
+    let per_rep = cache.entry(rep_id).or_default();
+    if let Some(media_range) = per_rep.get(&seg.number) {
+        return Ok(Some(*media_range));
+    }
+
+    let bases =
+        manifest::segment_bases_for_representation(env.segment_base_ctx, env.adaptation_set, rep)?;
+    let base_vars = manifest::template_vars_for_representation(rep, env.adaptation_set);
+    let vars = manifest::TemplateVars {
+        number: Some(seg.number),
+        time: Some(seg.time),
+        sub_number: seg.sub_number,
+        ..base_vars
+    };
+    let index_target = manifest::segment_template_index_target(&merged_st, &vars)?;
+    let index_bytes =
+        fetch_segment_target(env.client, &bases, &index_target, env.blacklist).await?;
+    let media_range = manifest::media_range_from_per_segment_index(&merged_st, &index_bytes)?;
+    per_rep.insert(seg.number, media_range);
+    Ok(Some(media_range))
 }
 
 async fn sidx_segments_for_rep<'a>(

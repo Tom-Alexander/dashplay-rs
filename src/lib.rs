@@ -131,6 +131,8 @@ pub enum PlayerError {
     MissingSegmentTemplateIndex,
     #[error("SegmentTemplate@index sidecar timeline requires fetched sidx index")]
     SegmentTemplateIndexNotLoaded,
+    #[error("SegmentTemplate@index with $Number$ or $Time$ requires segment number or time")]
+    MissingSegmentTemplateIndexVars,
     #[error("failed to parse sidx index: {0}")]
     SidxParse(String),
     #[error("hierarchical sidx references are not supported")]

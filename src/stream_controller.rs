@@ -17,14 +17,14 @@ use super::abr::SharedAbrFactory;
 use super::delivered_segments::DeliveredSegmentTracker;
 use super::http::SharedHttpClient;
 use super::manifest;
-use super::manifest_update;
+use super::manifest_lifecycle::ManifestSession;
 use super::media_events;
 use super::playback_control::{PlaybackController, PlaybackState};
 use super::schedule::{AdaptationStreamContext, run_adaptation_stream};
 use super::segment_blacklist::SegmentBlacklist;
 use super::track_selection::{TrackSelection, select_adaptation_sets};
 use super::types::PlayerEvent;
-use super::utc_timing;
+use crate::clock::{resync, utc_timing};
 
 pub(crate) struct PlaybackLoopState {
     pub client: SharedHttpClient,
@@ -48,7 +48,7 @@ impl PlaybackLoopState {
 
         let mut manifest = None;
         let mut mpd_xml = None;
-        let mut manifest_session = manifest_update::ManifestSession::default();
+        let mut manifest_session = ManifestSession::default();
         manifest_session.initialize(manifest_uri.clone());
         let mut last_period_idx = None;
         let mut seek_target_override: Option<std::time::Duration> = None;
@@ -64,13 +64,12 @@ impl PlaybackLoopState {
         );
         let blacklist = SegmentBlacklist::new();
         let drm = Arc::new(AsyncMutex::new(drm));
-        let inband_prt_anchors: Arc<
-            Vec<Arc<Mutex<Option<super::resync::ProducerReferenceAnchor>>>>,
-        > = Arc::new(
-            (0..tracks.len())
-                .map(|_| Arc::new(Mutex::new(None)))
-                .collect(),
-        );
+        let inband_prt_anchors: Arc<Vec<Arc<Mutex<Option<resync::ProducerReferenceAnchor>>>>> =
+            Arc::new(
+                (0..tracks.len())
+                    .map(|_| Arc::new(Mutex::new(None)))
+                    .collect(),
+            );
 
         let run_result: Result<(), PlayerError> = async {
             loop {
@@ -191,7 +190,7 @@ impl PlaybackLoopState {
 
                     let since_ast_utc = manifest::since_availability_start_at(mpd_ref, wall_now)?;
                     let adaptation_sets = select_adaptation_sets(&period, &track_selection);
-                    let prt_reference_id = super::resync::latency_reference_id(mpd_ref);
+                    let prt_reference_id = resync::latency_reference_id(mpd_ref);
 
                     let reference_since_ast = adaptation_sets
                         .first()
@@ -204,7 +203,7 @@ impl PlaybackLoopState {
                                     let inband = inband_prt_anchors
                                         .first()
                                         .and_then(|a| a.lock().ok().and_then(|g| *g));
-                                    super::resync::resync_corrected_since_ast(
+                                    resync::resync_corrected_since_ast(
                                         mpd_ref,
                                         wall_now,
                                         &period,
@@ -238,7 +237,7 @@ impl PlaybackLoopState {
                                 let inband = inband_prt_anchors
                                     .get(track_idx)
                                     .and_then(|a| a.lock().ok().and_then(|g| *g));
-                                super::resync::resync_corrected_since_ast(
+                                resync::resync_corrected_since_ast(
                                     mpd_ref,
                                     wall_now,
                                     &period,
@@ -249,8 +248,8 @@ impl PlaybackLoopState {
                                 )
                             })
                             .or(since_ast_utc);
-                        let resync_hints = rep
-                            .and_then(|r| super::resync::resync_hints(&period, &adaptation_set, r));
+                        let resync_hints =
+                            rep.and_then(|r| resync::resync_hints(&period, &adaptation_set, r));
                         let timeline_ctx = manifest::TimelineBuildContext {
                             is_dynamic,
                             period_window: current_window,
@@ -371,7 +370,7 @@ fn send_playback_ended(tracks: &[super::types::PlayerTrack]) {
 fn reset_for_seek(
     have_init: &Arc<Vec<AtomicBool>>,
     delivered: &Arc<Vec<Arc<Mutex<DeliveredSegmentTracker>>>>,
-    inband_prt_anchors: &Arc<Vec<Arc<Mutex<Option<super::resync::ProducerReferenceAnchor>>>>>,
+    inband_prt_anchors: &Arc<Vec<Arc<Mutex<Option<resync::ProducerReferenceAnchor>>>>>,
 ) {
     for flag in have_init.iter() {
         flag.store(false, Ordering::Release);

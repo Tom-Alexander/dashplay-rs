@@ -34,12 +34,12 @@ pub(crate) fn align_start_index_to_sap(
     i
 }
 
-/// When [`crate::resync::ResyncHints::random_access_interval_s`] is set, snap `start_idx` to the
+/// When [`crate::clock::resync::ResyncHints::random_access_interval_s`] is set, snap `start_idx` to the
 /// nearest segment on the resync grid (DASH-IF IOP §9.X.6.2.8).
 pub(crate) fn align_start_index_to_resync(
     segments: &[TimelineSegment],
     start_idx: usize,
-    hints: crate::resync::ResyncHints,
+    hints: crate::clock::resync::ResyncHints,
 ) -> usize {
     let Some(interval_s) = hints
         .random_access_interval_s
@@ -83,7 +83,7 @@ pub(crate) fn mid_segment_resync_alignment(
     segments: &[TimelineSegment],
     start_idx: usize,
     target_presentation_time_s: f64,
-    hints: crate::resync::ResyncHints,
+    hints: crate::clock::resync::ResyncHints,
 ) -> (usize, Option<u64>) {
     let Some(interval_s) = hints
         .random_access_interval_s

@@ -3,12 +3,12 @@ use std::time::Duration;
 use dash_mpd::{AdaptationSet, Representation, S, SegmentTemplate, SegmentTimeline};
 
 use crate::PlayerError;
+use crate::clock::resync::ResyncHints;
 use crate::manifest::{
     PeriodWindow, TemplateVars, TimelineBuildContext, TimelineSegment, align_start_index_to_resync,
     align_start_index_to_sap, interpolate_template, mid_segment_resync_alignment,
     template_vars_for_representation, timeline_segments,
 };
-use crate::resync::ResyncHints;
 
 fn static_ctx(period_end: Option<Duration>) -> TimelineBuildContext {
     TimelineBuildContext {

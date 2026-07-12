@@ -13,7 +13,7 @@ use quick_xml::Reader;
 use quick_xml::events::Event;
 use url::Url;
 
-use super::http::{HttpRequest, SharedHttpClient};
+use crate::http::{HttpRequest, SharedHttpClient};
 
 const NTP_UNIX_OFFSET: i64 = 2_208_988_800;
 

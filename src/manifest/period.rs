@@ -11,7 +11,7 @@ pub(crate) fn mpd(manifest: &Option<MPD>) -> Result<&MPD, PlayerError> {
     manifest.as_ref().ok_or(PlayerError::ManifestNotLoaded)
 }
 
-/// Elapsed time since `MPD@availabilityStartTime` using a wall clock (from [`super::utc_timing`] or local UTC).
+/// Elapsed time since `MPD@availabilityStartTime` using a wall clock (from [`crate::clock::utc_timing`] or local UTC).
 pub(crate) fn since_availability_start_at(
     mpd: &MPD,
     wall_now: DateTime<Utc>,

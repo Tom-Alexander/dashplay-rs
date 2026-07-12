@@ -3,11 +3,12 @@
 use dash_mpd::MPD;
 use url::Url;
 
-use super::PlayerError;
+use crate::PlayerError;
+use crate::http::{HttpRequest, SharedHttpClient};
+use crate::manifest::merge_base_url;
+
 use super::content_steering::ContentSteeringState;
-use super::http::{HttpRequest, SharedHttpClient};
-use super::manifest::merge_base_url;
-use super::mpd_patch::{self, MpdPatchError};
+use super::patch::{self, MpdPatchError};
 
 /// Cached manifest state used across live refreshes.
 #[derive(Debug, Default)]
@@ -111,7 +112,7 @@ impl ManifestSession {
             .ok_or(PlayerError::ManifestNotLoaded)?;
         let resp = client.send(HttpRequest::get(patch_uri.clone())).await?;
         let patch_xml = resp.text()?;
-        let updated = mpd_patch::apply_mpd_patch(base_xml, &patch_xml).map_err(map_patch_error)?;
+        let updated = patch::apply_mpd_patch(base_xml, &patch_xml).map_err(map_patch_error)?;
         let parsed = dash_mpd::parse(&updated)?;
         Ok((updated, parsed))
     }

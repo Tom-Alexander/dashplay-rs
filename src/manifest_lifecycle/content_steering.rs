@@ -6,9 +6,9 @@ use dash_mpd::BaseURL;
 use roxmltree::Document;
 use url::Url;
 
-use super::PlayerError;
-use super::http::{HttpRequest, SharedHttpClient};
-use super::manifest::merge_base_url;
+use crate::PlayerError;
+use crate::http::{HttpRequest, SharedHttpClient};
+use crate::manifest::merge_base_url;
 
 /// Parsed DASH Content Steering Manifest (DCSM).
 #[derive(Debug, Clone, Default, PartialEq, Eq)]

@@ -14,7 +14,7 @@ use crate::drm::License;
 use crate::drm::coordinator::DrmSessionCoordinator;
 use crate::http::SharedHttpClient;
 use crate::manifest;
-use crate::partial_segment;
+use crate::mp4::partial_segment;
 use crate::segment_blacklist::SegmentBlacklist;
 use crate::segment_fetcher::{
     fetch_bytes_with_base_failover, fetch_bytes_with_base_failover_and_range,

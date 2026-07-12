@@ -44,30 +44,25 @@ use thiserror::Error;
 
 pub mod abr;
 pub use abr::bola::{Bola, BolaDecision, QualityLevel};
-mod content_steering;
+mod clock;
 mod delivered_segments;
 mod descriptors;
 pub mod drm;
 pub mod http;
 mod manifest;
-mod manifest_update;
+mod manifest_lifecycle;
 mod media_events;
 mod media_player;
 mod metrics;
-mod mp4_box;
-mod mpd_patch;
-mod partial_segment;
+mod mp4;
 mod playback_control;
 mod player;
-mod prft;
-mod resync;
 mod schedule;
 mod segment_blacklist;
 mod segment_fetcher;
 mod stream_controller;
 mod track_selection;
 mod types;
-mod utc_timing;
 
 pub use abr::{
     AbrController, AbrDecision, AbrFactory, BolaAbrFactory, QualityRung, SharedAbrFactory,

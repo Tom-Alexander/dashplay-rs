@@ -149,7 +149,7 @@ without changing playback behaviour.
 - [ ] **`stream_controller` extraction.** Pull manifest-refresh loop, period-context
   building, and MPD event dedup out of `PlaybackLoopState::run`; type manifest session
   state so `expect("parsed")` is unnecessary.
-- [ ] **Root module clustering.** Group loose `src/` modules into subtrees: `mp4/`
+- [x] **Root module clustering.** Group loose `src/` modules into subtrees: `mp4/`
   (`mp4_box`, `prft`, `partial_segment`, in-band `emsg` parsing), manifest lifecycle
   (`manifest_update`, `content_steering`, `mpd_patch`), clock/live-edge (`utc_timing`,
   `resync`).

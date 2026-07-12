@@ -81,7 +81,7 @@ pub(crate) fn segment_bases_for_representation(
     representation: &Representation,
 ) -> Result<Vec<Url>, PlayerError> {
     let mut bases = vec![ctx.manifest_uri.clone()];
-    let mpd_base_urls = crate::content_steering::order_base_urls_for_steering(
+    let mpd_base_urls = crate::manifest_lifecycle::order_base_urls_for_steering(
         &ctx.mpd_base_urls,
         &ctx.service_location_priority,
         ctx.default_service_location.as_deref(),

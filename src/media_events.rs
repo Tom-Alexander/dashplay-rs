@@ -5,6 +5,8 @@ use std::collections::HashSet;
 use bytes::Bytes;
 use dash_mpd::{AdaptationSet, Event, EventStream, InbandEventStream, Period, Representation};
 
+use crate::mp4::emsg::{ParsedEmsg, scan_emsg_boxes};
+
 /// Origin of a DASH timed media event.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum MediaEventSource {
@@ -137,17 +139,6 @@ impl InbandFilter {
     }
 }
 
-#[derive(Debug, Clone, PartialEq, Eq)]
-struct ParsedEmsg {
-    scheme_id_uri: String,
-    value: Option<String>,
-    timescale: u64,
-    presentation_time: u64,
-    event_duration: Option<u64>,
-    id: Option<u64>,
-    message_data: Vec<u8>,
-}
-
 fn push_mpd_event_stream(out: &mut Vec<MediaEvent>, stream: &EventStream) {
     let stream_timescale = stream.timescale.unwrap_or(1).max(1);
     let stream_offset = stream.presentationTimeOffset.unwrap_or(0);
@@ -229,132 +220,6 @@ fn dedupe_inband_filters(filters: Vec<InbandFilter>) -> Vec<InbandFilter> {
         .into_iter()
         .filter(|f| seen.insert((f.scheme_id_uri.clone(), f.value.clone())))
         .collect()
-}
-
-fn scan_emsg_boxes(data: &[u8]) -> Vec<ParsedEmsg> {
-    let mut out = Vec::new();
-    let mut offset = 0usize;
-    while offset + 8 <= data.len() {
-        let Some((box_size, header_len)) = read_box_size(data, offset) else {
-            break;
-        };
-        if box_size < header_len || offset + box_size > data.len() {
-            offset = offset.saturating_add(1);
-            continue;
-        }
-        let box_end = offset + box_size;
-        if &data[offset + 4..offset + 8] == b"emsg" {
-            if let Some(parsed) = parse_emsg_box(&data[offset + header_len..box_end]) {
-                out.push(parsed);
-            }
-        }
-        offset = box_end;
-    }
-    out
-}
-
-fn read_box_size(data: &[u8], offset: usize) -> Option<(usize, usize)> {
-    if offset + 8 > data.len() {
-        return None;
-    }
-    let size32 = u32::from_be_bytes(data[offset..offset + 4].try_into().ok()?);
-    if size32 == 1 {
-        if offset + 16 > data.len() {
-            return None;
-        }
-        let size64 = u64::from_be_bytes(data[offset + 8..offset + 16].try_into().ok()?);
-        let size = usize::try_from(size64).ok()?;
-        Some((size, 16))
-    } else {
-        let size = if size32 == 0 {
-            data.len() - offset
-        } else {
-            usize::try_from(size32).ok()?
-        };
-        Some((size, 8))
-    }
-}
-
-fn parse_emsg_box(payload: &[u8]) -> Option<ParsedEmsg> {
-    if payload.len() < 4 {
-        return None;
-    }
-    let version = payload[0];
-    match version {
-        0 => parse_emsg_v0(payload),
-        1 => parse_emsg_v1(payload),
-        _ => None,
-    }
-}
-
-fn parse_emsg_v0(payload: &[u8]) -> Option<ParsedEmsg> {
-    let mut offset = 4usize;
-    let (scheme_id_uri, next) = read_c_string(payload, offset)?;
-    offset = next;
-    let (value, next) = read_c_string(payload, offset)?;
-    offset = next;
-    if offset + 16 > payload.len() {
-        return None;
-    }
-    let timescale = u32::from_be_bytes(payload[offset..offset + 4].try_into().ok()?);
-    offset += 4;
-    let presentation_time_delta = u32::from_be_bytes(payload[offset..offset + 4].try_into().ok()?);
-    offset += 4;
-    let event_duration = u32::from_be_bytes(payload[offset..offset + 4].try_into().ok()?);
-    offset += 4;
-    let id = u32::from_be_bytes(payload[offset..offset + 4].try_into().ok()?);
-    offset += 4;
-    let message_data = payload.get(offset..)?.to_vec();
-    Some(ParsedEmsg {
-        scheme_id_uri,
-        value: if value.is_empty() { None } else { Some(value) },
-        timescale: u64::from(timescale.max(1)),
-        presentation_time: u64::from(presentation_time_delta),
-        event_duration: (event_duration > 0).then_some(u64::from(event_duration)),
-        id: (id > 0).then_some(u64::from(id)),
-        message_data,
-    })
-}
-
-fn parse_emsg_v1(payload: &[u8]) -> Option<ParsedEmsg> {
-    let mut offset = 4usize;
-    if offset + 20 > payload.len() {
-        return None;
-    }
-    let timescale = u32::from_be_bytes(payload[offset..offset + 4].try_into().ok()?);
-    offset += 4;
-    let presentation_time = u64::from_be_bytes(payload[offset..offset + 8].try_into().ok()?);
-    offset += 8;
-    let event_duration = u32::from_be_bytes(payload[offset..offset + 4].try_into().ok()?);
-    offset += 4;
-    let id = u32::from_be_bytes(payload[offset..offset + 4].try_into().ok()?);
-    offset += 4;
-    let (scheme_id_uri, next) = read_c_string(payload, offset)?;
-    offset = next;
-    let (value, next) = read_c_string(payload, offset)?;
-    offset = next;
-    let message_data = payload.get(offset..)?.to_vec();
-    Some(ParsedEmsg {
-        scheme_id_uri,
-        value: if value.is_empty() { None } else { Some(value) },
-        timescale: u64::from(timescale.max(1)),
-        presentation_time,
-        event_duration: (event_duration > 0).then_some(u64::from(event_duration)),
-        id: (id > 0).then_some(u64::from(id)),
-        message_data,
-    })
-}
-
-fn read_c_string(data: &[u8], mut offset: usize) -> Option<(String, usize)> {
-    let start = offset;
-    while offset < data.len() {
-        if data[offset] == 0 {
-            let s = std::str::from_utf8(&data[start..offset]).ok()?.to_string();
-            return Some((s, offset + 1));
-        }
-        offset += 1;
-    }
-    None
 }
 
 #[cfg(test)]

@@ -13,13 +13,13 @@ use tokio::sync::{broadcast, watch};
 
 use crate::PlayerError;
 use crate::abr::SharedAbrFactory;
+use crate::clock::resync::ProducerReferenceAnchor;
 use crate::delivered_segments::DeliveredSegmentTracker;
 use crate::drm::coordinator::DrmSessionCoordinator;
 use crate::http::SharedHttpClient;
 use crate::manifest::{self, TimelineBuildContext};
 use crate::metrics::TrackMetrics;
 use crate::playback_control::{PlaybackController, PlaybackState};
-use crate::resync::ProducerReferenceAnchor;
 use crate::segment_blacklist::SegmentBlacklist;
 use crate::segment_fetcher::fetch_bytes_with_base_failover_and_range;
 use crate::types::PlayerEvent;

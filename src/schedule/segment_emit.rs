@@ -10,12 +10,12 @@ use tokio::sync::{broadcast, watch};
 
 use crate::PlayerError;
 use crate::abr::AbrController;
+use crate::clock::resync::ProducerReferenceAnchor;
 use crate::manifest;
 use crate::media_events;
 use crate::metrics::TrackMetrics;
+use crate::mp4::prft;
 use crate::playback_control::{PlaybackController, PlaybackState};
-use crate::prft;
-use crate::resync::ProducerReferenceAnchor;
 use crate::types::{PartialSegmentChunk, PlayerEvent};
 
 use super::segment_fetch::RepFetchEnv;

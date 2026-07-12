@@ -7,10 +7,11 @@ use std::sync::{Arc, Mutex};
 
 use dash_mpd::{AdaptationSet, Period, Representation};
 
-use super::manifest;
-use super::mp4_box::{box_type_at, read_box_size};
-use super::resync::{self, ProducerReferenceAnchor};
-use super::utc_timing;
+use crate::clock::{resync, utc_timing};
+use crate::manifest;
+
+use super::{box_type_at, read_box_size};
+use resync::ProducerReferenceAnchor;
 
 /// Parsed `prft` box payload (ISO/IEC 14496-12 §8.16.5).
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]

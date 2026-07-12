@@ -8,7 +8,7 @@ use std::time::Duration;
 use chrono::{DateTime, Utc};
 use dash_mpd::{AdaptationSet, MPD, Period, ProducerReferenceTime, Representation, Resync};
 
-use super::manifest::{self, SegmentAddressing};
+use crate::manifest::{self, SegmentAddressing};
 
 /// Parsed [`Resync`] hints for an adaptation set / representation pair.
 #[derive(Debug, Clone, Copy, PartialEq)]

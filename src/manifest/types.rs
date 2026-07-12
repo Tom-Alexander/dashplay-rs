@@ -20,7 +20,7 @@ pub(crate) struct TimelineBuildContext {
     pub media_presentation_duration: Option<Duration>,
     pub time_shift_buffer_depth: Option<Duration>,
     pub since_availability_start: Option<Duration>,
-    pub resync_hints: Option<crate::resync::ResyncHints>,
+    pub resync_hints: Option<crate::clock::resync::ResyncHints>,
 }
 
 impl TimelineBuildContext {

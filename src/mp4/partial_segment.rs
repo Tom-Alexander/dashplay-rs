@@ -2,11 +2,12 @@
 
 use bytes::{Bytes, BytesMut};
 
-use super::PlayerError;
-use super::http::{HttpRequest, SharedHttpClient};
-use super::manifest::SegmentFetchTarget;
-use super::mp4_box::{box_type_at, read_box_size};
-use super::segment_blacklist::SegmentBlacklist;
+use crate::PlayerError;
+use crate::http::{HttpRequest, SharedHttpClient};
+use crate::manifest::SegmentFetchTarget;
+use crate::segment_blacklist::SegmentBlacklist;
+
+use super::{box_type_at, read_box_size};
 use url::Url;
 
 /// Accumulates streaming bytes and yields complete top-level `moof`/`mdat` CMAF fragment pairs.

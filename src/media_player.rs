@@ -14,7 +14,7 @@ use super::playback_control::PlaybackController;
 use super::stream_controller::PlaybackLoopState;
 use super::track_selection::{TrackSelection, select_adaptation_sets};
 use super::types::PlayerOutputs;
-use super::utc_timing;
+use crate::clock::utc_timing;
 
 pub use super::drm::coordinator::WidevineLicenseFetcher;
 

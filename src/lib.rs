@@ -46,7 +46,6 @@ pub mod abr;
 pub use abr::bola::{Bola, BolaDecision, QualityLevel};
 mod clock;
 mod delivered_segments;
-mod descriptors;
 pub mod drm;
 pub mod http;
 mod manifest;

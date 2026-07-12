@@ -12,7 +12,7 @@ use dash_mpd::AdaptationSet;
 
 pub use bola::BolaAbrFactory;
 
-use crate::descriptors::is_delivery_representation;
+use crate::track_selection::descriptors::is_delivery_representation;
 
 /// Quality rung in an adaptation-set ladder, ordered low→high bitrate.
 #[derive(Debug, Clone)]

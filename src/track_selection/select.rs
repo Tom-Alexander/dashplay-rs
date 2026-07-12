@@ -2,7 +2,7 @@
 
 use dash_mpd::{AdaptationSet, Period};
 
-use crate::descriptors::{
+use super::descriptors::{
     adaptation_descriptor_metadata, is_playback_adaptation_set, is_thumbnail_tile_adaptation_set,
     is_trick_play_adaptation_set, thumbnail_tile_layout,
 };

@@ -1,5 +1,6 @@
 //! Deterministic selection and description of DASH adaptation-set tracks.
 
+pub(crate) mod descriptors;
 mod info;
 mod kind;
 mod select;

@@ -2,7 +2,7 @@
 
 use dash_mpd::{AdaptationSet, EssentialProperty, SupplementalProperty};
 
-use super::track_selection::TrackDescriptor;
+use super::kind::TrackDescriptor;
 
 /// MPEG-DASH role descriptor scheme.
 pub const ROLE_SCHEME: &str = "urn:mpeg:dash:role:2011";
@@ -152,7 +152,7 @@ fn supplemental_roles(adaptation_set: &AdaptationSet) -> Vec<String> {
 ///
 /// Adaptation sets that declare auxiliary essential schemes (trick play, thumbnail tiles) or
 /// unknown essential schemes are excluded from default track selection.
-pub fn is_playback_adaptation_set(adaptation_set: &AdaptationSet) -> bool {
+pub(crate) fn is_playback_adaptation_set(adaptation_set: &AdaptationSet) -> bool {
     adaptation_set
         .essential_property
         .iter()

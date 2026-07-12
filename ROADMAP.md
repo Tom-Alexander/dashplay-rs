@@ -153,7 +153,7 @@ without changing playback behaviour.
   (`mp4_box`, `prft`, `partial_segment`, in-band `emsg` parsing), manifest lifecycle
   (`manifest_update`, `content_steering`, `mpd_patch`), clock/live-edge (`utc_timing`,
   `resync`).
-- [ ] **`descriptors` → `track_selection/`.** Move adaptation-set compatibility
+- [x] **`descriptors` → `track_selection/`.** Move adaptation-set compatibility
   filtering next to its only consumers.
 - [ ] **`manifest/tests.rs` distribution.** Split the ~900-line catch-all test module
   into per-submodule `tests.rs` files (mirroring `timeline/tests.rs`).

@@ -131,6 +131,26 @@ pub(crate) async fn run_adaptation_stream(ctx: AdaptationStreamContext) -> Resul
                     .await?;
             manifest::parse_sidx_index(&merged_sb, &index_bytes)?
         }
+        manifest::SegmentAddressing::Template(st)
+            if manifest::segment_template_uses_sidecar_index(st) =>
+        {
+            let rep = adaptation_set
+                .representations
+                .first()
+                .ok_or(PlayerError::SegmentExhaustedRepresentations)?;
+            let merged_st =
+                manifest::segment_template_for_representation(&period, &adaptation_set, rep)?;
+            let bases = manifest::segment_bases_for_representation(
+                &segment_base_ctx,
+                &adaptation_set,
+                rep,
+            )?;
+            let vars = manifest::template_vars_for_representation(rep, &adaptation_set);
+            let index_target = manifest::segment_template_index_target(&merged_st, &vars)?;
+            let index_bytes =
+                fetch_segment_target(&client, &bases, &index_target, &blacklist).await?;
+            manifest::parse_sidx_index_from_template(&merged_st, &index_bytes)?
+        }
         _ => manifest::timeline_segments_for_addressing(
             &addressing,
             &timeline_ctx,
@@ -706,8 +726,8 @@ async fn fetch_media_with_rep_fallback(
         let rep_addressing =
             manifest::segment_addressing_for_representation(env.period, env.adaptation_set, rep)?;
         let mut seg_for_fetch = params.seg.clone();
-        if let manifest::SegmentAddressing::Base(ref sb) = rep_addressing {
-            if sb.indexRange.is_some() {
+        match rep_addressing {
+            manifest::SegmentAddressing::Base(ref sb) if sb.indexRange.is_some() => {
                 let rep_segs = sidx_segments_for_rep(
                     env.client,
                     env.segment_base_ctx,
@@ -722,6 +742,24 @@ async fn fetch_media_with_rep_fallback(
                     seg_for_fetch.media_range = rep_seg.media_range;
                 }
             }
+            manifest::SegmentAddressing::Template(ref st)
+                if manifest::segment_template_uses_sidecar_index(st) =>
+            {
+                let rep_segs = sidx_segments_for_rep_template(
+                    env.client,
+                    env.segment_base_ctx,
+                    env.period,
+                    env.adaptation_set,
+                    rep,
+                    env.blacklist,
+                    sidx_segments_by_rep,
+                )
+                .await?;
+                if let Some(rep_seg) = rep_segs.get(params.local_idx) {
+                    seg_for_fetch.media_range = rep_seg.media_range;
+                }
+            }
+            _ => {}
         }
         let base_vars = manifest::template_vars_for_representation(rep, env.adaptation_set);
         let init_path = manifest::resolved_initialization_path(&rep_addressing, &base_vars);
@@ -921,7 +959,7 @@ fn media_target_for_addressing(
                         ..*vars
                     },
                 ),
-                range: None,
+                range: seg.media_range,
             })
         }
         manifest::SegmentAddressing::List(sl) => {
@@ -953,6 +991,32 @@ async fn fetch_segment_target(
         .await;
     }
     fetch_bytes_with_base_failover(client, bases, &target.path, blacklist).await
+}
+
+async fn sidx_segments_for_rep_template<'a>(
+    client: &SharedHttpClient,
+    segment_base_ctx: &manifest::SegmentBaseContext,
+    period: &Period,
+    adaptation_set: &AdaptationSet,
+    rep: &Representation,
+    blacklist: &SegmentBlacklist,
+    cache: &'a mut HashMap<String, Vec<manifest::TimelineSegment>>,
+) -> Result<&'a [manifest::TimelineSegment], PlayerError> {
+    let rep_id = rep.id.as_deref().unwrap_or_default().to_string();
+    if let std::collections::hash_map::Entry::Vacant(e) = cache.entry(rep_id) {
+        let merged_st = manifest::segment_template_for_representation(period, adaptation_set, rep)?;
+        let bases =
+            manifest::segment_bases_for_representation(segment_base_ctx, adaptation_set, rep)?;
+        let vars = manifest::template_vars_for_representation(rep, adaptation_set);
+        let index_target = manifest::segment_template_index_target(&merged_st, &vars)?;
+        let index_bytes = fetch_segment_target(client, &bases, &index_target, blacklist).await?;
+        let segs = manifest::parse_sidx_index_from_template(&merged_st, &index_bytes)?;
+        e.insert(segs);
+    }
+    Ok(cache
+        .get(rep.id.as_deref().unwrap_or_default())
+        .map(|v| v.as_slice())
+        .unwrap_or(&[]))
 }
 
 async fn sidx_segments_for_rep<'a>(

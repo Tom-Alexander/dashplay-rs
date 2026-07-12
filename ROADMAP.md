@@ -138,8 +138,12 @@ These close the largest gaps between "delivers some streams" and "handles confor
   `$Initialization$`.
 - [x] **`SegmentTemplate@endNumber`.** Bound static `@duration` segment counts without
   relying solely on Period/MPD duration.
-- [~] **`SegmentTemplate@index` (sidecar index).** Inherited in the model; fetch and use
+- [x] **`SegmentTemplate@index` (sidecar index).** Inherited in the model; fetch and use
   separate index documents.
+- [ ] **Per-segment `SegmentTemplate@index` URLs.** Support `$Number$` / `$Time$`
+  substitution in index templates that point to one index document per media segment.
+- [ ] **`RepresentationIndex` addressing.** Fetch and parse `RepresentationIndex`
+  child elements as an alternative to `@index` / `@indexRange`.
 - [ ] **`SegmentTemplate@maxDuration`.** Validate or bound segment durations.
 - [ ] **Bitstream switching.** Honour `SegmentTemplate@bitstreamSwitching` /
   `BitstreamSwitching` — skip init fetch/re-emit when switching representations.
@@ -149,6 +153,8 @@ These close the largest gaps between "delivers some streams" and "handles confor
 - [~] **Whole-file `SegmentBase`.** Single-segment and `@presentationDuration` progressive
   paths without `@indexRange`.
 - [~] **`@indexRangeExact`.** Distinct semantics from `@indexRange`.
+- [ ] **Sidecar `@indexRangeExact`.** Apply exact-range semantics to
+  `SegmentTemplate@index` sidecar index fetches.
 - [ ] **Addressing-mode validation.** Enforce mutual exclusivity of `SegmentTemplate` /
   `SegmentList` / `SegmentBase` at the same hierarchy level.
 - [ ] **Remote MPD documents.** `MPD@xlink:href`, `Period@xlink:href`, and

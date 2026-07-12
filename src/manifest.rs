@@ -575,6 +575,15 @@ fn segment_template_has_timeline_source(st: &SegmentTemplate) -> bool {
     st.SegmentTimeline.is_some() || st.duration.is_some()
 }
 
+/// `SegmentTemplate@index` + `@indexRange`: timeline comes from a separate index document.
+pub(crate) fn segment_template_uses_sidecar_index(st: &SegmentTemplate) -> bool {
+    st.index.is_some() && st.indexRange.is_some()
+}
+
+fn segment_template_has_addressing_source(st: &SegmentTemplate) -> bool {
+    segment_template_has_timeline_source(st) || segment_template_uses_sidecar_index(st)
+}
+
 /// Inherited `SegmentTemplate@endNumber` for adaptation-set timeline expansion.
 pub(crate) fn end_number_for_timeline(
     period: &Period,
@@ -624,11 +633,11 @@ pub(crate) fn segment_template_for_timeline(
 
     if merged
         .as_ref()
-        .is_none_or(|st| !segment_template_has_timeline_source(st))
+        .is_none_or(|st| !segment_template_has_addressing_source(st))
     {
         for rep in &adaptation_set.representations {
             if let Some(rep_st) = &rep.SegmentTemplate {
-                if segment_template_has_timeline_source(rep_st) {
+                if segment_template_has_addressing_source(rep_st) {
                     merged = Some(match merged {
                         None => rep_st.clone(),
                         Some(parent) => merge_segment_template(&parent, rep_st),
@@ -785,20 +794,30 @@ pub(crate) fn segment_base_for_representation(
     .ok_or(PlayerError::MissingSegmentBase)
 }
 
-/// Build timeline segments from a parsed ISOBMFF `sidx` box and `SegmentBase@indexRange`.
+/// Build timeline segments from a parsed ISOBMFF `sidx` box.
 pub(crate) fn timeline_segments_from_sidx(
     sb: &SegmentBase,
     sidx: &dash_mpd::sidx::SidxBox,
     index_start: u64,
 ) -> Result<Vec<TimelineSegment>, PlayerError> {
     let timescale = sb.timescale.unwrap_or(u64::from(sidx.timescale));
+    let presentation_time_offset = sb.presentationTimeOffset.unwrap_or(0);
+    timeline_segments_from_sidx_values(timescale, presentation_time_offset, 1, sidx, index_start)
+}
+
+fn timeline_segments_from_sidx_values(
+    timescale: u64,
+    presentation_time_offset: u64,
+    start_number: u64,
+    sidx: &dash_mpd::sidx::SidxBox,
+    media_start: u64,
+) -> Result<Vec<TimelineSegment>, PlayerError> {
     if timescale == 0 {
         return Err(PlayerError::ZeroTimescale);
     }
-    let presentation_time_offset = sb.presentationTimeOffset.unwrap_or(0);
 
     let mut segments = Vec::with_capacity(sidx.references.len());
-    let mut current_pos = index_start;
+    let mut current_pos = media_start;
     let mut presentation_time = sidx.earliest_presentation_time;
 
     for (i, sref) in sidx.references.iter().enumerate() {
@@ -806,14 +825,16 @@ pub(crate) fn timeline_segments_from_sidx(
             return Err(PlayerError::HierarchicalSidxNotSupported);
         }
         let start = current_pos;
-        let end = current_pos.saturating_sub(1) + u64::from(sref.referenced_size);
+        let end = start
+            .saturating_add(u64::from(sref.referenced_size))
+            .saturating_sub(1);
         let duration_ticks = u64::from(sref.subsegment_duration);
         let duration_s = duration_ticks as f64 / timescale as f64;
         let presentation_time_s =
             presentation_time.saturating_sub(presentation_time_offset) as f64 / timescale as f64;
 
         segments.push(TimelineSegment {
-            number: (i as u64).saturating_add(1),
+            number: start_number.saturating_add(i as u64),
             time: presentation_time,
             duration: duration_ticks,
             duration_s,
@@ -842,9 +863,66 @@ pub(crate) fn parse_sidx_index(
         .ok_or(PlayerError::MissingSegmentBaseIndexRange)?;
     let br = parse_byte_range(index_range)?;
     let index_start = br.end.saturating_add(1);
-    let sidx = dash_mpd::sidx::SidxBox::parse(index_bytes)
-        .map_err(|e| PlayerError::SidxParse(e.to_string()))?;
+    let sidx = parse_sidx_from_index_bytes(index_bytes, index_range)?;
     timeline_segments_from_sidx(sb, &sidx, index_start)
+}
+
+fn parse_sidx_from_index_bytes(
+    index_bytes: &[u8],
+    index_range: &str,
+) -> Result<dash_mpd::sidx::SidxBox, PlayerError> {
+    let br = parse_byte_range(index_range)?;
+    let expected_len = br.end.saturating_sub(br.start).saturating_add(1) as usize;
+    let slice = if index_bytes.len() == expected_len {
+        index_bytes
+    } else {
+        index_bytes
+            .get(br.start as usize..=br.end as usize)
+            .ok_or_else(|| PlayerError::InvalidByteRange(index_range.to_string()))?
+    };
+    dash_mpd::sidx::SidxBox::parse(slice).map_err(|e| PlayerError::SidxParse(e.to_string()))
+}
+
+/// Fetch target for a sidecar index document under `SegmentTemplate@index`.
+pub(crate) fn segment_template_index_target(
+    st: &SegmentTemplate,
+    vars: &TemplateVars<'_>,
+) -> Result<SegmentFetchTarget, PlayerError> {
+    let index_tpl = st
+        .index
+        .as_deref()
+        .ok_or(PlayerError::MissingSegmentTemplateIndex)?;
+    let index_range = st
+        .indexRange
+        .as_deref()
+        .ok_or(PlayerError::MissingSegmentTemplateIndexRange)?;
+    let br = parse_byte_range(index_range)?;
+    Ok(SegmentFetchTarget {
+        path: interpolate_template(index_tpl, vars),
+        range: Some(br),
+    })
+}
+
+/// Parse `sidx` from a sidecar index document (`SegmentTemplate@index` + `@indexRange`).
+pub(crate) fn parse_sidx_index_from_template(
+    st: &SegmentTemplate,
+    index_bytes: &[u8],
+) -> Result<Vec<TimelineSegment>, PlayerError> {
+    let index_range = st
+        .indexRange
+        .as_deref()
+        .ok_or(PlayerError::MissingSegmentTemplateIndexRange)?;
+    let sidx = parse_sidx_from_index_bytes(index_bytes, index_range)?;
+    let timescale = st.timescale.unwrap_or(u64::from(sidx.timescale));
+    let presentation_time_offset = st.presentationTimeOffset.unwrap_or(0);
+    let start_number = st.startNumber.unwrap_or(1);
+    timeline_segments_from_sidx_values(
+        timescale,
+        presentation_time_offset,
+        start_number,
+        &sidx,
+        sidx.first_offset,
+    )
 }
 
 /// Init fetch target for merged `SegmentBase` addressing.
@@ -1063,6 +1141,9 @@ pub(crate) fn timeline_segments_for_addressing(
     end_number: Option<u64>,
 ) -> Result<Vec<TimelineSegment>, PlayerError> {
     match addressing {
+        SegmentAddressing::Template(st) if segment_template_uses_sidecar_index(st) => {
+            Err(PlayerError::SegmentTemplateIndexNotLoaded)
+        }
         SegmentAddressing::Template(st) => timeline_segments(st, ctx, end_number),
         SegmentAddressing::List(sl) => timeline_segments_from_list(sl, ctx),
         SegmentAddressing::Base(sb) => timeline_segments_from_segment_base(sb, ctx),
@@ -3183,5 +3264,52 @@ mod manifest_logic_tests {
         );
         assert!((segs[0].duration_s - 2.0).abs() < 1e-9);
         assert!((segs[1].presentation_time_s - 2.0).abs() < 1e-9);
+    }
+
+    #[test]
+    fn parse_sidx_index_from_template_sidecar_uses_first_offset() {
+        let seg1_len = 11u32;
+        let seg2_len = 11u32;
+        let sidx = minimal_sidx_bytes(&[(seg1_len, 2000), (seg2_len, 2000)], 1000);
+        let st = SegmentTemplate {
+            timescale: Some(1000),
+            index: Some("index.mp4".into()),
+            indexRange: Some(format!("0-{}", sidx.len() - 1)),
+            startNumber: Some(1),
+            ..Default::default()
+        };
+        let segs = parse_sidx_index_from_template(&st, &sidx).unwrap();
+        assert_eq!(segs.len(), 2);
+        assert_eq!(
+            segs[0].media_range,
+            Some(ByteRange {
+                start: 0,
+                end: seg1_len as u64 - 1,
+            })
+        );
+        assert_eq!(
+            segs[1].media_range,
+            Some(ByteRange {
+                start: seg1_len as u64,
+                end: seg1_len as u64 + seg2_len as u64 - 1,
+            })
+        );
+    }
+
+    #[test]
+    fn segment_template_sidecar_index_requires_index_and_index_range() {
+        assert!(!segment_template_uses_sidecar_index(&SegmentTemplate {
+            index: Some("idx.mp4".into()),
+            ..Default::default()
+        }));
+        assert!(!segment_template_uses_sidecar_index(&SegmentTemplate {
+            indexRange: Some("0-10".into()),
+            ..Default::default()
+        }));
+        assert!(segment_template_uses_sidecar_index(&SegmentTemplate {
+            index: Some("idx.mp4".into()),
+            indexRange: Some("0-10".into()),
+            ..Default::default()
+        }));
     }
 }

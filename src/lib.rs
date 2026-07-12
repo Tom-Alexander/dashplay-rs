@@ -125,6 +125,12 @@ pub enum PlayerError {
     MissingSegmentBaseIndexRange,
     #[error("SegmentBase@indexRange timeline requires fetched sidx index")]
     SegmentBaseIndexNotLoaded,
+    #[error("missing SegmentTemplate@indexRange (sidecar index)")]
+    MissingSegmentTemplateIndexRange,
+    #[error("missing SegmentTemplate@index (sidecar index)")]
+    MissingSegmentTemplateIndex,
+    #[error("SegmentTemplate@index sidecar timeline requires fetched sidx index")]
+    SegmentTemplateIndexNotLoaded,
     #[error("failed to parse sidx index: {0}")]
     SidxParse(String),
     #[error("hierarchical sidx references are not supported")]

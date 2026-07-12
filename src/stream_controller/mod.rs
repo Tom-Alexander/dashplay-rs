@@ -6,8 +6,6 @@ mod mpd_events;
 mod period_context;
 
 use std::sync::Arc;
-use std::sync::Mutex;
-use std::sync::atomic::{AtomicBool, Ordering};
 
 use futures::future::join_all;
 use tokio::sync::Mutex as AsyncMutex;
@@ -17,15 +15,14 @@ use super::drm::coordinator::DrmSessionCoordinator;
 
 use super::PlayerError;
 use super::abr::SharedAbrFactory;
-use super::delivered_segments::DeliveredSegmentTracker;
 use super::http::SharedHttpClient;
 use super::manifest_lifecycle::ManifestSession;
 use super::playback_control::{PlaybackController, PlaybackState};
 use super::schedule::{AdaptationStreamContext, BufferTarget, run_adaptation_stream};
 use super::segment_blacklist::SegmentBlacklist;
 use super::track_selection::TrackSelection;
+use super::track_session::TrackSessionState;
 use super::types::PlayerEvent;
-use crate::clock::resync;
 
 use manifest_loop::{broadcast_manifest_loaded, manifest_tick, periods_to_play, refresh_manifest};
 use mpd_events::MpdEventDedup;
@@ -59,21 +56,13 @@ impl PlaybackLoopState {
         let mut seek_target_override: Option<std::time::Duration> = None;
         let mut mpd_event_dedup = MpdEventDedup::default();
 
-        let have_init: Arc<Vec<AtomicBool>> =
-            Arc::new((0..tracks.len()).map(|_| AtomicBool::new(false)).collect());
-        let delivered: Arc<Vec<Arc<Mutex<DeliveredSegmentTracker>>>> = Arc::new(
+        let track_sessions: Arc<Vec<Arc<TrackSessionState>>> = Arc::new(
             (0..tracks.len())
-                .map(|_| Arc::new(Mutex::new(DeliveredSegmentTracker::default())))
+                .map(|_| Arc::new(TrackSessionState::default()))
                 .collect(),
         );
         let blacklist = SegmentBlacklist::new();
         let drm = Arc::new(AsyncMutex::new(drm));
-        let inband_prt_anchors: Arc<Vec<Arc<Mutex<Option<resync::ProducerReferenceAnchor>>>>> =
-            Arc::new(
-                (0..tracks.len())
-                    .map(|_| Arc::new(Mutex::new(None)))
-                    .collect(),
-            );
 
         let run_result: Result<(), PlayerError> = async {
             loop {
@@ -111,13 +100,7 @@ impl PlaybackLoopState {
                         break;
                     }
 
-                    on_period_change(
-                        &mut last_period_idx,
-                        current_window.idx,
-                        &have_init,
-                        &delivered,
-                        &inband_prt_anchors,
-                    );
+                    on_period_change(&mut last_period_idx, current_window.idx, &track_sessions);
 
                     drm.lock()
                         .await
@@ -138,7 +121,7 @@ impl PlaybackLoopState {
                             steering: tick.steering,
                             seek_target_override,
                             track_selection: &track_selection,
-                            inband_prt_anchors: &inband_prt_anchors,
+                            track_sessions: &track_sessions,
                         })?;
 
                     let mut streams = Vec::new();
@@ -157,21 +140,19 @@ impl PlaybackLoopState {
                             period: &period,
                             adaptation_set: &adaptation_set,
                             track_idx,
-                            inband_prt_anchors: &inband_prt_anchors,
+                            track_sessions: &track_sessions,
                         });
 
                         let tx = tracks[track_idx].tx.clone();
-                        let have_init = have_init.clone();
+                        let session = track_sessions[track_idx].clone();
                         let client = client.clone();
                         let segment_base_ctx = period_ctx.segment_base_ctx.clone();
                         let blacklist = blacklist.clone();
                         let drm = drm.clone();
                         let buffer_rx = tracks[track_idx].buffer_rx.clone();
                         let metrics = tracks[track_idx].metrics.clone();
-                        let delivered = delivered[track_idx].clone();
                         let playback = playback.clone();
                         let abr_factory = abr_factory.clone();
-                        let inband_prt_anchor = inband_prt_anchors[track_idx].clone();
                         let prt_reference_id = period_ctx.prt_reference_id.clone();
                         let template_end_numbers = tick.template_end_numbers.clone();
                         let period_idx = current_window.idx;
@@ -191,8 +172,7 @@ impl PlaybackLoopState {
                                 track_idx,
                                 period_adaptation_index,
                                 tx,
-                                have_init,
-                                delivered,
+                                session,
                                 blacklist,
                                 drm,
                                 buffer_rx,
@@ -200,7 +180,6 @@ impl PlaybackLoopState {
                                 metrics,
                                 playback,
                                 abr_factory,
-                                inband_prt_anchor,
                                 prt_reference_id,
                             })
                             .await
@@ -213,7 +192,7 @@ impl PlaybackLoopState {
 
                     if playback.seek_generation() != seek_generation_at_start {
                         seek_interrupted = true;
-                        reset_for_seek(&have_init, &delivered, &inband_prt_anchors);
+                        reset_track_sessions(&track_sessions);
                         break;
                     }
                 }
@@ -271,33 +250,17 @@ fn send_playback_ended(tracks: &[super::types::PlayerTrack]) {
 fn on_period_change(
     last_period_idx: &mut Option<usize>,
     current_idx: usize,
-    have_init: &Arc<Vec<AtomicBool>>,
-    delivered: &Arc<Vec<Arc<Mutex<DeliveredSegmentTracker>>>>,
-    inband_prt_anchors: &Arc<Vec<Arc<Mutex<Option<resync::ProducerReferenceAnchor>>>>>,
+    track_sessions: &Arc<Vec<Arc<TrackSessionState>>>,
 ) {
     if *last_period_idx == Some(current_idx) {
         return;
     }
     *last_period_idx = Some(current_idx);
-    reset_for_seek(have_init, delivered, inband_prt_anchors);
+    reset_track_sessions(track_sessions);
 }
 
-fn reset_for_seek(
-    have_init: &Arc<Vec<AtomicBool>>,
-    delivered: &Arc<Vec<Arc<Mutex<DeliveredSegmentTracker>>>>,
-    inband_prt_anchors: &Arc<Vec<Arc<Mutex<Option<resync::ProducerReferenceAnchor>>>>>,
-) {
-    for flag in have_init.iter() {
-        flag.store(false, Ordering::Release);
-    }
-    for tracker in delivered.iter() {
-        if let Ok(mut t) = tracker.lock() {
-            t.reset();
-        }
-    }
-    for anchor in inband_prt_anchors.iter() {
-        if let Ok(mut a) = anchor.lock() {
-            *a = None;
-        }
+fn reset_track_sessions(track_sessions: &Arc<Vec<Arc<TrackSessionState>>>) {
+    for session in track_sessions.iter() {
+        session.reset();
     }
 }

@@ -1,7 +1,5 @@
 //! Segment delivery: player events, metrics, and playback state updates.
 
-use std::sync::Arc;
-use std::sync::Mutex;
 use std::time::Duration;
 
 use bytes::Bytes;
@@ -10,12 +8,12 @@ use tokio::sync::{broadcast, watch};
 
 use crate::PlayerError;
 use crate::abr::AbrController;
-use crate::clock::resync::ProducerReferenceAnchor;
 use crate::manifest;
 use crate::media_events;
 use crate::metrics::TrackMetrics;
 use crate::mp4::prft;
 use crate::playback_control::{PlaybackController, PlaybackState};
+use crate::track_session::TrackSessionState;
 use crate::types::{PartialSegmentChunk, PlayerEvent};
 
 use super::segment_fetch::RepFetchEnv;
@@ -47,7 +45,7 @@ pub(super) fn emit_segment(
     track_idx: usize,
     playback_started_emitted: &mut bool,
     playback: &PlaybackController,
-    inband_prt_anchor: &Arc<Mutex<Option<ProducerReferenceAnchor>>>,
+    session: &TrackSessionState,
     prt_reference_id: Option<&str>,
 ) {
     prft::maybe_update_inband_anchor_from_segment(
@@ -56,7 +54,7 @@ pub(super) fn emit_segment(
         adaptation_set,
         rep,
         prt_reference_id,
-        inband_prt_anchor,
+        session.inband_prt_anchor(),
     );
 
     let inband_filters = media_events::inband_event_streams_for_representation(adaptation_set, rep);

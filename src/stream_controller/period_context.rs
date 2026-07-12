@@ -1,7 +1,6 @@
 //! Period-scoped playback context: base URLs, target time, and timeline inputs.
 
 use std::sync::Arc;
-use std::sync::Mutex;
 use std::time::Duration;
 
 use chrono::{DateTime, Utc};
@@ -9,12 +8,13 @@ use dash_mpd::{AdaptationSet, MPD, Period};
 use url::Url;
 
 use super::super::PlayerError;
-use super::super::clock::resync::{self, ProducerReferenceAnchor};
+use super::super::clock::resync;
 use super::super::manifest::{self, SegmentBaseContext, TimelineBuildContext};
 use super::super::manifest_lifecycle::ContentSteeringState;
 use super::super::track_selection::{
     SelectedAdaptationSet, TrackSelection, select_adaptation_sets,
 };
+use super::super::track_session::TrackSessionState;
 
 /// Shared inputs for all adaptation streams within one Period.
 #[derive(Debug, Clone)]
@@ -34,7 +34,7 @@ pub(crate) struct PeriodContextInputs<'a> {
     pub steering: &'a ContentSteeringState,
     pub seek_target_override: Option<Duration>,
     pub track_selection: &'a TrackSelection,
-    pub inband_prt_anchors: &'a Arc<Vec<Arc<Mutex<Option<ProducerReferenceAnchor>>>>>,
+    pub track_sessions: &'a Arc<Vec<Arc<TrackSessionState>>>,
 }
 
 pub(crate) struct TimelineContextInputs<'a> {
@@ -46,7 +46,7 @@ pub(crate) struct TimelineContextInputs<'a> {
     pub period: &'a Period,
     pub adaptation_set: &'a AdaptationSet,
     pub track_idx: usize,
-    pub inband_prt_anchors: &'a Arc<Vec<Arc<Mutex<Option<ProducerReferenceAnchor>>>>>,
+    pub track_sessions: &'a Arc<Vec<Arc<TrackSessionState>>>,
 }
 
 pub(crate) fn build_period_context<'a>(
@@ -61,7 +61,7 @@ pub(crate) fn build_period_context<'a>(
         steering,
         seek_target_override,
         track_selection,
-        inband_prt_anchors,
+        track_sessions,
     } = inputs;
 
     let period_start = current_window.start;
@@ -88,9 +88,7 @@ pub(crate) fn build_period_context<'a>(
                 .representations
                 .first()
                 .and_then(|rep| {
-                    let inband = inband_prt_anchors
-                        .first()
-                        .and_then(|a| a.lock().ok().and_then(|g| *g));
+                    let inband = track_sessions.first().and_then(|s| s.inband_anchor());
                     resync::resync_corrected_since_ast(
                         mpd,
                         wall_now,
@@ -133,15 +131,15 @@ pub(crate) fn build_timeline_context(inputs: TimelineContextInputs<'_>) -> Timel
         period,
         adaptation_set,
         track_idx,
-        inband_prt_anchors,
+        track_sessions,
     } = inputs;
 
     let rep = adaptation_set.representations.first();
     let since_ast = rep
         .and_then(|r| {
-            let inband = inband_prt_anchors
+            let inband = track_sessions
                 .get(track_idx)
-                .and_then(|a| a.lock().ok().and_then(|g| *g));
+                .and_then(|s| s.inband_anchor());
             resync::resync_corrected_since_ast(
                 mpd,
                 wall_now,

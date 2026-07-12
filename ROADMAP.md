@@ -162,7 +162,7 @@ without changing playback behaviour.
 - [x] **Scheduler / fetch separation.** Introduce a synchronous `SegmentPlan` type
   (segment index, rep, init needed, byte range) produced by scheduling logic and consumed
   by fetch/decrypt/emit — prerequisite for buffer-target scheduling (P7).
-- [ ] **`TrackSessionState` consolidation.** Replace the many `Arc<Mutex<…>>` handles
+- [x] **`TrackSessionState` consolidation.** Replace the many `Arc<Mutex<…>>` handles
   passed through `AdaptationStreamContext` with a single per-track session struct.
 - [ ] **`manifest/mod.rs` targeted re-exports.** Replace `pub(crate) use …::*` barrel
   exports with explicit re-exports or submodule paths so module boundaries stay visible.

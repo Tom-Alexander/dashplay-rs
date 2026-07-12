@@ -61,6 +61,7 @@ mod segment_blacklist;
 mod segment_fetcher;
 mod stream_controller;
 mod track_selection;
+mod track_session;
 mod types;
 
 pub use abr::{

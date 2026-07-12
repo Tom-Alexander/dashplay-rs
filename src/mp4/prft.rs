@@ -3,7 +3,7 @@
 //! See ISO/IEC 14496-12 §8.16.5 and DASH-IF low-latency §9.X.4.3 (v) for
 //! `ProducerReferenceTime@inband=true` re-verification.
 
-use std::sync::{Arc, Mutex};
+use std::sync::Mutex;
 
 use dash_mpd::{AdaptationSet, Period, Representation};
 
@@ -99,7 +99,7 @@ pub(crate) fn maybe_update_inband_anchor_from_segment(
     adaptation_set: &AdaptationSet,
     representation: &Representation,
     reference_id: Option<&str>,
-    store: &Arc<Mutex<Option<ProducerReferenceAnchor>>>,
+    store: &Mutex<Option<ProducerReferenceAnchor>>,
 ) {
     if !resync::producer_reference_inband_enabled(adaptation_set, representation, reference_id) {
         return;

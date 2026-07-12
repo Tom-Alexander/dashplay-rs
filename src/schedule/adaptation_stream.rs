@@ -2,8 +2,6 @@
 
 use std::collections::HashMap;
 use std::sync::Arc;
-use std::sync::Mutex;
-use std::sync::atomic::{AtomicBool, Ordering};
 use std::time::{Duration, Instant};
 
 use bytes::Bytes;
@@ -13,8 +11,6 @@ use tokio::sync::{broadcast, watch};
 
 use crate::PlayerError;
 use crate::abr::SharedAbrFactory;
-use crate::clock::resync::ProducerReferenceAnchor;
-use crate::delivered_segments::DeliveredSegmentTracker;
 use crate::drm::coordinator::DrmSessionCoordinator;
 use crate::http::SharedHttpClient;
 use crate::manifest::{self, TimelineBuildContext};
@@ -22,6 +18,7 @@ use crate::metrics::TrackMetrics;
 use crate::playback_control::{PlaybackController, PlaybackState};
 use crate::segment_blacklist::SegmentBlacklist;
 use crate::segment_fetcher::fetch_bytes_with_base_failover_and_range;
+use crate::track_session::TrackSessionState;
 use crate::types::PlayerEvent;
 
 use super::buffer_target::{BufferTarget, wait_for_fetch_capacity};
@@ -57,12 +54,6 @@ fn align_start_index_with_resync(
     )
 }
 
-fn lock_delivered(
-    delivered: &Arc<Mutex<DeliveredSegmentTracker>>,
-) -> std::sync::MutexGuard<'_, DeliveredSegmentTracker> {
-    delivered.lock().unwrap_or_else(|e| e.into_inner())
-}
-
 pub(crate) struct AdaptationStreamContext {
     pub client: SharedHttpClient,
     pub segment_base_ctx: manifest::SegmentBaseContext,
@@ -78,8 +69,7 @@ pub(crate) struct AdaptationStreamContext {
     /// Index into `Period.adaptations` for DRM session lookup.
     pub period_adaptation_index: usize,
     pub tx: broadcast::Sender<PlayerEvent>,
-    pub have_init: Arc<Vec<AtomicBool>>,
-    pub delivered: Arc<Mutex<DeliveredSegmentTracker>>,
+    pub session: Arc<TrackSessionState>,
     pub blacklist: SegmentBlacklist,
     pub drm: Arc<AsyncMutex<DrmSessionCoordinator>>,
     /// Latest buffer occupancy reported by the consumer (seconds).
@@ -89,8 +79,6 @@ pub(crate) struct AdaptationStreamContext {
     pub metrics: TrackMetrics,
     pub playback: PlaybackController,
     pub abr_factory: SharedAbrFactory,
-    /// Latest in-band `prft` anchor for `ProducerReferenceTime@inband=true` clock correction.
-    pub inband_prt_anchor: Arc<Mutex<Option<ProducerReferenceAnchor>>>,
     /// `@referenceId` from `ServiceDescription::Latency` when present.
     pub prt_reference_id: Option<String>,
 }
@@ -110,8 +98,7 @@ pub(crate) async fn run_adaptation_stream(ctx: AdaptationStreamContext) -> Resul
         track_idx,
         period_adaptation_index,
         tx,
-        have_init,
-        delivered,
+        session,
         blacklist,
         drm,
         mut buffer_rx,
@@ -119,7 +106,6 @@ pub(crate) async fn run_adaptation_stream(ctx: AdaptationStreamContext) -> Resul
         metrics,
         playback,
         abr_factory,
-        inband_prt_anchor,
         prt_reference_id,
     } = ctx;
 
@@ -204,7 +190,7 @@ pub(crate) async fn run_adaptation_stream(ctx: AdaptationStreamContext) -> Resul
     // start <= target" breaks A/V sync when audio and video use different segment durations
     // (e.g. 6s audio vs 2s video): each track would start at a different segment start time.
     let (segments, segment_start_index) = {
-        let delivered_tracker = lock_delivered(&delivered);
+        let delivered_tracker = session.lock_delivered();
         if let Some(target) = target_time {
             let target_s = target.as_secs_f64();
             let p0 = period_start.as_secs_f64();
@@ -245,9 +231,7 @@ pub(crate) async fn run_adaptation_stream(ctx: AdaptationStreamContext) -> Resul
     abr.update_buffer(latest_buffer_s(&buffer_rx));
     metrics.record_buffer(latest_buffer_s(&buffer_rx));
 
-    let init_taken = have_init[track_idx]
-        .compare_exchange(false, true, Ordering::AcqRel, Ordering::Acquire)
-        .is_ok();
+    let init_taken = session.try_take_init();
 
     // Cache init segments by Representation ID (ABR switches may require different init/boxes/KIDs).
     let mut encrypted_init_by_rep: HashMap<String, Bytes> = HashMap::new();
@@ -277,7 +261,7 @@ pub(crate) async fn run_adaptation_stream(ctx: AdaptationStreamContext) -> Resul
         }
         .await;
         if init_res.is_err() {
-            have_init[track_idx].store(false, Ordering::Release);
+            session.release_init();
             init_res?;
         }
     }
@@ -296,7 +280,7 @@ pub(crate) async fn run_adaptation_stream(ctx: AdaptationStreamContext) -> Resul
         }
 
         {
-            let delivered_tracker = lock_delivered(&delivered);
+            let delivered_tracker = session.lock_delivered();
             if delivered_tracker.is_delivered(&seg) {
                 continue;
             }
@@ -416,12 +400,12 @@ pub(crate) async fn run_adaptation_stream(ctx: AdaptationStreamContext) -> Resul
                     track_idx,
                     &mut playback_started_emitted,
                     &playback,
-                    &inband_prt_anchor,
+                    &session,
                     prt_reference_id.as_deref(),
                 );
             }
 
-            let mut delivered_tracker = lock_delivered(&delivered);
+            let mut delivered_tracker = session.lock_delivered();
             delivered_tracker.mark_delivered(&seg_for_fetch);
             media_segments_delivered += 1;
             continue;
@@ -502,11 +486,11 @@ pub(crate) async fn run_adaptation_stream(ctx: AdaptationStreamContext) -> Resul
             track_idx,
             &mut playback_started_emitted,
             &playback,
-            &inband_prt_anchor,
+            &session,
             prt_reference_id.as_deref(),
         );
 
-        let mut delivered_tracker = lock_delivered(&delivered);
+        let mut delivered_tracker = session.lock_delivered();
         delivered_tracker.mark_delivered(&seg_for_fetch);
         media_segments_delivered += 1;
     }

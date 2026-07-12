@@ -166,7 +166,7 @@ without changing playback behaviour.
   passed through `AdaptationStreamContext` with a single per-track session struct.
 - [ ] **`manifest/mod.rs` targeted re-exports.** Replace `pub(crate) use …::*` barrel
   exports with explicit re-exports or submodule paths so module boundaries stay visible.
-- [ ] **Stale doc references.** Update remaining docs that still reference removed files
+- [x] **Stale doc references.** Update remaining docs that still reference removed files
   (`dash_stream.rs`, monolithic `manifest.rs`).
 
 ---

@@ -183,7 +183,7 @@ without changing playback behaviour.
   substitution in index templates that point to one index document per media segment.
 - [x] **`RepresentationIndex` addressing.** Fetch and parse `RepresentationIndex`
   child elements as an alternative to `@index` / `@indexRange`.
-- [ ] **`SegmentTemplate@maxDuration`.** Validate or bound segment durations.
+- [x] **`SegmentTemplate@maxDuration`.** Validate or bound segment durations.
 - [ ] **Bitstream switching.** Honour `SegmentTemplate@bitstreamSwitching` /
   `BitstreamSwitching` — skip init fetch/re-emit when switching representations.
 - [~] **`SegmentList` byte ranges.** `SegmentURL@mediaRange` HTTP Range fetch; byte-range-only

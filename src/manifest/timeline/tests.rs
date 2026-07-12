@@ -20,6 +20,7 @@ fn static_ctx(period_end: Option<Duration>) -> TimelineBuildContext {
         },
         period_duration: None,
         media_presentation_duration: None,
+        max_segment_duration: None,
         time_shift_buffer_depth: None,
         since_availability_start: None,
         resync_hints: None,
@@ -252,6 +253,7 @@ fn dynamic_segment_timeline_filtered_to_time_shift_buffer() {
         },
         period_duration: None,
         media_presentation_duration: None,
+        max_segment_duration: None,
         time_shift_buffer_depth: Some(Duration::from_secs(2)),
         since_availability_start: Some(Duration::from_secs(5)),
         resync_hints: None,
@@ -345,6 +347,103 @@ fn segment_timeline_k_must_divide_d() {
     };
     let err = timeline_segments(&st, &static_ctx(None), None).unwrap_err();
     assert!(matches!(err, PlayerError::TimelineDNotDivisibleByK));
+}
+
+#[test]
+fn static_duration_template_bounds_last_segment_to_period_extent() {
+    let st = SegmentTemplate {
+        timescale: Some(1000),
+        duration: Some(4000.0),
+        presentationTimeOffset: Some(0),
+        startNumber: Some(1),
+        ..Default::default()
+    };
+    let ctx = TimelineBuildContext {
+        is_dynamic: false,
+        period_window: PeriodWindow {
+            idx: 0,
+            start: Duration::ZERO,
+            end: Some(Duration::from_secs(10)),
+        },
+        period_duration: None,
+        media_presentation_duration: Some(Duration::from_secs(10)),
+        max_segment_duration: None,
+        time_shift_buffer_depth: None,
+        since_availability_start: None,
+        resync_hints: None,
+    };
+    let segs = timeline_segments(&st, &ctx, None).unwrap();
+    assert_eq!(segs.len(), 3);
+    assert!((segs[0].duration_s - 4.0).abs() < 1e-6);
+    assert!((segs[1].duration_s - 4.0).abs() < 1e-6);
+    assert!((segs[2].duration_s - 2.0).abs() < 1e-6);
+}
+
+#[test]
+fn segment_timeline_rejects_d_exceeding_mpd_max_segment_duration() {
+    let st = SegmentTemplate {
+        timescale: Some(1000),
+        presentationTimeOffset: Some(0),
+        startNumber: Some(1),
+        SegmentTimeline: Some(SegmentTimeline {
+            segments: vec![S {
+                t: Some(0),
+                d: 5000,
+                r: Some(0),
+                ..Default::default()
+            }],
+        }),
+        ..Default::default()
+    };
+    let ctx = TimelineBuildContext {
+        is_dynamic: false,
+        period_window: PeriodWindow {
+            idx: 0,
+            start: Duration::ZERO,
+            end: Some(Duration::from_secs(10)),
+        },
+        period_duration: None,
+        media_presentation_duration: None,
+        max_segment_duration: Some(Duration::from_secs(4)),
+        time_shift_buffer_depth: None,
+        since_availability_start: None,
+        resync_hints: None,
+    };
+    let err = timeline_segments(&st, &ctx, None).unwrap_err();
+    assert!(matches!(
+        err,
+        PlayerError::SegmentDurationExceedsMaxSegmentDuration
+    ));
+}
+
+#[test]
+fn static_duration_template_rejects_nominal_duration_above_mpd_max() {
+    let st = SegmentTemplate {
+        timescale: Some(1000),
+        duration: Some(5000.0),
+        presentationTimeOffset: Some(0),
+        startNumber: Some(1),
+        ..Default::default()
+    };
+    let ctx = TimelineBuildContext {
+        is_dynamic: false,
+        period_window: PeriodWindow {
+            idx: 0,
+            start: Duration::ZERO,
+            end: Some(Duration::from_secs(10)),
+        },
+        period_duration: None,
+        media_presentation_duration: Some(Duration::from_secs(10)),
+        max_segment_duration: Some(Duration::from_secs(4)),
+        time_shift_buffer_depth: None,
+        since_availability_start: None,
+        resync_hints: None,
+    };
+    let err = timeline_segments(&st, &ctx, None).unwrap_err();
+    assert!(matches!(
+        err,
+        PlayerError::SegmentDurationExceedsMaxSegmentDuration
+    ));
 }
 
 #[test]

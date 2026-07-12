@@ -2,10 +2,10 @@
 
 use dash_mpd::AdaptationSet;
 
-use super::{
+use super::algorithm::{Bola, QualityLevel};
+use crate::abr::{
     AbrController, AbrDecision, AbrFactory, QualityRung, quality_ladder_from_adaptation_set,
 };
-use crate::bola::{Bola, QualityLevel};
 
 /// Default [`AbrFactory`] using BOLA (Buffer Occupancy based Lyapunov Algorithm).
 #[derive(Debug, Clone)]

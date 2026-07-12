@@ -43,9 +43,8 @@
 use thiserror::Error;
 
 pub mod abr;
-pub mod bola;
+pub use abr::bola::{Bola, BolaDecision, QualityLevel};
 mod content_steering;
-mod dash_stream;
 mod delivered_segments;
 mod descriptors;
 pub mod drm;
@@ -62,6 +61,7 @@ mod playback_control;
 mod player;
 mod prft;
 mod resync;
+mod schedule;
 mod segment_blacklist;
 mod segment_fetcher;
 mod stream_controller;

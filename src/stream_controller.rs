@@ -14,13 +14,13 @@ use super::drm::coordinator::DrmSessionCoordinator;
 
 use super::PlayerError;
 use super::abr::SharedAbrFactory;
-use super::dash_stream::{AdaptationStreamContext, run_adaptation_stream};
 use super::delivered_segments::DeliveredSegmentTracker;
 use super::http::SharedHttpClient;
 use super::manifest;
 use super::manifest_update;
 use super::media_events;
 use super::playback_control::{PlaybackController, PlaybackState};
+use super::schedule::{AdaptationStreamContext, run_adaptation_stream};
 use super::segment_blacklist::SegmentBlacklist;
 use super::track_selection::{TrackSelection, select_adaptation_sets};
 use super::types::PlayerEvent;

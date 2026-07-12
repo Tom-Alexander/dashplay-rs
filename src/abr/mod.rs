@@ -4,7 +4,7 @@
 //! [`crate::MediaPlayer::with_abr_factory`] or [`crate::Player::with_abr_factory`] to
 //! integrate alternative algorithms or rule engines.
 
-mod bola;
+pub mod bola;
 
 use std::sync::Arc;
 

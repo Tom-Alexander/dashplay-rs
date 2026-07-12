@@ -1,235 +1,25 @@
-//! Segment fetch orchestration for one adaptation set.
+//! Segment URL resolution, HTTP fetch, and representation fallback.
 
 use std::collections::HashMap;
 use std::sync::Arc;
-use std::sync::Mutex;
-use std::time::Duration;
 
 use bytes::Bytes;
 use dash_mpd::{AdaptationSet, Period, Representation};
 use tokio::sync::Mutex as AsyncMutex;
-use tokio::sync::{broadcast, watch};
+use tokio::sync::broadcast;
 
 use crate::PlayerError;
 use crate::abr::{AbrController, quality_indices_for_fallback};
-use crate::delivered_segments::DeliveredSegmentTracker;
 use crate::drm::License;
 use crate::drm::coordinator::DrmSessionCoordinator;
 use crate::http::SharedHttpClient;
-use crate::manifest::{self, TimelineBuildContext};
-use crate::media_events;
-use crate::metrics::TrackMetrics;
+use crate::manifest;
 use crate::partial_segment;
-use crate::playback_control::{PlaybackController, PlaybackState};
-use crate::prft;
-use crate::resync::ProducerReferenceAnchor;
 use crate::segment_blacklist::SegmentBlacklist;
 use crate::segment_fetcher::{
     fetch_bytes_with_base_failover, fetch_bytes_with_base_failover_and_range,
 };
-use crate::types::{PartialSegmentChunk, PlayerEvent};
-
-pub(super) fn partial_chunk_meta(
-    chunk_idx: usize,
-    fragment_count: usize,
-) -> Option<PartialSegmentChunk> {
-    if fragment_count <= 1 {
-        return None;
-    }
-    Some(PartialSegmentChunk {
-        index: chunk_idx as u64 + 1,
-        is_final: chunk_idx + 1 == fragment_count,
-    })
-}
-
-#[allow(clippy::too_many_arguments)]
-pub(super) fn emit_segment(
-    tx: &broadcast::Sender<PlayerEvent>,
-    metrics: &TrackMetrics,
-    period: &Period,
-    adaptation_set: &AdaptationSet,
-    rep: &Representation,
-    seg: &manifest::TimelineSegment,
-    data: Bytes,
-    partial: Option<PartialSegmentChunk>,
-    period_start: Duration,
-    track_idx: usize,
-    playback_started_emitted: &mut bool,
-    playback: &PlaybackController,
-    inband_prt_anchor: &Arc<Mutex<Option<ProducerReferenceAnchor>>>,
-    prt_reference_id: Option<&str>,
-) {
-    prft::maybe_update_inband_anchor_from_segment(
-        data.as_ref(),
-        period,
-        adaptation_set,
-        rep,
-        prt_reference_id,
-        inband_prt_anchor,
-    );
-
-    let inband_filters = media_events::inband_event_streams_for_representation(adaptation_set, rep);
-    for event in media_events::inband_events_from_segment(
-        data.as_ref(),
-        &inband_filters,
-        seg.number,
-        seg.time,
-        seg.sub_number,
-    ) {
-        let _ = tx.send(PlayerEvent::MediaEvent(event));
-    }
-
-    let presentation_time = segment_presentation_time(period_start, seg);
-
-    let _ = tx.send(PlayerEvent::Segment {
-        number: seg.number,
-        time: seg.time,
-        presentation_time,
-        sub_number: seg.sub_number,
-        partial,
-        data,
-    });
-    if playback.record_segment_delivery(track_idx, presentation_time) {
-        let _ = tx.send(PlayerEvent::PlayheadUpdated {
-            presentation_time: playback.presentation_time(),
-        });
-    }
-    metrics.record_segment_delivered();
-
-    if !*playback_started_emitted {
-        let _ = tx.send(PlayerEvent::PlaybackStarted);
-        *playback_started_emitted = true;
-    }
-
-    if playback.state() != PlaybackState::Playing {
-        playback.set_state(PlaybackState::Playing);
-    }
-}
-
-pub(super) fn segment_presentation_time(
-    period_start: Duration,
-    seg: &manifest::TimelineSegment,
-) -> Duration {
-    period_start + Duration::from_secs_f64(seg.presentation_time_s.max(0.0))
-}
-
-#[allow(clippy::too_many_arguments)]
-pub(super) async fn record_quality_switch_and_throughput(
-    env: &RepFetchEnv<'_>,
-    abr: &mut dyn AbrController,
-    metrics: &TrackMetrics,
-    tx: &broadcast::Sender<PlayerEvent>,
-    last_quality_index: &mut Option<usize>,
-    used_quality_index: usize,
-    throughput_bps: f64,
-    byte_len: usize,
-    download_duration: Duration,
-    buffer_rx: &watch::Receiver<f64>,
-) -> Result<(), PlayerError> {
-    let _ = env;
-    metrics.record_throughput(throughput_bps, byte_len, download_duration);
-    if let Some(prev_q) = *last_quality_index {
-        if prev_q != used_quality_index {
-            let from_bitrate_bps = abr.bitrate_bps_for_quality_index(prev_q);
-            let to_bitrate_bps = abr.bitrate_bps_for_quality_index(used_quality_index);
-            metrics.record_bitrate_switch(
-                prev_q,
-                used_quality_index,
-                from_bitrate_bps,
-                to_bitrate_bps,
-            );
-            let _ = tx.send(PlayerEvent::BitrateChanged {
-                from_quality_index: prev_q,
-                to_quality_index: used_quality_index,
-                from_bitrate_bps,
-                to_bitrate_bps,
-            });
-        }
-    } else {
-        metrics.set_quality_index(used_quality_index);
-    }
-    *last_quality_index = Some(used_quality_index);
-
-    abr.observe_segment_download(throughput_bps, byte_len, used_quality_index);
-    abr.update_buffer(latest_buffer_s(buffer_rx));
-    metrics.record_buffer(latest_buffer_s(buffer_rx));
-    Ok(())
-}
-
-pub(super) async fn decrypt_media_fragment(
-    drm: &Arc<AsyncMutex<DrmSessionCoordinator>>,
-    period_adaptation_index: usize,
-    rep_id: &str,
-    init_bytes: &Bytes,
-    data: Bytes,
-) -> Result<Bytes, PlayerError> {
-    let license = {
-        let guard = drm.lock().await;
-        guard.license_for_rep(period_adaptation_index, rep_id)
-    };
-    let Some(lic) = license else {
-        return Ok(data);
-    };
-
-    match lic.decrypt(&data, Some(init_bytes)) {
-        Ok(decrypted) => Ok(decrypted),
-        Err(e) if License::is_likely_missing_key(&e) => {
-            let mut guard = drm.lock().await;
-            guard
-                .recover_from_decrypt_failure(
-                    period_adaptation_index,
-                    rep_id,
-                    init_bytes,
-                    data.as_ref(),
-                )
-                .await?;
-            let refreshed = guard.license_for_rep(period_adaptation_index, rep_id);
-            drop(guard);
-            let Some(new_lic) = refreshed else {
-                return Err(PlayerError::License(e));
-            };
-            new_lic
-                .decrypt(&data, Some(init_bytes))
-                .map_err(PlayerError::License)
-        }
-        Err(e) => {
-            let msg = e.to_string().to_ascii_lowercase();
-            if msg.contains("not encrypted") || msg.contains("no") && msg.contains("senc") {
-                Ok(data)
-            } else {
-                Err(PlayerError::License(e))
-            }
-        }
-    }
-}
-
-pub(super) fn align_start_index_with_resync(
-    segments: &[manifest::TimelineSegment],
-    start_idx: usize,
-    timeline_ctx: &TimelineBuildContext,
-    target_presentation_time_s: Option<f64>,
-) -> (usize, Option<u64>) {
-    let Some(hints) = timeline_ctx.resync_hints else {
-        return (start_idx, None);
-    };
-
-    if hints.random_access_within_segment {
-        if let Some(target) = target_presentation_time_s {
-            return manifest::mid_segment_resync_alignment(segments, start_idx, target, hints);
-        }
-    }
-
-    (
-        manifest::align_start_index_to_resync(segments, start_idx, hints),
-        None,
-    )
-}
-
-pub(super) fn lock_delivered(
-    delivered: &Arc<Mutex<DeliveredSegmentTracker>>,
-) -> std::sync::MutexGuard<'_, DeliveredSegmentTracker> {
-    delivered.lock().unwrap_or_else(|e| e.into_inner())
-}
+use crate::types::PlayerEvent;
 
 pub(super) struct RepFetchEnv<'a> {
     pub(super) client: &'a SharedHttpClient,
@@ -429,7 +219,7 @@ pub(super) async fn fetch_cmaf_media_with_rep_fallback(
     Err(last_err)
 }
 
-pub(super) async fn ensure_init_for_rep(
+async fn ensure_init_for_rep(
     env: &RepFetchEnv<'_>,
     rep: &Representation,
     encrypted_init_by_rep: &mut HashMap<String, Bytes>,
@@ -493,11 +283,7 @@ pub(super) async fn ensure_init_for_rep(
     Ok(init_bytes)
 }
 
-pub(super) fn latest_buffer_s(buffer_rx: &watch::Receiver<f64>) -> f64 {
-    *buffer_rx.borrow()
-}
-
-pub(super) fn init_target_for_addressing(
+fn init_target_for_addressing(
     addressing: &manifest::SegmentAddressing,
     vars: &manifest::TemplateVars<'_>,
 ) -> Result<Option<manifest::SegmentFetchTarget>, PlayerError> {
@@ -523,7 +309,7 @@ pub(super) fn init_target_for_addressing(
     }
 }
 
-pub(super) fn media_target_for_addressing(
+fn media_target_for_addressing(
     addressing: &manifest::SegmentAddressing,
     seg: &manifest::TimelineSegment,
     list_idx: usize,
@@ -579,7 +365,7 @@ pub(super) async fn fetch_segment_target(
     fetch_bytes_with_base_failover(client, bases, &target.path, blacklist).await
 }
 
-pub(super) async fn sidx_segments_for_rep_template<'a>(
+async fn sidx_segments_for_rep_template<'a>(
     client: &SharedHttpClient,
     segment_base_ctx: &manifest::SegmentBaseContext,
     period: &Period,
@@ -610,7 +396,7 @@ pub(super) async fn sidx_segments_for_rep_template<'a>(
         .unwrap_or(&[]))
 }
 
-pub(super) async fn media_range_for_per_segment_index(
+async fn media_range_for_per_segment_index(
     env: &RepFetchEnv<'_>,
     rep: &Representation,
     seg: &manifest::TimelineSegment,
@@ -645,7 +431,7 @@ pub(super) async fn media_range_for_per_segment_index(
     Ok(Some(media_range))
 }
 
-pub(super) async fn sidx_segments_for_rep<'a>(
+async fn sidx_segments_for_rep<'a>(
     client: &SharedHttpClient,
     segment_base_ctx: &manifest::SegmentBaseContext,
     period: &Period,

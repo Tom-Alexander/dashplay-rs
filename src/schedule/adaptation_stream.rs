@@ -24,12 +24,42 @@ use crate::segment_blacklist::SegmentBlacklist;
 use crate::segment_fetcher::fetch_bytes_with_base_failover_and_range;
 use crate::types::PlayerEvent;
 
-use super::fetch::{
-    MediaFetchParams, RepFetchEnv, align_start_index_with_resync, decrypt_media_fragment,
-    emit_segment, fetch_cmaf_media_with_rep_fallback, fetch_init_with_rep_fallback,
-    fetch_media_with_rep_fallback, fetch_segment_target, latest_buffer_s, lock_delivered,
-    partial_chunk_meta, record_quality_switch_and_throughput,
+use super::segment_decrypt::decrypt_media_fragment;
+use super::segment_emit::{
+    emit_segment, latest_buffer_s, partial_chunk_meta, record_quality_switch_and_throughput,
 };
+use super::segment_fetch::{
+    MediaFetchParams, RepFetchEnv, fetch_cmaf_media_with_rep_fallback,
+    fetch_init_with_rep_fallback, fetch_media_with_rep_fallback, fetch_segment_target,
+};
+
+fn align_start_index_with_resync(
+    segments: &[manifest::TimelineSegment],
+    start_idx: usize,
+    timeline_ctx: &TimelineBuildContext,
+    target_presentation_time_s: Option<f64>,
+) -> (usize, Option<u64>) {
+    let Some(hints) = timeline_ctx.resync_hints else {
+        return (start_idx, None);
+    };
+
+    if hints.random_access_within_segment {
+        if let Some(target) = target_presentation_time_s {
+            return manifest::mid_segment_resync_alignment(segments, start_idx, target, hints);
+        }
+    }
+
+    (
+        manifest::align_start_index_to_resync(segments, start_idx, hints),
+        None,
+    )
+}
+
+fn lock_delivered(
+    delivered: &Arc<Mutex<DeliveredSegmentTracker>>,
+) -> std::sync::MutexGuard<'_, DeliveredSegmentTracker> {
+    delivered.lock().unwrap_or_else(|e| e.into_inner())
+}
 
 pub(crate) struct AdaptationStreamContext {
     pub client: SharedHttpClient,

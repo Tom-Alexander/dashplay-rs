@@ -43,8 +43,7 @@ Status legend: `[ ]` not started · `[~]` partial · `[x]` done · `[—]` out o
 These close the largest gaps between "delivers some streams" and "handles conformant DASH".
 
 - [x] **SegmentTemplate inheritance flattening.** Resolve `SegmentTemplate` declared at
-  `Period` and `MPD` level, not just on the `AdaptationSet`. Today `dash_stream.rs`
-  hard-requires `AdaptationSet@SegmentTemplate` and errors otherwise.
+  `Period` and `MPD` level, not just on the `AdaptationSet`.
 - [x] **SegmentList addressing.** Support explicit `SegmentList` / `SegmentURL` media
   addressing.
 - [x] **SegmentBase + byte ranges.** Support `SegmentBase`, `Initialization@range`, and
@@ -129,6 +128,46 @@ These close the largest gaps between "delivers some streams" and "handles confor
 - [x] **API surface cleanup.** Public helpers (`start_merged`, `into_async_read`, track
   subscription helpers) are exported from the crate root and covered by integration tests;
   stale `#[allow(dead_code)]` attributes removed.
+
+## P5b — Code structure and maintainability
+
+Structural refactors that align the codebase with [`ARCHITECTURE.md`](ARCHITECTURE.md)
+without changing playback behaviour.
+
+- [x] **`manifest/` module split.** Decompose monolithic `manifest.rs` into focused
+  submodules (`timeline/`, `addressing`, `template`, `sidx/`, etc.).
+- [x] **`schedule/` module split.** Replace `dash_stream.rs` with `adaptation_stream.rs`
+  and fetch orchestration.
+- [x] **`track_selection/` module split.** Separate kind, selection, and descriptor logic.
+- [x] **`abr/bola/` consolidation.** Keep BOLA algorithm and factory under `abr/bola/`.
+- [x] **`schedule/fetch.rs` decomposition.** Split into `segment_emit.rs` (events +
+  metrics), `segment_fetch.rs` (HTTP + rep fallback + sidx), and `segment_decrypt.rs`
+  (media-fragment decryption).
+- [ ] **`PlayerError` domain split.** Replace the monolithic `PlayerError` enum in
+  `lib.rs` with per-subsystem error types (`ManifestError`, `SegmentError`, etc.) and a
+  top-level wrapper.
+- [ ] **`stream_controller` extraction.** Pull manifest-refresh loop, period-context
+  building, and MPD event dedup out of `PlaybackLoopState::run`; type manifest session
+  state so `expect("parsed")` is unnecessary.
+- [ ] **Root module clustering.** Group loose `src/` modules into subtrees: `mp4/`
+  (`mp4_box`, `prft`, `partial_segment`, in-band `emsg` parsing), manifest lifecycle
+  (`manifest_update`, `content_steering`, `mpd_patch`), clock/live-edge (`utc_timing`,
+  `resync`).
+- [ ] **`descriptors` → `track_selection/`.** Move adaptation-set compatibility
+  filtering next to its only consumers.
+- [ ] **`manifest/tests.rs` distribution.** Split the ~900-line catch-all test module
+  into per-submodule `tests.rs` files (mirroring `timeline/tests.rs`).
+- [ ] **DRM renewal split.** Separate `renewal.rs` CDM protocol parsing (`kctl`, license
+  policy) from session scheduling (`RenewalState`, backoff, poll timing).
+- [ ] **Scheduler / fetch separation.** Introduce a synchronous `SegmentPlan` type
+  (segment index, rep, init needed, byte range) produced by scheduling logic and consumed
+  by fetch/decrypt/emit — prerequisite for buffer-target scheduling (P7).
+- [ ] **`TrackSessionState` consolidation.** Replace the many `Arc<Mutex<…>>` handles
+  passed through `AdaptationStreamContext` with a single per-track session struct.
+- [ ] **`manifest/mod.rs` targeted re-exports.** Replace `pub(crate) use …::*` barrel
+  exports with explicit re-exports or submodule paths so module boundaries stay visible.
+- [ ] **Stale doc references.** Update remaining docs that still reference removed files
+  (`dash_stream.rs`, monolithic `manifest.rs`).
 
 ---
 

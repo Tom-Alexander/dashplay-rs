@@ -146,7 +146,7 @@ without changing playback behaviour.
 - [ ] **`PlayerError` domain split.** Replace the monolithic `PlayerError` enum in
   `lib.rs` with per-subsystem error types (`ManifestError`, `SegmentError`, etc.) and a
   top-level wrapper.
-- [ ] **`stream_controller` extraction.** Pull manifest-refresh loop, period-context
+- [x] **`stream_controller` extraction.** Pull manifest-refresh loop, period-context
   building, and MPD event dedup out of `PlaybackLoopState::run`; type manifest session
   state so `expect("parsed")` is unnecessary.
 - [x] **Root module clustering.** Group loose `src/` modules into subtrees: `mp4/`

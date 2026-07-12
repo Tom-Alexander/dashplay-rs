@@ -43,6 +43,10 @@ impl ManifestSession {
             .ok_or(PlayerError::ManifestNotLoaded)
     }
 
+    pub(crate) fn parsed(&self) -> Result<&MPD, PlayerError> {
+        self.parsed.as_ref().ok_or(PlayerError::ManifestNotLoaded)
+    }
+
     pub(crate) fn manifest_uri(&self) -> Result<&Url, PlayerError> {
         self.current_uri
             .as_ref()

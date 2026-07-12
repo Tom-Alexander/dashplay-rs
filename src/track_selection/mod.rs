@@ -11,4 +11,4 @@ mod tests;
 
 pub use info::TrackInfo;
 pub use kind::{TrackDescriptor, TrackKind, TrackPreference, TrackSelection};
-pub(crate) use select::select_adaptation_sets;
+pub(crate) use select::{SelectedAdaptationSet, select_adaptation_sets};

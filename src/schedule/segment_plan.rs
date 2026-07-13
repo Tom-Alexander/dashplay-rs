@@ -28,6 +28,8 @@ pub(crate) struct SegmentPlanContext<'a> {
     pub addressing: &'a SegmentAddressing,
     pub timeline_ctx: &'a TimelineBuildContext,
     pub cached_inits: &'a HashMap<String, Bytes>,
+    /// When true, any cached init may be shared across representations (no re-fetch).
+    pub bitstream_switching: bool,
 }
 
 /// Download plan for one media segment, produced synchronously before fetch/decrypt/emit.
@@ -74,7 +76,11 @@ pub(crate) fn plan_segment(
     let representation_index = abr.representation_index_for_quality_index(quality_index);
     let rep = &ctx.adaptation_set.representations[representation_index];
     let rep_id = rep.id.as_deref().unwrap_or_default();
-    let init_needed = !ctx.cached_inits.contains_key(rep_id);
+    let init_needed = if ctx.bitstream_switching && !ctx.cached_inits.is_empty() {
+        false
+    } else {
+        !ctx.cached_inits.contains_key(rep_id)
+    };
 
     let set_availability = SegmentAvailability::from_addressing(ctx.addressing);
     let chunked = ctx.timeline_ctx.is_dynamic
@@ -206,6 +212,7 @@ mod tests {
             addressing: &addressing,
             timeline_ctx: &timeline,
             cached_inits: &cached,
+            bitstream_switching: false,
         };
         let plan = plan_segment(abr.as_mut(), 5.0, &segment(1), 2, &ctx);
         assert_eq!(plan.list_index, 12);
@@ -233,8 +240,47 @@ mod tests {
             addressing: &addressing,
             timeline_ctx: &timeline,
             cached_inits: &cached,
+            bitstream_switching: false,
         };
         let plan = plan_segment(abr.as_mut(), 5.0, &segment(1), 0, &ctx);
         assert!(!plan.init_needed);
+    }
+
+    #[test]
+    fn plan_segment_skips_init_on_switch_when_bitstream_switching() {
+        let set = AdaptationSet {
+            representations: vec![
+                Representation {
+                    id: Some("v1".into()),
+                    bandwidth: Some(500_000),
+                    ..Default::default()
+                },
+                Representation {
+                    id: Some("v2".into()),
+                    bandwidth: Some(1_000_000),
+                    ..Default::default()
+                },
+            ],
+            ..Default::default()
+        };
+        let mut cached = HashMap::new();
+        cached.insert("v1".to_string(), Bytes::from_static(b"init"));
+        let mut abr = Box::new(FixedAbr {
+            quality_index: 1,
+            rep_index: 1,
+        }) as Box<dyn AbrController>;
+        let timeline = timeline_ctx(false);
+        let addressing = SegmentAddressing::Template(Default::default());
+        let ctx = SegmentPlanContext {
+            segment_start_index: 0,
+            adaptation_set: &set,
+            addressing: &addressing,
+            timeline_ctx: &timeline,
+            cached_inits: &cached,
+            bitstream_switching: true,
+        };
+        let plan = plan_segment(abr.as_mut(), 5.0, &segment(1), 0, &ctx);
+        assert!(!plan.init_needed);
+        assert_eq!(plan.representation_index, 1);
     }
 }

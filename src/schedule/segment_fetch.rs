@@ -34,6 +34,8 @@ pub(super) struct RepFetchEnv<'a> {
     pub(super) drm: &'a Arc<AsyncMutex<DrmSessionCoordinator>>,
     pub(super) period_adaptation_index: usize,
     pub(super) tx: &'a broadcast::Sender<PlayerEvent>,
+    /// When true, reuse a previously fetched init across representation switches.
+    pub(super) bitstream_switching: bool,
 }
 
 pub(super) async fn fetch_init_with_rep_fallback(
@@ -229,6 +231,15 @@ async fn ensure_init_for_rep(
     let rep_id = rep.id.as_deref().unwrap_or_default();
     if let Some(init) = encrypted_init_by_rep.get(rep_id) {
         return Ok(init.clone());
+    }
+
+    // ISO/IEC 23009-1: with bitstream switching, Media Segments from different
+    // Representations may be concatenated without re-initializing the decoder.
+    if env.bitstream_switching
+        && let Some(shared) = encrypted_init_by_rep.values().next().cloned()
+    {
+        encrypted_init_by_rep.insert(rep_id.to_string(), shared.clone());
+        return Ok(shared);
     }
 
     let bases =

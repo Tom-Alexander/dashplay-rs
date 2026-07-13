@@ -4,6 +4,7 @@ mod addressing;
 mod alignment;
 mod availability;
 mod base_url;
+mod bitstream_switching;
 mod end_numbers;
 pub mod error;
 mod fetch;
@@ -31,6 +32,7 @@ pub(crate) use availability::{
     target_presentation_time_from_since, uses_chunked_segment_transfer,
 };
 pub(crate) use base_url::{SegmentBaseContext, merge_base_url, segment_bases_for_representation};
+pub(crate) use bitstream_switching::bitstream_switching_enabled;
 pub(crate) use end_numbers::{SegmentTemplateEndNumbers, parse_segment_template_end_numbers};
 pub(crate) use fetch::{
     media_range_from_per_segment_index, segment_base_index_target, segment_base_init_target,

@@ -184,7 +184,7 @@ without changing playback behaviour.
 - [x] **`RepresentationIndex` addressing.** Fetch and parse `RepresentationIndex`
   child elements as an alternative to `@index` / `@indexRange`.
 - [x] **`SegmentTemplate@maxDuration`.** Validate or bound segment durations.
-- [ ] **Bitstream switching.** Honour `SegmentTemplate@bitstreamSwitching` /
+- [x] **Bitstream switching.** Honour `SegmentTemplate@bitstreamSwitching` /
   `BitstreamSwitching` — skip init fetch/re-emit when switching representations.
 - [~] **`SegmentList` byte ranges.** `SegmentURL@mediaRange` HTTP Range fetch; byte-range-only
   list addressing without timeline.

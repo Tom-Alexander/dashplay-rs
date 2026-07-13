@@ -237,6 +237,9 @@ pub(crate) async fn run_adaptation_stream(ctx: AdaptationStreamContext) -> Resul
     let init_taken = session.try_take_init();
 
     // Cache init segments by Representation ID (ABR switches may require different init/boxes/KIDs).
+    // With bitstream switching, one cached init is shared across representations.
+    let bitstream_switching =
+        manifest::bitstream_switching_enabled(&period, &adaptation_set, &addressing);
     let mut encrypted_init_by_rep: HashMap<String, Bytes> = HashMap::new();
     let fetch_env = RepFetchEnv {
         client: &client,
@@ -247,6 +250,7 @@ pub(crate) async fn run_adaptation_stream(ctx: AdaptationStreamContext) -> Resul
         drm: &drm,
         period_adaptation_index,
         tx: &tx,
+        bitstream_switching,
     };
     if init_taken {
         let init_plan = plan_init(abr.as_mut(), latest_buffer_s(&buffer_rx));
@@ -314,6 +318,7 @@ pub(crate) async fn run_adaptation_stream(ctx: AdaptationStreamContext) -> Resul
                 addressing: &addressing,
                 timeline_ctx: &timeline_ctx,
                 cached_inits: &encrypted_init_by_rep,
+                bitstream_switching,
             },
         );
 

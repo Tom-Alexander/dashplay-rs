@@ -405,7 +405,10 @@ async fn dashif_drm_playback_requires_device() {
         .expect_err("expected DRM setup failure without CDM device");
 
     assert!(
-        matches!(err, dashplayrs::PlayerError::License(_)),
+        matches!(
+            err,
+            dashplayrs::PlayerError::Drm(dashplayrs::DrmError::License(_))
+        ),
         "unexpected error: {err:?}"
     );
 }

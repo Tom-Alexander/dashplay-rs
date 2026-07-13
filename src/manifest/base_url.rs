@@ -3,7 +3,7 @@ use std::collections::HashSet;
 use dash_mpd::{AdaptationSet, BaseURL, Representation};
 use url::Url;
 
-use crate::PlayerError;
+use crate::manifest::ManifestError;
 
 /// Hierarchical inputs for resolving segment URLs (ISO/IEC 23009-1 §5.6).
 #[derive(Debug, Clone)]
@@ -24,7 +24,7 @@ fn is_absolute_base(s: &str) -> bool {
 }
 
 /// Merge a document base with a `BaseURL@` value (RFC 3986); preserves manifest query when absent on the child (dash-mpd semantics).
-pub(crate) fn merge_base_url(current: &Url, new: &str) -> Result<Url, PlayerError> {
+pub(crate) fn merge_base_url(current: &Url, new: &str) -> Result<Url, ManifestError> {
     let new = new.trim();
     if new.is_empty() {
         return Ok(current.clone());
@@ -46,7 +46,7 @@ fn sorted_base_url_layer(layer: &[BaseURL]) -> Vec<&BaseURL> {
 }
 
 /// Expand one hierarchical level: each incoming base × each alternative `BaseURL` at this level.
-fn expand_base_layer(bases: Vec<Url>, layer: &[BaseURL]) -> Result<Vec<Url>, PlayerError> {
+fn expand_base_layer(bases: Vec<Url>, layer: &[BaseURL]) -> Result<Vec<Url>, ManifestError> {
     if layer.is_empty() {
         return Ok(bases);
     }
@@ -79,7 +79,7 @@ pub(crate) fn segment_bases_for_representation(
     ctx: &SegmentBaseContext,
     adaptation_set: &AdaptationSet,
     representation: &Representation,
-) -> Result<Vec<Url>, PlayerError> {
+) -> Result<Vec<Url>, ManifestError> {
     let mut bases = vec![ctx.manifest_uri.clone()];
     let mpd_base_urls = crate::manifest_lifecycle::order_base_urls_for_steering(
         &ctx.mpd_base_urls,

@@ -15,9 +15,11 @@ use crate::PlayerError;
 use crate::abr::SharedAbrFactory;
 use crate::drm::DrmSessionCoordinator;
 use crate::http::SharedHttpClient;
+use crate::manifest::ManifestError;
 use crate::manifest::{self, TimelineBuildContext};
 use crate::metrics::TrackMetrics;
 use crate::playback_control::{PlaybackController, PlaybackState};
+use crate::segment::SegmentError;
 use crate::segment_blacklist::SegmentBlacklist;
 use crate::segment_fetcher::fetch_bytes_with_base_failover_and_range;
 use crate::track_session::TrackSessionState;
@@ -131,7 +133,7 @@ pub(crate) async fn run_adaptation_stream(ctx: AdaptationStreamContext) -> Resul
             let rep = adaptation_set
                 .representations
                 .first()
-                .ok_or(PlayerError::SegmentExhaustedRepresentations)?;
+                .ok_or(SegmentError::ExhaustedRepresentations)?;
             let bases = manifest::segment_bases_for_representation(
                 &segment_base_ctx,
                 &adaptation_set,
@@ -144,7 +146,7 @@ pub(crate) async fn run_adaptation_stream(ctx: AdaptationStreamContext) -> Resul
             let index_bytes = if index_target.range.is_some() && index_target.path.is_empty() {
                 let br = index_target
                     .range
-                    .ok_or(PlayerError::MissingSegmentBaseIndexRange)?;
+                    .ok_or(ManifestError::MissingSegmentBaseIndexRange)?;
                 fetch_bytes_with_base_failover_and_range(&client, &bases, "", Some(br), &blacklist)
                     .await?
             } else {
@@ -158,7 +160,7 @@ pub(crate) async fn run_adaptation_stream(ctx: AdaptationStreamContext) -> Resul
             let rep = adaptation_set
                 .representations
                 .first()
-                .ok_or(PlayerError::SegmentExhaustedRepresentations)?;
+                .ok_or(SegmentError::ExhaustedRepresentations)?;
             let merged_st =
                 manifest::segment_template_for_representation(&period, &adaptation_set, rep)?;
             let bases = manifest::segment_bases_for_representation(
@@ -349,7 +351,7 @@ pub(crate) async fn run_adaptation_stream(ctx: AdaptationStreamContext) -> Resul
             let rep_id = rep.id.as_deref().unwrap_or_default();
             let init_for_decrypt = encrypted_init_by_rep
                 .get(rep_id)
-                .ok_or(PlayerError::SegmentExhaustedRepresentations)?;
+                .ok_or(SegmentError::ExhaustedRepresentations)?;
 
             let fragment_count = fragments.len();
             let start_chunk = seg.resync_start_chunk.unwrap_or(1);
@@ -444,7 +446,7 @@ pub(crate) async fn run_adaptation_stream(ctx: AdaptationStreamContext) -> Resul
         let rep_id = rep.id.as_deref().unwrap_or_default();
         let init_for_decrypt = encrypted_init_by_rep
             .get(rep_id)
-            .ok_or(PlayerError::SegmentExhaustedRepresentations)?;
+            .ok_or(SegmentError::ExhaustedRepresentations)?;
 
         {
             let mut guard = drm.lock().await;

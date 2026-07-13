@@ -1,6 +1,6 @@
 use dash_mpd::{AdaptationSet, Period, Representation, SegmentBase, SegmentList, SegmentTemplate};
 
-use crate::PlayerError;
+use crate::manifest::ManifestError;
 
 use super::end_numbers::SegmentTemplateEndNumbers;
 use super::end_numbers::merge_end_number_chain;
@@ -93,7 +93,7 @@ pub(crate) fn end_number_for_timeline(
 pub(crate) fn segment_template_for_timeline(
     period: &Period,
     adaptation_set: &AdaptationSet,
-) -> Result<SegmentTemplate, PlayerError> {
+) -> Result<SegmentTemplate, ManifestError> {
     let mut merged = merge_segment_template_chain(&[
         period.SegmentTemplate.as_ref(),
         adaptation_set.SegmentTemplate.as_ref(),
@@ -116,7 +116,7 @@ pub(crate) fn segment_template_for_timeline(
         }
     }
 
-    merged.ok_or(PlayerError::MissingSegmentTemplate)
+    merged.ok_or(ManifestError::MissingSegmentTemplate)
 }
 
 /// Resolved segment addressing mode after Period → AdaptationSet → Representation inheritance.
@@ -190,7 +190,7 @@ fn has_segment_base_in_chain(
 pub(crate) fn segment_base_for_timeline(
     period: &Period,
     adaptation_set: &AdaptationSet,
-) -> Result<SegmentBase, PlayerError> {
+) -> Result<SegmentBase, ManifestError> {
     let mut merged = merge_segment_base_chain(&[
         period.SegmentBase.as_ref(),
         adaptation_set.SegmentBase.as_ref(),
@@ -221,7 +221,7 @@ pub(crate) fn segment_base_for_timeline(
                 .find_map(|r| r.SegmentBase.as_ref())
                 .cloned()
         })
-        .ok_or(PlayerError::MissingSegmentBase)
+        .ok_or(ManifestError::MissingSegmentBase)
 }
 
 /// Effective `SegmentBase` for fetching init/media of one representation.
@@ -229,13 +229,13 @@ pub(crate) fn segment_base_for_representation(
     period: &Period,
     adaptation_set: &AdaptationSet,
     representation: &Representation,
-) -> Result<SegmentBase, PlayerError> {
+) -> Result<SegmentBase, ManifestError> {
     let mut sb = merge_segment_base_chain(&[
         period.SegmentBase.as_ref(),
         adaptation_set.SegmentBase.as_ref(),
         representation.SegmentBase.as_ref(),
     ])
-    .ok_or(PlayerError::MissingSegmentBase)?;
+    .ok_or(ManifestError::MissingSegmentBase)?;
     if let Some(ri) = &representation.representation_index {
         sb.representation_index = Some(match sb.representation_index {
             Some(parent) => super::inheritance::merge_representation_index(&parent, ri),
@@ -248,7 +248,7 @@ pub(crate) fn segment_base_for_representation(
 pub(crate) fn segment_list_for_timeline(
     period: &Period,
     adaptation_set: &AdaptationSet,
-) -> Result<SegmentList, PlayerError> {
+) -> Result<SegmentList, ManifestError> {
     let mut merged = merge_segment_list_chain(&[
         period.SegmentList.as_ref(),
         adaptation_set.SegmentList.as_ref(),
@@ -271,7 +271,7 @@ pub(crate) fn segment_list_for_timeline(
         }
     }
 
-    merged.ok_or(PlayerError::MissingSegmentList)
+    merged.ok_or(ManifestError::MissingSegmentList)
 }
 
 /// Effective `SegmentList` for fetching init/media of one representation.
@@ -279,20 +279,20 @@ pub(crate) fn segment_list_for_representation(
     period: &Period,
     adaptation_set: &AdaptationSet,
     representation: &Representation,
-) -> Result<SegmentList, PlayerError> {
+) -> Result<SegmentList, ManifestError> {
     merge_segment_list_chain(&[
         period.SegmentList.as_ref(),
         adaptation_set.SegmentList.as_ref(),
         representation.SegmentList.as_ref(),
     ])
-    .ok_or(PlayerError::MissingSegmentList)
+    .ok_or(ManifestError::MissingSegmentList)
 }
 
 /// Effective segment addressing for timeline expansion on an adaptation set.
 pub(crate) fn segment_addressing_for_timeline(
     period: &Period,
     adaptation_set: &AdaptationSet,
-) -> Result<SegmentAddressing, PlayerError> {
+) -> Result<SegmentAddressing, ManifestError> {
     if adaptation_set_uses_segment_list(period, adaptation_set) {
         return Ok(SegmentAddressing::List(segment_list_for_timeline(
             period,
@@ -311,7 +311,7 @@ pub(crate) fn segment_addressing_for_timeline(
             adaptation_set,
         )?));
     }
-    Err(PlayerError::MissingSegmentTemplate)
+    Err(ManifestError::MissingSegmentTemplate)
 }
 
 /// Effective segment addressing for fetching init/media of one representation.
@@ -319,7 +319,7 @@ pub(crate) fn segment_addressing_for_representation(
     period: &Period,
     adaptation_set: &AdaptationSet,
     representation: &Representation,
-) -> Result<SegmentAddressing, PlayerError> {
+) -> Result<SegmentAddressing, ManifestError> {
     if has_segment_list_in_chain(period, adaptation_set, Some(representation)) {
         return Ok(SegmentAddressing::List(segment_list_for_representation(
             period,
@@ -339,39 +339,41 @@ pub(crate) fn segment_addressing_for_representation(
             representation,
         )?));
     }
-    Err(PlayerError::MissingSegmentTemplate)
+    Err(ManifestError::MissingSegmentTemplate)
 }
 
 /// `SegmentList@Initialization@sourceURL` for the effective merged list.
-pub(crate) fn segment_list_init_source(sl: &SegmentList) -> Result<&str, PlayerError> {
+pub(crate) fn segment_list_init_source(sl: &SegmentList) -> Result<&str, ManifestError> {
     sl.Initialization
         .as_ref()
         .and_then(|init| init.sourceURL.as_deref())
-        .ok_or(PlayerError::MissingInitializationTemplate)
+        .ok_or(ManifestError::MissingInitializationTemplate)
 }
 
 /// Media path for a segment index under `SegmentList` addressing (1-based segment number).
 pub(crate) fn segment_list_media_for_index(
     sl: &SegmentList,
     segment_index: usize,
-) -> Result<&str, PlayerError> {
+) -> Result<&str, ManifestError> {
     let su = sl
         .segment_urls
         .get(segment_index)
-        .ok_or(PlayerError::EmptySegmentList)?;
-    su.media.as_deref().ok_or(PlayerError::MissingMediaTemplate)
+        .ok_or(ManifestError::EmptySegmentList)?;
+    su.media
+        .as_deref()
+        .ok_or(ManifestError::MissingMediaTemplate)
 }
 pub(crate) fn segment_template_for_representation(
     period: &Period,
     adaptation_set: &AdaptationSet,
     representation: &Representation,
-) -> Result<SegmentTemplate, PlayerError> {
+) -> Result<SegmentTemplate, ManifestError> {
     let mut st = merge_segment_template_chain(&[
         period.SegmentTemplate.as_ref(),
         adaptation_set.SegmentTemplate.as_ref(),
         representation.SegmentTemplate.as_ref(),
     ])
-    .ok_or(PlayerError::MissingSegmentTemplate)?;
+    .ok_or(ManifestError::MissingSegmentTemplate)?;
     if let Some(ri) = &representation.representation_index {
         st.representation_index = Some(match st.representation_index {
             Some(parent) => super::inheritance::merge_representation_index(&parent, ri),

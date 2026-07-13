@@ -1,6 +1,6 @@
 use std::time::Duration;
 
-use crate::PlayerError;
+use crate::manifest::ManifestError;
 
 #[derive(Debug, Clone, Copy)]
 pub(crate) struct PeriodWindow {
@@ -80,19 +80,19 @@ pub(crate) struct SegmentFetchTarget {
 }
 
 /// Parse a DASH range specifier (`start-end`, inclusive).
-pub(crate) fn parse_byte_range(range: &str) -> Result<ByteRange, PlayerError> {
+pub(crate) fn parse_byte_range(range: &str) -> Result<ByteRange, ManifestError> {
     let parts: Vec<&str> = range.split('-').collect();
     if parts.len() != 2 {
-        return Err(PlayerError::InvalidByteRange(range.to_string()));
+        return Err(ManifestError::InvalidByteRange(range.to_string()));
     }
     let start: u64 = parts[0]
         .parse()
-        .map_err(|_| PlayerError::InvalidByteRange(range.to_string()))?;
+        .map_err(|_| ManifestError::InvalidByteRange(range.to_string()))?;
     let end: u64 = parts[1]
         .parse()
-        .map_err(|_| PlayerError::InvalidByteRange(range.to_string()))?;
+        .map_err(|_| ManifestError::InvalidByteRange(range.to_string()))?;
     if end < start {
-        return Err(PlayerError::InvalidByteRange(range.to_string()));
+        return Err(ManifestError::InvalidByteRange(range.to_string()));
     }
     Ok(ByteRange { start, end })
 }

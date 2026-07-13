@@ -1,9 +1,9 @@
 use url::Url;
 
-use super::PlayerError;
 use super::http::{HttpRequest, SharedHttpClient};
 use super::manifest::ByteRange;
 use super::segment_blacklist::SegmentBlacklist;
+use crate::segment::SegmentError;
 
 /// Try each resolved absolute base with the same relative segment path (multi-CDN / redundant hosts).
 pub(crate) async fn fetch_bytes_with_base_failover(
@@ -11,7 +11,7 @@ pub(crate) async fn fetch_bytes_with_base_failover(
     bases: &[Url],
     relative_path: &str,
     blacklist: &SegmentBlacklist,
-) -> Result<Vec<u8>, PlayerError> {
+) -> Result<Vec<u8>, SegmentError> {
     fetch_bytes_with_base_failover_and_range(client, bases, relative_path, None, blacklist).await
 }
 
@@ -22,8 +22,8 @@ pub(crate) async fn fetch_bytes_with_base_failover_and_range(
     relative_path: &str,
     range: Option<ByteRange>,
     blacklist: &SegmentBlacklist,
-) -> Result<Vec<u8>, PlayerError> {
-    let mut last_err: Option<PlayerError> = None;
+) -> Result<Vec<u8>, SegmentError> {
+    let mut last_err: Option<SegmentError> = None;
     for base in bases {
         let url = if relative_path.is_empty() {
             base.clone()
@@ -35,7 +35,7 @@ pub(crate) async fn fetch_bytes_with_base_failover_and_range(
             Err(e) => last_err = Some(e),
         }
     }
-    Err(last_err.unwrap_or(PlayerError::SegmentExhaustedRepresentations))
+    Err(last_err.unwrap_or(SegmentError::ExhaustedRepresentations))
 }
 
 async fn fetch_bytes_range(
@@ -43,9 +43,9 @@ async fn fetch_bytes_range(
     url: Url,
     range: Option<ByteRange>,
     blacklist: &SegmentBlacklist,
-) -> Result<Vec<u8>, PlayerError> {
+) -> Result<Vec<u8>, SegmentError> {
     if blacklist.contains_url(&url) {
-        return Err(PlayerError::SegmentBlacklisted(url.to_string()));
+        return Err(SegmentError::Blacklisted(url.to_string()));
     }
 
     let mut req = HttpRequest::get(url.clone());
@@ -56,7 +56,7 @@ async fn fetch_bytes_range(
     let resp = client.send(req).await?;
     if !resp.is_success() {
         blacklist.insert_url(&url);
-        return Err(PlayerError::SegmentRequestFailed {
+        return Err(SegmentError::RequestFailed {
             status: resp.status(),
             url: url.to_string(),
         });
@@ -109,7 +109,7 @@ mod tests {
         .expect_err("404");
         assert!(matches!(
             err,
-            PlayerError::SegmentRequestFailed { status: 404, .. }
+            SegmentError::RequestFailed { status: 404, .. }
         ));
 
         let err = fetch_bytes_with_base_failover_and_range(
@@ -121,7 +121,7 @@ mod tests {
         )
         .await
         .expect_err("blacklisted");
-        assert!(matches!(err, PlayerError::SegmentBlacklisted(_)));
+        assert!(matches!(err, SegmentError::Blacklisted(_)));
 
         let _ = shutdown.send(());
     }
@@ -179,7 +179,7 @@ mod tests {
             .unwrap_err();
         assert!(matches!(
             err,
-            PlayerError::SegmentRequestFailed { status: 404, .. }
+            SegmentError::RequestFailed { status: 404, .. }
         ));
 
         let _ = shutdown.send(());

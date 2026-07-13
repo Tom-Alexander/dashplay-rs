@@ -12,10 +12,11 @@ use crate::PlayerError;
 use crate::abr::{AbrController, quality_indices_for_fallback};
 use crate::drm::DrmSessionCoordinator;
 #[cfg(feature = "drm")]
-use crate::drm::License;
+use crate::drm::{DrmError, License};
 use crate::http::SharedHttpClient;
-use crate::manifest;
+use crate::manifest::{self, ManifestError};
 use crate::mp4::partial_segment;
+use crate::segment::SegmentError;
 use crate::segment_blacklist::SegmentBlacklist;
 use crate::segment_fetcher::{
     fetch_bytes_with_base_failover, fetch_bytes_with_base_failover_and_range,
@@ -41,7 +42,7 @@ pub(super) async fn fetch_init_with_rep_fallback(
     start_quality_index: usize,
     encrypted_init_by_rep: &mut HashMap<String, Bytes>,
 ) -> Result<(Bytes, String), PlayerError> {
-    let mut last_err = PlayerError::SegmentExhaustedRepresentations;
+    let mut last_err = PlayerError::from(SegmentError::ExhaustedRepresentations);
     for quality_index in quality_indices_for_fallback(start_quality_index) {
         let rep_idx = abr.representation_index_for_quality_index(quality_index);
         let rep = &env.adaptation_set.representations[rep_idx];
@@ -64,7 +65,7 @@ pub(super) async fn fetch_media_with_rep_fallback(
     sidx_segments_by_rep: &mut HashMap<String, Vec<manifest::TimelineSegment>>,
     per_segment_index_ranges_by_rep: &mut HashMap<String, HashMap<u64, manifest::ByteRange>>,
 ) -> Result<(Vec<u8>, usize, manifest::TimelineSegment), PlayerError> {
-    let mut last_err = PlayerError::SegmentExhaustedRepresentations;
+    let mut last_err = PlayerError::from(SegmentError::ExhaustedRepresentations);
     for quality_index in quality_indices_for_fallback(plan.quality_index) {
         let rep_idx = abr.representation_index_for_quality_index(quality_index);
         let rep = &env.adaptation_set.representations[rep_idx];
@@ -167,7 +168,7 @@ pub(super) async fn fetch_cmaf_media_with_rep_fallback(
     plan: &SegmentPlan,
     encrypted_init_by_rep: &mut HashMap<String, Bytes>,
 ) -> Result<(Vec<Bytes>, usize, manifest::TimelineSegment), PlayerError> {
-    let mut last_err = PlayerError::SegmentExhaustedRepresentations;
+    let mut last_err = PlayerError::from(SegmentError::ExhaustedRepresentations);
     for quality_index in quality_indices_for_fallback(plan.quality_index) {
         let rep_idx = abr.representation_index_for_quality_index(quality_index);
         let rep = &env.adaptation_set.representations[rep_idx];
@@ -213,8 +214,8 @@ pub(super) async fn fetch_cmaf_media_with_rep_fallback(
             Ok(fragments) if !fragments.is_empty() => {
                 return Ok((fragments, quality_index, seg_for_fetch));
             }
-            Ok(_) => last_err = PlayerError::SegmentExhaustedRepresentations,
-            Err(e) => last_err = e,
+            Ok(_) => last_err = PlayerError::from(SegmentError::ExhaustedRepresentations),
+            Err(e) => last_err = e.into(),
         }
     }
     Err(last_err)
@@ -273,11 +274,11 @@ async fn ensure_init_for_rep(
                     let refreshed = guard.license_for_rep(env.period_adaptation_index, rep_id);
                     drop(guard);
                     refreshed
-                        .ok_or(PlayerError::License(e))?
+                        .ok_or(DrmError::License(e))?
                         .decrypt(&init_bytes, Option::<&Bytes>::None)
-                        .map_err(PlayerError::License)?
+                        .map_err(DrmError::License)?
                 }
-                Err(e) => return Err(PlayerError::License(e)),
+                Err(e) => return Err(PlayerError::Drm(DrmError::License(e))),
             }
         } else {
             init_bytes.clone()
@@ -310,7 +311,7 @@ fn init_target_for_addressing(
                 range: None,
             })),
         manifest::SegmentAddressing::Base(sb) => {
-            manifest::segment_base_init_target(sb, vars).map(Some)
+            Ok(Some(manifest::segment_base_init_target(sb, vars)?))
         }
     }
 }
@@ -326,7 +327,7 @@ fn media_target_for_addressing(
             let media_tpl = st
                 .media
                 .as_deref()
-                .ok_or(PlayerError::MissingMediaTemplate)?;
+                .ok_or(ManifestError::MissingMediaTemplate)?;
             Ok(manifest::SegmentFetchTarget {
                 path: manifest::interpolate_template(
                     media_tpl,
@@ -348,7 +349,9 @@ fn media_target_for_addressing(
             };
             Ok(manifest::SegmentFetchTarget { path, range: None })
         }
-        manifest::SegmentAddressing::Base(sb) => manifest::segment_base_media_target(sb, seg, vars),
+        manifest::SegmentAddressing::Base(sb) => {
+            Ok(manifest::segment_base_media_target(sb, seg, vars)?)
+        }
     }
 }
 
@@ -366,9 +369,12 @@ pub(super) async fn fetch_segment_target(
             target.range,
             blacklist,
         )
-        .await;
+        .await
+        .map_err(Into::into);
     }
-    fetch_bytes_with_base_failover(client, bases, &target.path, blacklist).await
+    fetch_bytes_with_base_failover(client, bases, &target.path, blacklist)
+        .await
+        .map_err(Into::into)
 }
 
 async fn sidx_segments_for_rep_template<'a>(
@@ -459,7 +465,7 @@ async fn sidx_segments_for_rep<'a>(
         let index_bytes = if index_target.range.is_some() && index_target.path.is_empty() {
             let br = index_target
                 .range
-                .ok_or(PlayerError::MissingSegmentBaseIndexRange)?;
+                .ok_or(ManifestError::MissingSegmentBaseIndexRange)?;
             fetch_bytes_with_base_failover_and_range(client, &bases, "", Some(br), blacklist)
                 .await?
         } else {

@@ -1,6 +1,6 @@
 use roxmltree::{Document, Node};
 
-use crate::PlayerError;
+use crate::manifest::ManifestError;
 
 /// `SegmentTemplate@endNumber` per hierarchy node (`dash-mpd` does not deserialize this attribute).
 #[derive(Debug, Clone, Default)]
@@ -60,9 +60,9 @@ fn parse_period_end_numbers(period_node: Node<'_, '_>) -> PeriodEndNumbers {
 /// Parse `SegmentTemplate@endNumber` from raw MPD XML (indexed like `Period.adaptations`).
 pub(crate) fn parse_segment_template_end_numbers(
     mpd_xml: &str,
-) -> Result<SegmentTemplateEndNumbers, PlayerError> {
+) -> Result<SegmentTemplateEndNumbers, ManifestError> {
     let doc = Document::parse(mpd_xml)
-        .map_err(|e| PlayerError::Manifest(dash_mpd::DashMpdError::Parsing(e.to_string())))?;
+        .map_err(|e| ManifestError::Parse(dash_mpd::DashMpdError::Parsing(e.to_string())))?;
     let periods = doc
         .root_element()
         .children()

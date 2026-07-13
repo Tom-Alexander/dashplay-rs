@@ -143,7 +143,7 @@ without changing playback behaviour.
 - [x] **`schedule/fetch.rs` decomposition.** Split into `segment_emit.rs` (events +
   metrics), `segment_fetch.rs` (HTTP + rep fallback + sidx), and `segment_decrypt.rs`
   (media-fragment decryption).
-- [ ] **`PlayerError` domain split.** Replace the monolithic `PlayerError` enum in
+- [x] **`PlayerError` domain split.** Replace the monolithic `PlayerError` enum in
   `lib.rs` with per-subsystem error types (`ManifestError`, `SegmentError`, etc.) and a
   top-level wrapper.
 - [x] **`stream_controller` extraction.** Pull manifest-refresh loop, period-context

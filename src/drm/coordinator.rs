@@ -9,7 +9,7 @@ use url::Url;
 use super::mp4::{InBandDrmInfo, extract_in_band_drm};
 use super::mpd::{MpdDrmInfo, parse_mpd_drm_info};
 use super::widevine::{License, WidevineLicenseManager, WidevineSessionKey};
-use crate::PlayerError;
+use crate::drm::DrmError;
 use crate::http::{HttpRequest, SharedHttpClient};
 
 pub type AdaptationLicenseSessions<'a> = (
@@ -77,8 +77,8 @@ impl DrmSessionCoordinator {
         &mut self,
         mpd_xml: &str,
         period_idx: usize,
-    ) -> Result<(), PlayerError> {
-        let drm = parse_mpd_drm_info(mpd_xml).map_err(PlayerError::DrmMpd)?;
+    ) -> Result<(), DrmError> {
+        let drm = parse_mpd_drm_info(mpd_xml).map_err(DrmError::Mpd)?;
         self.sync_from_drm_info(&drm, period_idx).await
     }
 
@@ -86,7 +86,7 @@ impl DrmSessionCoordinator {
         &mut self,
         drm: &MpdDrmInfo,
         period_idx: usize,
-    ) -> Result<(), PlayerError> {
+    ) -> Result<(), DrmError> {
         let Some(period) = drm.periods.get(period_idx) else {
             self.adaptation_wv_sessions.clear();
             self.adaptation_wv_sessions_by_rep.clear();
@@ -143,7 +143,7 @@ impl DrmSessionCoordinator {
         aset_idx: usize,
         rep_id: &str,
         info: &InBandDrmInfo,
-    ) -> Result<Option<Arc<License>>, PlayerError> {
+    ) -> Result<Option<Arc<License>>, DrmError> {
         if !info.has_widevine_pssh() {
             return Ok(None);
         }
@@ -190,8 +190,8 @@ impl DrmSessionCoordinator {
         rep_id: &str,
         init: &[u8],
         media: Option<&[u8]>,
-    ) -> Result<Option<Arc<License>>, PlayerError> {
-        let info = extract_in_band_drm(init, media).map_err(PlayerError::InBandDrm)?;
+    ) -> Result<Option<Arc<License>>, DrmError> {
+        let info = extract_in_band_drm(init, media).map_err(DrmError::InBand)?;
         self.ensure_in_band_drm(aset_idx, rep_id, &info).await
     }
 
@@ -202,13 +202,13 @@ impl DrmSessionCoordinator {
         rep_id: &str,
         init: &[u8],
         media: &[u8],
-    ) -> Result<Option<Arc<License>>, PlayerError> {
+    ) -> Result<Option<Arc<License>>, DrmError> {
         self.ensure_from_fragments(aset_idx, rep_id, init, Some(media))
             .await
     }
 
     /// Check active sessions for upcoming license renewal (phase 3).
-    pub async fn poll_renewals(&mut self) -> Result<(), PlayerError> {
+    pub async fn poll_renewals(&mut self) -> Result<(), DrmError> {
         let now = Instant::now();
         let sessions = self.manager_sessions_with_urls();
         for (session_key, license) in sessions {
@@ -222,7 +222,7 @@ impl DrmSessionCoordinator {
                 .or_else(|| self.session_license_urls.get(&session_key).cloned())
                 .or_else(|| self.fallback_license_uri.clone())
                 .ok_or_else(|| {
-                    PlayerError::WidevineLicenseHttp(
+                    DrmError::WidevineLicenseHttp(
                         "license renewal required but no license URL is available".into(),
                     )
                 })?;
@@ -231,7 +231,7 @@ impl DrmSessionCoordinator {
 
             let challenge = license.renewal_challenge().map_err(|err| {
                 let _ = license.mark_renewal_failure();
-                PlayerError::License(err)
+                DrmError::License(err)
             })?;
 
             match self.fetch_widevine_license(&license_url, challenge).await {
@@ -239,7 +239,7 @@ impl DrmSessionCoordinator {
                     if let Err(err) = license.apply_license(bytes.as_ref()) {
                         let _ = license.mark_renewal_failure();
                         if license.renewal_is_expired(now)? {
-                            return Err(PlayerError::License(err));
+                            return Err(DrmError::License(err));
                         }
                     } else {
                         license.mark_renewal_success()?;
@@ -272,7 +272,7 @@ impl DrmSessionCoordinator {
         pssh: &pssh_box::PsshBox,
         license_urls: &[String],
         accumulating: Option<Arc<License>>,
-    ) -> Result<Arc<License>, PlayerError> {
+    ) -> Result<Arc<License>, DrmError> {
         let session_key = WidevineSessionKey::from_pssh(pssh);
         if let Some(existing) = self.manager.get(&session_key) {
             return Ok(existing);
@@ -283,7 +283,7 @@ impl DrmSessionCoordinator {
             .find_map(|s| Url::parse(s).ok())
             .or_else(|| self.fallback_license_uri.clone())
             .ok_or_else(|| {
-                PlayerError::WidevineLicenseHttp(format!(
+                DrmError::WidevineLicenseHttp(format!(
                     "no license URL for PSSH session {}",
                     hex::encode(session_key.as_bytes())
                 ))
@@ -314,7 +314,7 @@ impl DrmSessionCoordinator {
         &self,
         license_url: &Url,
         challenge: Vec<u8>,
-    ) -> Result<Bytes, PlayerError> {
+    ) -> Result<Bytes, DrmError> {
         if let Some(fetch) = self.license_fetch.as_ref() {
             return fetch(license_url.clone(), challenge).await;
         }
@@ -327,7 +327,7 @@ impl DrmSessionCoordinator {
             )
             .await?;
         if !resp.is_success() {
-            return Err(PlayerError::WidevineLicenseHttp(format!(
+            return Err(DrmError::WidevineLicenseHttp(format!(
                 "license request failed: HTTP {}",
                 resp.status()
             )));

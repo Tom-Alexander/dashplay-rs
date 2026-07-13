@@ -66,7 +66,10 @@ async fn drm_playback_without_device_path_fails_before_network() {
         .expect_err("expected DRM setup failure without CDM device");
 
     assert!(
-        matches!(err, dashplayrs::PlayerError::License(_)),
+        matches!(
+            err,
+            dashplayrs::PlayerError::Drm(dashplayrs::DrmError::License(_))
+        ),
         "unexpected error: {err:?}"
     );
 }

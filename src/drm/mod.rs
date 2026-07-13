@@ -9,6 +9,8 @@ pub mod mp4;
 #[cfg(feature = "drm")]
 pub mod mpd;
 #[cfg(feature = "drm")]
+mod playback_error;
+#[cfg(feature = "drm")]
 mod renewal;
 #[cfg(feature = "drm")]
 pub mod widevine;
@@ -18,6 +20,8 @@ mod stub;
 
 #[cfg(feature = "drm")]
 pub use coordinator::{DrmSessionCoordinator, WidevineLicenseFetcher};
+#[cfg(feature = "drm")]
+pub use playback_error::DrmError;
 #[cfg(feature = "drm")]
 pub use widevine::{License, LicenseError, WidevineLicenseManager, WidevineSessionKey};
 

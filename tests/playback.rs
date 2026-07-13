@@ -302,7 +302,10 @@ async fn missing_segment_surfaces_request_error() {
     assert!(
         matches!(
             err,
-            dashplayrs::PlayerError::SegmentRequestFailed { status: 404, .. }
+            dashplayrs::PlayerError::Segment(dashplayrs::SegmentError::RequestFailed {
+                status: 404,
+                ..
+            })
         ),
         "unexpected error: {err:?}"
     );
@@ -313,7 +316,10 @@ async fn player_rejects_invalid_manifest_url() {
     let err = dashplayrs::Player::new("not-a-valid-url", None)
         .err()
         .expect("invalid url");
-    assert!(matches!(err, dashplayrs::PlayerError::Url(_)));
+    assert!(matches!(
+        err,
+        dashplayrs::PlayerError::Manifest(dashplayrs::ManifestError::Url(_))
+    ));
 }
 
 #[tokio::test]
@@ -345,7 +351,10 @@ async fn all_base_urls_fail_surfaces_segment_error() {
     assert!(
         matches!(
             err,
-            dashplayrs::PlayerError::SegmentRequestFailed { status: 404, .. }
+            dashplayrs::PlayerError::Segment(dashplayrs::SegmentError::RequestFailed {
+                status: 404,
+                ..
+            })
         ),
         "unexpected error: {err:?}"
     );

@@ -5,7 +5,7 @@ use std::sync::Arc;
 use bytes::Bytes;
 use tokio::sync::Mutex as AsyncMutex;
 
-use crate::PlayerError;
+use crate::drm::DrmError;
 use crate::drm::DrmSessionCoordinator;
 
 #[cfg(feature = "drm")]
@@ -18,7 +18,7 @@ pub(super) async fn decrypt_media_fragment(
     rep_id: &str,
     init_bytes: &Bytes,
     data: Bytes,
-) -> Result<Bytes, PlayerError> {
+) -> Result<Bytes, DrmError> {
     let license = {
         let guard = drm.lock().await;
         guard.license_for_rep(period_adaptation_index, rep_id)
@@ -42,18 +42,18 @@ pub(super) async fn decrypt_media_fragment(
             let refreshed = guard.license_for_rep(period_adaptation_index, rep_id);
             drop(guard);
             let Some(new_lic) = refreshed else {
-                return Err(PlayerError::License(e));
+                return Err(DrmError::License(e));
             };
             new_lic
                 .decrypt(&data, Some(init_bytes))
-                .map_err(PlayerError::License)
+                .map_err(DrmError::License)
         }
         Err(e) => {
             let msg = e.to_string().to_ascii_lowercase();
             if msg.contains("not encrypted") || msg.contains("no") && msg.contains("senc") {
                 Ok(data)
             } else {
-                Err(PlayerError::License(e))
+                Err(DrmError::License(e))
             }
         }
     }
@@ -66,6 +66,6 @@ pub(super) async fn decrypt_media_fragment(
     _rep_id: &str,
     _init_bytes: &Bytes,
     data: Bytes,
-) -> Result<Bytes, PlayerError> {
+) -> Result<Bytes, DrmError> {
     Ok(data)
 }

@@ -3,7 +3,7 @@ use std::time::Duration;
 use chrono::{DateTime, Utc};
 use dash_mpd::MPD;
 
-use crate::PlayerError;
+use crate::manifest::ManifestError;
 
 use super::addressing::SegmentAddressing;
 use super::period::since_availability_start_at;
@@ -133,7 +133,7 @@ pub(crate) fn target_presentation_time_from_since(mpd: &MPD, since_ast: Duration
 pub(crate) fn target_presentation_time_at(
     mpd: &MPD,
     wall_now: DateTime<Utc>,
-) -> Result<Option<Duration>, PlayerError> {
+) -> Result<Option<Duration>, ManifestError> {
     let Some(since_ast) = since_availability_start_at(mpd, wall_now)? else {
         return Ok(None);
     };

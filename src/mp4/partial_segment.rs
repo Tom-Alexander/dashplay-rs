@@ -2,9 +2,9 @@
 
 use bytes::{Bytes, BytesMut};
 
-use crate::PlayerError;
 use crate::http::{HttpRequest, SharedHttpClient};
 use crate::manifest::SegmentFetchTarget;
+use crate::segment::SegmentError;
 use crate::segment_blacklist::SegmentBlacklist;
 
 use super::{box_type_at, read_box_size};
@@ -113,7 +113,7 @@ pub(crate) async fn fetch_cmaf_fragments_for_target(
     bases: &[Url],
     target: &SegmentFetchTarget,
     blacklist: &SegmentBlacklist,
-) -> Result<Vec<Bytes>, PlayerError> {
+) -> Result<Vec<Bytes>, SegmentError> {
     fetch_cmaf_fragments_with_failover(client, bases, &target.path, blacklist).await
 }
 
@@ -122,8 +122,8 @@ async fn fetch_cmaf_fragments_with_failover(
     bases: &[Url],
     relative_path: &str,
     blacklist: &SegmentBlacklist,
-) -> Result<Vec<Bytes>, PlayerError> {
-    let mut last_err: Option<PlayerError> = None;
+) -> Result<Vec<Bytes>, SegmentError> {
+    let mut last_err: Option<SegmentError> = None;
     for base in bases {
         let url = if relative_path.is_empty() {
             base.clone()
@@ -135,16 +135,16 @@ async fn fetch_cmaf_fragments_with_failover(
             Err(e) => last_err = Some(e),
         }
     }
-    Err(last_err.unwrap_or(PlayerError::SegmentExhaustedRepresentations))
+    Err(last_err.unwrap_or(SegmentError::ExhaustedRepresentations))
 }
 
 async fn fetch_cmaf_fragments(
     client: &SharedHttpClient,
     url: Url,
     blacklist: &SegmentBlacklist,
-) -> Result<Vec<Bytes>, PlayerError> {
+) -> Result<Vec<Bytes>, SegmentError> {
     if blacklist.contains_url(&url) {
-        return Err(PlayerError::SegmentBlacklisted(url.to_string()));
+        return Err(SegmentError::Blacklisted(url.to_string()));
     }
 
     let (status, mut body) = client
@@ -152,7 +152,7 @@ async fn fetch_cmaf_fragments(
         .await?;
     if !(200..300).contains(&status) {
         blacklist.insert_url(&url);
-        return Err(PlayerError::SegmentRequestFailed {
+        return Err(SegmentError::RequestFailed {
             status,
             url: url.to_string(),
         });

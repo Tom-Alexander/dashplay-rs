@@ -8,6 +8,7 @@ use url::Url;
 
 use crate::PlayerError;
 use crate::http::{HttpRequest, SharedHttpClient};
+use crate::manifest::ManifestError;
 use crate::manifest::merge_base_url;
 
 /// Parsed DASH Content Steering Manifest (DCSM).
@@ -86,9 +87,9 @@ impl ContentSteeringState {
 pub(crate) fn parse_content_steering_config(
     mpd_xml: &str,
     manifest_uri: &Url,
-) -> Result<Option<ContentSteeringConfig>, PlayerError> {
+) -> Result<Option<ContentSteeringConfig>, ManifestError> {
     let doc = Document::parse(mpd_xml)
-        .map_err(|e| PlayerError::Manifest(dash_mpd::DashMpdError::Parsing(e.to_string())))?;
+        .map_err(|e| ManifestError::Parse(dash_mpd::DashMpdError::Parsing(e.to_string())))?;
     let node = doc
         .descendants()
         .find(|n| n.is_element() && n.tag_name().name() == "ContentSteering");
@@ -111,14 +112,14 @@ pub(crate) fn parse_content_steering_config(
     }))
 }
 
-pub(crate) fn parse_dcsm(body: &str) -> Result<ContentSteeringManifest, PlayerError> {
+pub(crate) fn parse_dcsm(body: &str) -> Result<ContentSteeringManifest, ManifestError> {
     let version = extract_json_number(body, "VERSION").ok_or_else(|| {
-        PlayerError::Manifest(dash_mpd::DashMpdError::Parsing(
+        ManifestError::Parse(dash_mpd::DashMpdError::Parsing(
             "DCSM VERSION missing".into(),
         ))
     })?;
     if version != 1 {
-        return Err(PlayerError::Manifest(dash_mpd::DashMpdError::Parsing(
+        return Err(ManifestError::Parse(dash_mpd::DashMpdError::Parsing(
             format!("unsupported DCSM VERSION {version}"),
         )));
     }

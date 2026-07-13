@@ -5,6 +5,7 @@ use url::Url;
 
 use crate::PlayerError;
 use crate::http::{HttpRequest, SharedHttpClient};
+use crate::manifest::ManifestError;
 use crate::manifest::merge_base_url;
 
 use super::content_steering::ContentSteeringState;
@@ -37,20 +38,16 @@ impl ManifestSession {
         Ok(())
     }
 
-    pub(crate) fn xml(&self) -> Result<&str, PlayerError> {
-        self.mpd_xml
-            .as_deref()
-            .ok_or(PlayerError::ManifestNotLoaded)
+    pub(crate) fn xml(&self) -> Result<&str, ManifestError> {
+        self.mpd_xml.as_deref().ok_or(ManifestError::NotLoaded)
     }
 
-    pub(crate) fn parsed(&self) -> Result<&MPD, PlayerError> {
-        self.parsed.as_ref().ok_or(PlayerError::ManifestNotLoaded)
+    pub(crate) fn parsed(&self) -> Result<&MPD, ManifestError> {
+        self.parsed.as_ref().ok_or(ManifestError::NotLoaded)
     }
 
-    pub(crate) fn manifest_uri(&self) -> Result<&Url, PlayerError> {
-        self.current_uri
-            .as_ref()
-            .ok_or(PlayerError::ManifestNotLoaded)
+    pub(crate) fn manifest_uri(&self) -> Result<&Url, ManifestError> {
+        self.current_uri.as_ref().ok_or(ManifestError::NotLoaded)
     }
 
     pub(crate) async fn sync_steering(
@@ -62,7 +59,7 @@ impl ManifestSession {
         self.steering.sync_from_mpd_xml(client, &xml, &uri).await
     }
 
-    fn resolve_fetch_uri(&self, initial_uri: &Url) -> Result<Url, PlayerError> {
+    fn resolve_fetch_uri(&self, initial_uri: &Url) -> Result<Url, ManifestError> {
         Ok(self
             .current_uri
             .clone()
@@ -87,7 +84,7 @@ impl ManifestSession {
         Ok((text, parsed))
     }
 
-    fn patch_fetch_uri(&self, fetch_uri: &Url) -> Result<Option<Url>, PlayerError> {
+    fn patch_fetch_uri(&self, fetch_uri: &Url) -> Result<Option<Url>, ManifestError> {
         let Some(_xml) = self.mpd_xml.as_deref() else {
             return Ok(None);
         };
@@ -110,10 +107,7 @@ impl ManifestSession {
         client: &SharedHttpClient,
         patch_uri: &Url,
     ) -> Result<(String, MPD), PlayerError> {
-        let base_xml = self
-            .mpd_xml
-            .as_deref()
-            .ok_or(PlayerError::ManifestNotLoaded)?;
+        let base_xml = self.mpd_xml.as_deref().ok_or(ManifestError::NotLoaded)?;
         let resp = client.send(HttpRequest::get(patch_uri.clone())).await?;
         let patch_xml = resp.text()?;
         let updated = patch::apply_mpd_patch(base_xml, &patch_xml).map_err(map_patch_error)?;
@@ -122,12 +116,12 @@ impl ManifestSession {
     }
 }
 
-fn map_patch_error(err: MpdPatchError) -> PlayerError {
-    PlayerError::Manifest(dash_mpd::DashMpdError::Parsing(err.to_string()))
+fn map_patch_error(err: MpdPatchError) -> ManifestError {
+    ManifestError::Parse(dash_mpd::DashMpdError::Parsing(err.to_string()))
 }
 
 /// Resolve the manifest URI for the next refresh from the latest `Location` element.
-pub(crate) fn resolve_location_uri(mpd: &MPD, base_uri: &Url) -> Result<Url, PlayerError> {
+pub(crate) fn resolve_location_uri(mpd: &MPD, base_uri: &Url) -> Result<Url, ManifestError> {
     let Some(location) = mpd.locations.last() else {
         return Ok(base_uri.clone());
     };

@@ -158,7 +158,7 @@ pub fn static_license_fetcher(response: Vec<u8>) -> dashplayrs::WidevineLicenseF
     Arc::new(move |_url: Url, _challenge: Vec<u8>| {
         let payload = bytes.clone();
         Box::pin(async move { Ok(payload) })
-            as Pin<Box<dyn Future<Output = Result<Bytes, dashplayrs::PlayerError>> + Send>>
+            as Pin<Box<dyn Future<Output = Result<Bytes, dashplayrs::DrmError>> + Send>>
     })
 }
 
@@ -299,6 +299,6 @@ pub fn counting_license_fetcher(
         Box::pin(async move {
             counter.fetch_add(1, Ordering::Relaxed);
             Ok(payload)
-        }) as Pin<Box<dyn Future<Output = Result<Bytes, dashplayrs::PlayerError>> + Send>>
+        }) as Pin<Box<dyn Future<Output = Result<Bytes, dashplayrs::DrmError>> + Send>>
     })
 }

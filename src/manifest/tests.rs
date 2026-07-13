@@ -9,7 +9,7 @@ mod manifest_logic_tests {
     };
     use url::Url;
 
-    use crate::PlayerError;
+    use crate::manifest::ManifestError;
     use crate::manifest::*;
 
     #[test]
@@ -470,7 +470,7 @@ mod manifest_logic_tests {
         let err = timeline_segments(&st, &ctx, None).unwrap_err();
         assert!(matches!(
             err,
-            PlayerError::MissingPeriodExtentForStaticTemplate
+            ManifestError::MissingPeriodExtentForStaticTemplate
         ));
 
         let segs = timeline_segments(&st, &ctx, Some(2)).unwrap();
@@ -877,7 +877,7 @@ mod manifest_logic_tests {
         };
         assert!(matches!(
             segment_template_index_target(&st, &base_vars),
-            Err(PlayerError::MissingSegmentTemplateIndexVars)
+            Err(ManifestError::MissingSegmentTemplateIndexVars)
         ));
     }
 

@@ -2,7 +2,7 @@
 
 use url::Url;
 
-use crate::PlayerError;
+use crate::drm::DrmError;
 use crate::http::SharedHttpClient;
 
 /// Async license fetch hook (unused without the `drm` feature).
@@ -26,7 +26,7 @@ impl DrmSessionCoordinator {
         &mut self,
         _mpd_xml: &str,
         _period_idx: usize,
-    ) -> Result<(), PlayerError> {
+    ) -> Result<(), DrmError> {
         Ok(())
     }
 
@@ -36,7 +36,7 @@ impl DrmSessionCoordinator {
         _rep_id: &str,
         _init: &[u8],
         _media: Option<&[u8]>,
-    ) -> Result<(), PlayerError> {
+    ) -> Result<(), DrmError> {
         Ok(())
     }
 
@@ -46,11 +46,11 @@ impl DrmSessionCoordinator {
         _rep_id: &str,
         _init: &[u8],
         _media: &[u8],
-    ) -> Result<(), PlayerError> {
+    ) -> Result<(), DrmError> {
         Ok(())
     }
 
-    pub async fn poll_renewals(&mut self) -> Result<(), PlayerError> {
+    pub async fn poll_renewals(&mut self) -> Result<(), DrmError> {
         Ok(())
     }
 }

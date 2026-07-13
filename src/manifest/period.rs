@@ -3,19 +3,19 @@ use std::time::Duration;
 use chrono::{DateTime, Utc};
 use dash_mpd::MPD;
 
-use crate::PlayerError;
+use crate::manifest::ManifestError;
 
 use super::types::PeriodWindow;
 
-pub(crate) fn mpd(manifest: &Option<MPD>) -> Result<&MPD, PlayerError> {
-    manifest.as_ref().ok_or(PlayerError::ManifestNotLoaded)
+pub(crate) fn mpd(manifest: &Option<MPD>) -> Result<&MPD, ManifestError> {
+    manifest.as_ref().ok_or(ManifestError::NotLoaded)
 }
 
 /// Elapsed time since `MPD@availabilityStartTime` using a wall clock (from [`crate::clock::utc_timing`] or local UTC).
 pub(crate) fn since_availability_start_at(
     mpd: &MPD,
     wall_now: DateTime<Utc>,
-) -> Result<Option<Duration>, PlayerError> {
+) -> Result<Option<Duration>, ManifestError> {
     let Some(ast) = mpd.availabilityStartTime else {
         return Ok(None);
     };
@@ -28,9 +28,9 @@ pub(crate) fn since_availability_start_at(
     Ok(Some(since_ast))
 }
 
-pub(crate) fn period_windows(mpd: &MPD) -> Result<Vec<PeriodWindow>, PlayerError> {
+pub(crate) fn period_windows(mpd: &MPD) -> Result<Vec<PeriodWindow>, ManifestError> {
     if mpd.periods.is_empty() {
-        return Err(PlayerError::NoPeriod);
+        return Err(ManifestError::NoPeriod);
     }
 
     let mut acc_start = Duration::ZERO;
@@ -64,7 +64,7 @@ pub(crate) fn is_dynamic_mpd(mpd: &MPD) -> bool {
 pub(crate) fn current_period_window_at(
     mpd: &MPD,
     wall_now: DateTime<Utc>,
-) -> Result<PeriodWindow, PlayerError> {
+) -> Result<PeriodWindow, ManifestError> {
     let windows = period_windows(mpd)?;
 
     // Static VOD has no availability timeline; playback starts at the first Period.

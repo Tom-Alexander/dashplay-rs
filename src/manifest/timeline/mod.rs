@@ -1,6 +1,6 @@
 use dash_mpd::{SegmentBase, SegmentList, SegmentTemplate};
 
-use crate::PlayerError;
+use crate::manifest::ManifestError;
 
 use super::addressing::SegmentAddressing;
 use super::addressing::segment_template_uses_global_sidecar_index;
@@ -9,12 +9,12 @@ use super::types::{TimelineBuildContext, TimelineSegment};
 fn validate_segment_duration_s(
     duration_s: f64,
     ctx: &TimelineBuildContext,
-) -> Result<(), PlayerError> {
+) -> Result<(), ManifestError> {
     let Some(max) = ctx.max_segment_duration else {
         return Ok(());
     };
     if duration_s > max.as_secs_f64() + 1e-9 {
-        return Err(PlayerError::SegmentDurationExceedsMaxSegmentDuration);
+        return Err(ManifestError::SegmentDurationExceedsMaxSegmentDuration);
     }
     Ok(())
 }
@@ -38,7 +38,7 @@ fn bound_last_static_duration_segment(
 fn validate_timeline_segments(
     segments: &[TimelineSegment],
     ctx: &TimelineBuildContext,
-) -> Result<(), PlayerError> {
+) -> Result<(), ManifestError> {
     for seg in segments {
         validate_segment_duration_s(seg.duration_s, ctx)?;
     }
@@ -50,10 +50,10 @@ fn static_duration_segment_count(
     duration_s: f64,
     end_number: Option<u64>,
     ctx: &TimelineBuildContext,
-) -> Result<u64, PlayerError> {
+) -> Result<u64, ManifestError> {
     if let Some(end_num) = end_number {
         if end_num < start_number {
-            return Err(PlayerError::InvalidSegmentTemplateEndNumber);
+            return Err(ManifestError::InvalidSegmentTemplateEndNumber);
         }
         return Ok(end_num - start_number + 1);
     }
@@ -61,17 +61,17 @@ fn static_duration_segment_count(
     let period_duration_s = ctx
         .period_length_secs()
         .filter(|x| x.is_finite() && *x > 0.0)
-        .ok_or(PlayerError::MissingPeriodExtentForStaticTemplate)?;
+        .ok_or(ManifestError::MissingPeriodExtentForStaticTemplate)?;
     Ok(((period_duration_s / duration_s).ceil() as u64).max(1))
 }
 pub(crate) fn timeline_segments_for_addressing(
     addressing: &SegmentAddressing,
     ctx: &TimelineBuildContext,
     end_number: Option<u64>,
-) -> Result<Vec<TimelineSegment>, PlayerError> {
+) -> Result<Vec<TimelineSegment>, ManifestError> {
     match addressing {
         SegmentAddressing::Template(st) if segment_template_uses_global_sidecar_index(st) => {
-            Err(PlayerError::SegmentTemplateIndexNotLoaded)
+            Err(ManifestError::SegmentTemplateIndexNotLoaded)
         }
         SegmentAddressing::Template(st) => timeline_segments(st, ctx, end_number),
         SegmentAddressing::List(sl) => timeline_segments_from_list(sl, ctx),
@@ -82,20 +82,20 @@ pub(crate) fn timeline_segments_for_addressing(
 fn timeline_segments_from_segment_base(
     sb: &SegmentBase,
     _ctx: &TimelineBuildContext,
-) -> Result<Vec<TimelineSegment>, PlayerError> {
+) -> Result<Vec<TimelineSegment>, ManifestError> {
     if super::addressing::segment_base_uses_sidx_index(sb) {
-        return Err(PlayerError::SegmentBaseIndexNotLoaded);
+        return Err(ManifestError::SegmentBaseIndexNotLoaded);
     }
 
     let timescale = sb.timescale.unwrap_or(1);
     if timescale == 0 {
-        return Err(PlayerError::ZeroTimescale);
+        return Err(ManifestError::ZeroTimescale);
     }
 
     let duration_ticks = sb
         .presentationDuration
         .filter(|d| *d > 0)
-        .ok_or(PlayerError::MissingSegmentDuration)?;
+        .ok_or(ManifestError::MissingSegmentDuration)?;
     let duration_s = duration_ticks as f64 / timescale as f64;
 
     Ok(vec![TimelineSegment {
@@ -114,13 +114,13 @@ fn timeline_segments_from_segment_base(
 pub(crate) fn timeline_segments_from_list(
     sl: &SegmentList,
     ctx: &TimelineBuildContext,
-) -> Result<Vec<TimelineSegment>, PlayerError> {
+) -> Result<Vec<TimelineSegment>, ManifestError> {
     let segments = if let Some(timeline) = sl.SegmentTimeline.as_ref() {
         segments_from_list_timeline(sl, timeline, ctx)?
     } else if !sl.segment_urls.is_empty() {
         segments_from_list_urls(sl)?
     } else {
-        return Err(PlayerError::EmptySegmentList);
+        return Err(ManifestError::EmptySegmentList);
     };
 
     if ctx.is_dynamic && sl.SegmentTimeline.is_some() {
@@ -134,7 +134,7 @@ fn segments_from_list_timeline(
     sl: &SegmentList,
     timeline: &dash_mpd::SegmentTimeline,
     ctx: &TimelineBuildContext,
-) -> Result<Vec<TimelineSegment>, PlayerError> {
+) -> Result<Vec<TimelineSegment>, ManifestError> {
     let pseudo_st = SegmentTemplate {
         timescale: sl.timescale,
         presentationTimeOffset: Some(0),
@@ -145,7 +145,7 @@ fn segments_from_list_timeline(
     let mut segments = segments_from_explicit_timeline(&pseudo_st, timeline, ctx)?;
 
     if !sl.segment_urls.is_empty() && sl.segment_urls.len() != segments.len() {
-        return Err(PlayerError::SegmentListUrlTimelineMismatch);
+        return Err(ManifestError::SegmentListUrlTimelineMismatch);
     }
 
     for (seg, su) in segments.iter_mut().zip(sl.segment_urls.iter()) {
@@ -155,14 +155,14 @@ fn segments_from_list_timeline(
     Ok(segments)
 }
 
-fn segments_from_list_urls(sl: &SegmentList) -> Result<Vec<TimelineSegment>, PlayerError> {
+fn segments_from_list_urls(sl: &SegmentList) -> Result<Vec<TimelineSegment>, ManifestError> {
     let duration_ticks = sl
         .duration
         .filter(|d| *d > 0)
-        .ok_or(PlayerError::MissingSegmentDuration)?;
+        .ok_or(ManifestError::MissingSegmentDuration)?;
     let timescale = sl.timescale.unwrap_or(1);
     if timescale == 0 {
-        return Err(PlayerError::ZeroTimescale);
+        return Err(ManifestError::ZeroTimescale);
     }
     let duration_s = duration_ticks as f64 / timescale as f64;
 
@@ -187,7 +187,7 @@ pub(crate) fn timeline_segments(
     st: &dash_mpd::SegmentTemplate,
     ctx: &TimelineBuildContext,
     end_number: Option<u64>,
-) -> Result<Vec<TimelineSegment>, PlayerError> {
+) -> Result<Vec<TimelineSegment>, ManifestError> {
     let segments = if let Some(timeline) = st.SegmentTimeline.as_ref() {
         segments_from_explicit_timeline(st, timeline, ctx)?
     } else {
@@ -207,10 +207,10 @@ fn segments_from_explicit_timeline(
     st: &dash_mpd::SegmentTemplate,
     timeline: &dash_mpd::SegmentTimeline,
     ctx: &TimelineBuildContext,
-) -> Result<Vec<TimelineSegment>, PlayerError> {
+) -> Result<Vec<TimelineSegment>, ManifestError> {
     let timescale = st.timescale.unwrap_or(1);
     if timescale == 0 {
-        return Err(PlayerError::ZeroTimescale);
+        return Err(ManifestError::ZeroTimescale);
     }
 
     let presentation_time_offset = st.presentationTimeOffset.unwrap_or(0);
@@ -224,15 +224,15 @@ fn segments_from_explicit_timeline(
 
     for (seg_idx, s) in timeline.segments.iter().enumerate() {
         if s.d == 0 {
-            return Err(PlayerError::ZeroTimelineSegmentDuration);
+            return Err(ManifestError::ZeroTimelineSegmentDuration);
         }
 
         let k = s.k.unwrap_or(1);
         if k == 0 {
-            return Err(PlayerError::InvalidTimelineSegmentK);
+            return Err(ManifestError::InvalidTimelineSegmentK);
         }
         if k > 1 && s.d % k != 0 {
-            return Err(PlayerError::TimelineDNotDivisibleByK);
+            return Err(ManifestError::TimelineDNotDivisibleByK);
         }
 
         if let Some(t) = s.t {
@@ -250,7 +250,7 @@ fn segments_from_explicit_timeline(
             let mut seq_start = t;
             for _ in 0..=(repeat_count as u64) {
                 if segments.len().saturating_add(k as usize) > MAX_EXPANSION {
-                    return Err(PlayerError::UnboundedSegmentTimelineRepeat);
+                    return Err(ManifestError::UnboundedSegmentTimelineRepeat);
                 }
                 emit_segment_sequence(
                     &mut segments,
@@ -270,7 +270,7 @@ fn segments_from_explicit_timeline(
             let end = negative_r_repeat_end(seg_idx, timeline, ctx, period_start_s)?;
             loop {
                 if segments.len().saturating_add(k as usize) > MAX_EXPANSION {
-                    return Err(PlayerError::UnboundedSegmentTimelineRepeat);
+                    return Err(ManifestError::UnboundedSegmentTimelineRepeat);
                 }
                 match &end {
                     NegativeRepeatEnd::NextSegmentT(t_cap) => {
@@ -315,7 +315,7 @@ fn emit_segment_sequence(
     k: u64,
     timescale: u64,
     presentation_time_offset: u64,
-) -> Result<(), PlayerError> {
+) -> Result<(), ManifestError> {
     let d_per = d_total / k;
     let ts = timescale as f64;
     for sub in 1..=k {
@@ -350,7 +350,7 @@ fn negative_r_repeat_end(
     timeline: &dash_mpd::SegmentTimeline,
     ctx: &TimelineBuildContext,
     period_start_s: f64,
-) -> Result<NegativeRepeatEnd, PlayerError> {
+) -> Result<NegativeRepeatEnd, ManifestError> {
     for s2 in timeline.segments.iter().skip(seg_idx + 1) {
         if let Some(t2) = s2.t {
             return Ok(NegativeRepeatEnd::NextSegmentT(t2));
@@ -368,12 +368,12 @@ fn negative_r_repeat_end(
 
     if ctx.is_dynamic {
         let Some(since) = ctx.since_availability_start else {
-            return Err(PlayerError::MissingAvailabilityStartForDynamicTemplate);
+            return Err(ManifestError::MissingAvailabilityStartForDynamicTemplate);
         };
         return Ok(NegativeRepeatEnd::MpdSeconds(since.as_secs_f64()));
     }
 
-    Err(PlayerError::UnboundedSegmentTimelineRepeat)
+    Err(ManifestError::UnboundedSegmentTimelineRepeat)
 }
 
 /// For dynamic MPDs with `SegmentTimeline`, keep segments in the time-shift buffer (same idea as
@@ -381,9 +381,9 @@ fn negative_r_repeat_end(
 fn filter_explicit_timeline_for_dynamic_window(
     segments: Vec<TimelineSegment>,
     ctx: &TimelineBuildContext,
-) -> Result<Vec<TimelineSegment>, PlayerError> {
+) -> Result<Vec<TimelineSegment>, ManifestError> {
     let Some(since_ast) = ctx.since_availability_start else {
-        return Err(PlayerError::MissingAvailabilityStartForDynamicTemplate);
+        return Err(ManifestError::MissingAvailabilityStartForDynamicTemplate);
     };
     let period_start_s = ctx.period_window.start.as_secs_f64();
     let now_s = since_ast.as_secs_f64();
@@ -409,14 +409,14 @@ fn segments_from_duration_template(
     st: &dash_mpd::SegmentTemplate,
     ctx: &TimelineBuildContext,
     end_number: Option<u64>,
-) -> Result<Vec<TimelineSegment>, PlayerError> {
+) -> Result<Vec<TimelineSegment>, ManifestError> {
     let d = st
         .duration
         .filter(|x| *x > 0.0)
-        .ok_or(PlayerError::MissingSegmentDuration)?;
+        .ok_or(ManifestError::MissingSegmentDuration)?;
     let timescale = st.timescale.unwrap_or(1);
     if timescale == 0 {
-        return Err(PlayerError::ZeroTimescale);
+        return Err(ManifestError::ZeroTimescale);
     }
     let presentation_time_offset = st.presentationTimeOffset.unwrap_or(0);
     let start_number = st.startNumber.unwrap_or(1);
@@ -426,7 +426,7 @@ fn segments_from_duration_template(
 
     if ctx.is_dynamic {
         let Some(since_ast) = ctx.since_availability_start else {
-            return Err(PlayerError::MissingAvailabilityStartForDynamicTemplate);
+            return Err(ManifestError::MissingAvailabilityStartForDynamicTemplate);
         };
         let period_start_s = ctx.period_window.start.as_secs_f64();
         let t_in_period = (since_ast.as_secs_f64() - period_start_s).max(0.0);

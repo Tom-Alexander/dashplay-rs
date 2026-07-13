@@ -1,6 +1,6 @@
 use dash_mpd::{RepresentationIndex, SegmentBase, SegmentTemplate};
 
-use crate::PlayerError;
+use crate::manifest::ManifestError;
 
 use super::types::parse_byte_range;
 use super::types::{ByteRange, TimelineSegment};
@@ -11,7 +11,7 @@ mod parser;
 fn parse_sidx_from_representation_index_bytes(
     index_bytes: &[u8],
     ri: &RepresentationIndex,
-) -> Result<SidxBox, PlayerError> {
+) -> Result<SidxBox, ManifestError> {
     if let Some(range) = ri.range.as_deref() {
         parse_sidx_from_index_bytes(index_bytes, range)
     } else {
@@ -23,7 +23,7 @@ pub(crate) fn timeline_segments_from_sidx(
     sb: &SegmentBase,
     sidx: &SidxBox,
     index_start: u64,
-) -> Result<Vec<TimelineSegment>, PlayerError> {
+) -> Result<Vec<TimelineSegment>, ManifestError> {
     let timescale = sb.timescale.unwrap_or(u64::from(sidx.timescale));
     let presentation_time_offset = sb.presentationTimeOffset.unwrap_or(0);
     timeline_segments_from_sidx_values(timescale, presentation_time_offset, 1, sidx, index_start)
@@ -35,9 +35,9 @@ fn timeline_segments_from_sidx_values(
     start_number: u64,
     sidx: &SidxBox,
     media_start: u64,
-) -> Result<Vec<TimelineSegment>, PlayerError> {
+) -> Result<Vec<TimelineSegment>, ManifestError> {
     if timescale == 0 {
-        return Err(PlayerError::ZeroTimescale);
+        return Err(ManifestError::ZeroTimescale);
     }
 
     let mut segments = Vec::with_capacity(sidx.references.len());
@@ -46,7 +46,7 @@ fn timeline_segments_from_sidx_values(
 
     for (i, sref) in sidx.references.iter().enumerate() {
         if sref.reference_type != 0 {
-            return Err(PlayerError::HierarchicalSidxNotSupported);
+            return Err(ManifestError::HierarchicalSidxNotSupported);
         }
         let start = current_pos;
         let end = start
@@ -80,11 +80,11 @@ fn timeline_segments_from_sidx_values(
 pub(crate) fn parse_sidx_index(
     sb: &SegmentBase,
     index_bytes: &[u8],
-) -> Result<Vec<TimelineSegment>, PlayerError> {
+) -> Result<Vec<TimelineSegment>, ManifestError> {
     let index_range = sb
         .indexRange
         .as_deref()
-        .ok_or(PlayerError::MissingSegmentBaseIndexRange)?;
+        .ok_or(ManifestError::MissingSegmentBaseIndexRange)?;
     let br = parse_byte_range(index_range)?;
     let index_start = br.end.saturating_add(1);
     let sidx = parse_sidx_from_index_bytes(index_bytes, index_range)?;
@@ -95,7 +95,7 @@ pub(crate) fn parse_sidx_index(
 pub(crate) fn parse_sidx_index_for_segment_base(
     sb: &SegmentBase,
     index_bytes: &[u8],
-) -> Result<Vec<TimelineSegment>, PlayerError> {
+) -> Result<Vec<TimelineSegment>, ManifestError> {
     if let Some(ri) = &sb.representation_index {
         return parse_sidx_index_from_representation_index_base(sb, ri, index_bytes);
     }
@@ -106,7 +106,7 @@ pub(crate) fn parse_sidx_index_from_representation_index_base(
     sb: &SegmentBase,
     ri: &RepresentationIndex,
     index_bytes: &[u8],
-) -> Result<Vec<TimelineSegment>, PlayerError> {
+) -> Result<Vec<TimelineSegment>, ManifestError> {
     let sidx = parse_sidx_from_representation_index_bytes(index_bytes, ri)?;
     let timescale = sb.timescale.unwrap_or(u64::from(sidx.timescale));
     let presentation_time_offset = sb.presentationTimeOffset.unwrap_or(0);
@@ -122,7 +122,7 @@ pub(crate) fn parse_sidx_index_from_representation_index_base(
 fn parse_sidx_from_index_bytes(
     index_bytes: &[u8],
     index_range: &str,
-) -> Result<SidxBox, PlayerError> {
+) -> Result<SidxBox, ManifestError> {
     let br = parse_byte_range(index_range)?;
     let expected_len = br.end.saturating_sub(br.start).saturating_add(1) as usize;
     let slice = if index_bytes.len() == expected_len {
@@ -130,21 +130,21 @@ fn parse_sidx_from_index_bytes(
     } else {
         index_bytes
             .get(br.start as usize..=br.end as usize)
-            .ok_or_else(|| PlayerError::InvalidByteRange(index_range.to_string()))?
+            .ok_or_else(|| ManifestError::InvalidByteRange(index_range.to_string()))?
     };
     SidxBox::parse(slice)
 }
 pub(crate) fn parse_sidx_index_from_template(
     st: &SegmentTemplate,
     index_bytes: &[u8],
-) -> Result<Vec<TimelineSegment>, PlayerError> {
+) -> Result<Vec<TimelineSegment>, ManifestError> {
     if let Some(ri) = &st.representation_index {
         return parse_sidx_index_from_template_representation_index(st, ri, index_bytes);
     }
     let index_range = st
         .indexRange
         .as_deref()
-        .ok_or(PlayerError::MissingSegmentTemplateIndexRange)?;
+        .ok_or(ManifestError::MissingSegmentTemplateIndexRange)?;
     let sidx = parse_sidx_from_index_bytes(index_bytes, index_range)?;
     let timescale = st.timescale.unwrap_or(u64::from(sidx.timescale));
     let presentation_time_offset = st.presentationTimeOffset.unwrap_or(0);
@@ -162,7 +162,7 @@ pub(crate) fn parse_sidx_index_from_template_representation_index(
     st: &SegmentTemplate,
     ri: &RepresentationIndex,
     index_bytes: &[u8],
-) -> Result<Vec<TimelineSegment>, PlayerError> {
+) -> Result<Vec<TimelineSegment>, ManifestError> {
     let sidx = parse_sidx_from_representation_index_bytes(index_bytes, ri)?;
     let timescale = st.timescale.unwrap_or(u64::from(sidx.timescale));
     let presentation_time_offset = st.presentationTimeOffset.unwrap_or(0);

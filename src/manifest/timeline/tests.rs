@@ -2,8 +2,8 @@ use std::time::Duration;
 
 use dash_mpd::{AdaptationSet, Representation, S, SegmentTemplate, SegmentTimeline};
 
-use crate::PlayerError;
 use crate::clock::resync::ResyncHints;
+use crate::manifest::ManifestError;
 use crate::manifest::{
     PeriodWindow, TemplateVars, TimelineBuildContext, TimelineSegment, align_start_index_to_resync,
     align_start_index_to_sap, interpolate_template, mid_segment_resync_alignment,
@@ -223,7 +223,7 @@ fn segment_timeline_negative_r_unbounded_errors() {
     };
     let ctx = static_ctx(None);
     let err = timeline_segments(&st, &ctx, None).unwrap_err();
-    assert!(matches!(err, PlayerError::UnboundedSegmentTimelineRepeat));
+    assert!(matches!(err, ManifestError::UnboundedSegmentTimelineRepeat));
 }
 
 #[test]
@@ -346,7 +346,7 @@ fn segment_timeline_k_must_divide_d() {
         ..Default::default()
     };
     let err = timeline_segments(&st, &static_ctx(None), None).unwrap_err();
-    assert!(matches!(err, PlayerError::TimelineDNotDivisibleByK));
+    assert!(matches!(err, ManifestError::TimelineDNotDivisibleByK));
 }
 
 #[test]
@@ -412,7 +412,7 @@ fn segment_timeline_rejects_d_exceeding_mpd_max_segment_duration() {
     let err = timeline_segments(&st, &ctx, None).unwrap_err();
     assert!(matches!(
         err,
-        PlayerError::SegmentDurationExceedsMaxSegmentDuration
+        ManifestError::SegmentDurationExceedsMaxSegmentDuration
     ));
 }
 
@@ -442,7 +442,7 @@ fn static_duration_template_rejects_nominal_duration_above_mpd_max() {
     let err = timeline_segments(&st, &ctx, None).unwrap_err();
     assert!(matches!(
         err,
-        PlayerError::SegmentDurationExceedsMaxSegmentDuration
+        ManifestError::SegmentDurationExceedsMaxSegmentDuration
     ));
 }
 

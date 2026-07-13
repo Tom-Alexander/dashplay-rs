@@ -6,7 +6,10 @@ use std::time::Duration;
 use bytes::Bytes;
 use url::Url;
 
+#[cfg(not(feature = "drm"))]
 use crate::PlayerError;
+#[cfg(feature = "drm")]
+use crate::drm::DrmError;
 
 pub use web_time::Instant;
 
@@ -16,6 +19,10 @@ pub trait HttpClientBounds: Sync {}
 
 impl<T: Sync> HttpClientBounds for T {}
 
+#[cfg(feature = "drm")]
+pub type LicenseFetcher =
+    Arc<dyn Fn(Url, Vec<u8>) -> BoxedFuture<'static, Result<Bytes, DrmError>> + Sync>;
+#[cfg(not(feature = "drm"))]
 pub type LicenseFetcher =
     Arc<dyn Fn(Url, Vec<u8>) -> BoxedFuture<'static, Result<Bytes, PlayerError>> + Sync>;
 

@@ -145,7 +145,9 @@ async fn run_playback(
 
         if let Some(callback) = on_track {
             let value = serde_wasm_bindgen::to_value(&info).map_err(|err| {
-                PlayerError::Request(dashplayrs::HttpError::Transport(err.to_string()))
+                PlayerError::Segment(dashplayrs::SegmentError::Request(
+                    dashplayrs::HttpError::Transport(err.to_string()),
+                ))
             })?;
             let _ = callback.call1(callback, &value);
         }
@@ -200,14 +202,16 @@ async fn consume_track_events(
                         }
                         Ok(PlayerEvent::End | PlayerEvent::PlaybackEnded) => break,
                         Ok(PlayerEvent::Error(err)) => {
-                            return Err(PlayerError::Request(dashplayrs::HttpError::Transport(
-                                err.0,
+                            return Err(PlayerError::Segment(dashplayrs::SegmentError::Request(
+                                dashplayrs::HttpError::Transport(err.0),
                             )));
                         }
                         Ok(_) => {}
                         Err(RecvError::Lagged(_)) => {
-                            return Err(PlayerError::Request(dashplayrs::HttpError::Transport(
-                                "event receiver lagged; increase consumer throughput".into(),
+                            return Err(PlayerError::Segment(dashplayrs::SegmentError::Request(
+                                dashplayrs::HttpError::Transport(
+                                    "event receiver lagged; increase consumer throughput".into(),
+                                ),
                             )));
                         }
                         Err(RecvError::Closed) => break,

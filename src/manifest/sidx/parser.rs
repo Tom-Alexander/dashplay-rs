@@ -8,6 +8,8 @@ use crate::manifest::ManifestError;
 /// Parsed Segment Index (`sidx`) box.
 #[derive(Debug, Clone, PartialEq)]
 pub struct SidxBox {
+    /// Full box size in bytes, including the size and type headers.
+    pub box_size: usize,
     pub version: u8,
     pub reference_id: u32,
     pub timescale: u32,
@@ -19,6 +21,7 @@ pub struct SidxBox {
 /// One reference entry inside a `sidx` box.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct SidxReference {
+    /// `0` = media, `1` = nested `sidx` (hierarchical / daisy-chain).
     pub reference_type: u8,
     pub referenced_size: u32,
     pub subsegment_duration: u32,
@@ -27,7 +30,7 @@ pub struct SidxReference {
 impl SidxBox {
     pub fn parse(data: &[u8]) -> Result<Self, ManifestError> {
         let mut reader = Cursor::new(data);
-        let _box_size = reader
+        let raw_size = reader
             .read_u32::<BigEndian>()
             .map_err(|e| ManifestError::SidxParse(e.to_string()))?;
         let mut box_type = [0u8; 4];
@@ -36,6 +39,21 @@ impl SidxBox {
             .map_err(|e| ManifestError::SidxParse(e.to_string()))?;
         if box_type != *b"sidx" {
             return Err(ManifestError::SidxParse("expected sidx box".into()));
+        }
+
+        let box_size = if raw_size == 0 {
+            data.len()
+        } else if raw_size == 1 {
+            return Err(ManifestError::SidxParse(
+                "sidx largesize (64-bit) is not supported".into(),
+            ));
+        } else {
+            raw_size as usize
+        };
+        if box_size < 8 || box_size > data.len() {
+            return Err(ManifestError::SidxParse(
+                "sidx box size exceeds available bytes".into(),
+            ));
         }
 
         let version = reader
@@ -99,7 +117,14 @@ impl SidxBox {
             });
         }
 
+        if reader.position() as usize > box_size {
+            return Err(ManifestError::SidxParse(
+                "sidx references exceed declared box size".into(),
+            ));
+        }
+
         Ok(Self {
+            box_size,
             version,
             reference_id,
             timescale,

@@ -188,7 +188,7 @@ without changing playback behaviour.
   `BitstreamSwitching` — skip init fetch/re-emit when switching representations.
 - [x] **`SegmentList` byte ranges.** `SegmentURL@mediaRange` HTTP Range fetch; byte-range-only
   list addressing without timeline.
-- [ ] **Hierarchical `sidx`.** `reference_type ≠ 0` index references.
+- [x] **Hierarchical `sidx`.** `reference_type ≠ 0` index references.
 - [~] **Whole-file `SegmentBase`.** Single-segment and `@presentationDuration` progressive
   paths without `@indexRange`.
 - [~] **`@indexRangeExact`.** Distinct semantics from `@indexRange`.

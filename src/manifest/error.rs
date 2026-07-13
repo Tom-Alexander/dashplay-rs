@@ -35,7 +35,9 @@ pub enum ManifestError {
     MissingSegmentTemplateIndexVars,
     #[error("failed to parse sidx index: {0}")]
     SidxParse(String),
-    #[error("hierarchical sidx references are not supported")]
+    #[error(
+        "hierarchical sidx reference is outside the fetched index bytes (interleaved same-file nest not fetched)"
+    )]
     HierarchicalSidxNotSupported,
     #[error("SegmentList SegmentURL count does not match expanded timeline")]
     SegmentListUrlTimelineMismatch,

@@ -61,7 +61,7 @@ pub(crate) struct TimelineSegment {
     pub resync_start_chunk: Option<u64>,
     /// Explicit `SegmentURL@media` when using `SegmentList` addressing (may be rep-specific).
     pub media_url: Option<String>,
-    /// Inclusive byte range for `SegmentBase@indexRange` / `Initialization@range` addressing.
+    /// Inclusive byte range for media (`SegmentURL@mediaRange`, `SegmentBase`/`sidx`, etc.).
     pub media_range: Option<ByteRange>,
 }
 

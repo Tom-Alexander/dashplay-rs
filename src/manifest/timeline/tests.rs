@@ -847,6 +847,151 @@ fn segment_list_explicit_urls_builds_timeline() {
 }
 
 #[test]
+fn segment_list_media_range_builds_byte_ranges() {
+    use crate::manifest::types::ByteRange;
+    use dash_mpd::{Initialization, SegmentList, SegmentURL};
+
+    let sl = SegmentList {
+        timescale: Some(1000),
+        duration: Some(4000),
+        Initialization: Some(Initialization {
+            range: Some("0-6".into()),
+            ..Default::default()
+        }),
+        segment_urls: vec![
+            SegmentURL {
+                mediaRange: Some("7-17".into()),
+                ..Default::default()
+            },
+            SegmentURL {
+                media: Some("bundle.mp4".into()),
+                mediaRange: Some("18-28".into()),
+                ..Default::default()
+            },
+        ],
+        ..Default::default()
+    };
+    let ctx = TimelineBuildContext {
+        is_dynamic: false,
+        period_window: PeriodWindow {
+            idx: 0,
+            start: Duration::ZERO,
+            end: Some(Duration::from_secs(8)),
+        },
+        period_duration: None,
+        media_presentation_duration: Some(Duration::from_secs(8)),
+        max_segment_duration: None,
+        time_shift_buffer_depth: None,
+        since_availability_start: None,
+        resync_hints: None,
+    };
+
+    let segs = timeline_segments_from_list(&sl, &ctx).unwrap();
+    assert_eq!(segs.len(), 2);
+    assert!(segs[0].media_url.is_none());
+    assert_eq!(segs[0].media_range, Some(ByteRange { start: 7, end: 17 }));
+    assert_eq!(segs[1].media_url.as_deref(), Some("bundle.mp4"));
+    assert_eq!(segs[1].media_range, Some(ByteRange { start: 18, end: 28 }));
+}
+
+#[test]
+fn segment_list_timeline_copies_media_range() {
+    use crate::manifest::types::ByteRange;
+    use dash_mpd::{S, SegmentList, SegmentTimeline, SegmentURL};
+
+    let sl = SegmentList {
+        timescale: Some(1000),
+        SegmentTimeline: Some(SegmentTimeline {
+            segments: vec![
+                S {
+                    t: Some(0),
+                    d: 4000,
+                    r: None,
+                    ..Default::default()
+                },
+                S {
+                    t: Some(4000),
+                    d: 4000,
+                    r: None,
+                    ..Default::default()
+                },
+            ],
+        }),
+        segment_urls: vec![
+            SegmentURL {
+                media: Some("a.m4s".into()),
+                mediaRange: Some("0-99".into()),
+                ..Default::default()
+            },
+            SegmentURL {
+                media: Some("b.m4s".into()),
+                mediaRange: Some("100-199".into()),
+                ..Default::default()
+            },
+        ],
+        ..Default::default()
+    };
+    let ctx = TimelineBuildContext {
+        is_dynamic: false,
+        period_window: PeriodWindow {
+            idx: 0,
+            start: Duration::ZERO,
+            end: Some(Duration::from_secs(8)),
+        },
+        period_duration: None,
+        media_presentation_duration: Some(Duration::from_secs(8)),
+        max_segment_duration: None,
+        time_shift_buffer_depth: None,
+        since_availability_start: None,
+        resync_hints: None,
+    };
+
+    let segs = timeline_segments_from_list(&sl, &ctx).unwrap();
+    assert_eq!(segs[0].media_range, Some(ByteRange { start: 0, end: 99 }));
+    assert_eq!(
+        segs[1].media_range,
+        Some(ByteRange {
+            start: 100,
+            end: 199
+        })
+    );
+}
+
+#[test]
+fn segment_list_invalid_media_range_errors() {
+    use dash_mpd::{SegmentList, SegmentURL};
+
+    let sl = SegmentList {
+        timescale: Some(1000),
+        duration: Some(4000),
+        segment_urls: vec![SegmentURL {
+            mediaRange: Some("10-5".into()),
+            ..Default::default()
+        }],
+        ..Default::default()
+    };
+    let ctx = TimelineBuildContext {
+        is_dynamic: false,
+        period_window: PeriodWindow {
+            idx: 0,
+            start: Duration::ZERO,
+            end: Some(Duration::from_secs(4)),
+        },
+        period_duration: None,
+        media_presentation_duration: Some(Duration::from_secs(4)),
+        max_segment_duration: None,
+        time_shift_buffer_depth: None,
+        since_availability_start: None,
+        resync_hints: None,
+    };
+
+    assert!(matches!(
+        timeline_segments_from_list(&sl, &ctx),
+        Err(ManifestError::InvalidByteRange(_))
+    ));
+}
+
+#[test]
 fn timeline_segments_for_per_segment_index_uses_explicit_timeline() {
     let st = SegmentTemplate {
         timescale: Some(1000),

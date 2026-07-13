@@ -62,6 +62,24 @@ async fn vod_segment_list_playback() {
 }
 
 #[tokio::test]
+async fn vod_segment_list_byte_range_playback() {
+    let server = FixtureServer::spawn("vod_segment_list_ranges").await;
+    let events = play_single_track(&server.manifest_url, TIMEOUT)
+        .await
+        .expect("playback");
+
+    assert_eq!(
+        init_payload(&events).as_deref(),
+        Some(b"dashplay-init-v1".as_ref())
+    );
+    assert_eq!(
+        segment_payloads(&events),
+        vec![b"dashplay-seg-1".to_vec(), b"dashplay-seg-2".to_vec()]
+    );
+    assert!(has_end(&events));
+}
+
+#[tokio::test]
 async fn vod_segment_timeline_playback() {
     let server = FixtureServer::spawn("vod_timeline").await;
     let events = play_single_track(&server.manifest_url, TIMEOUT)

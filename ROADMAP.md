@@ -186,7 +186,7 @@ without changing playback behaviour.
 - [x] **`SegmentTemplate@maxDuration`.** Validate or bound segment durations.
 - [x] **Bitstream switching.** Honour `SegmentTemplate@bitstreamSwitching` /
   `BitstreamSwitching` — skip init fetch/re-emit when switching representations.
-- [~] **`SegmentList` byte ranges.** `SegmentURL@mediaRange` HTTP Range fetch; byte-range-only
+- [x] **`SegmentList` byte ranges.** `SegmentURL@mediaRange` HTTP Range fetch; byte-range-only
   list addressing without timeline.
 - [ ] **Hierarchical `sidx`.** `reference_type ≠ 0` index references.
 - [~] **Whole-file `SegmentBase`.** Single-segment and `@presentationDuration` progressive

@@ -315,12 +315,7 @@ fn init_target_for_addressing(
                     range: None,
                 }))
         }
-        manifest::SegmentAddressing::List(sl) => Ok(manifest::segment_list_init_source(sl)
-            .ok()
-            .map(|init_src| manifest::SegmentFetchTarget {
-                path: manifest::interpolate_template(init_src, vars),
-                range: None,
-            })),
+        manifest::SegmentAddressing::List(sl) => Ok(manifest::segment_list_init_target(sl, vars)?),
         manifest::SegmentAddressing::Base(sb) => {
             Ok(Some(manifest::segment_base_init_target(sb, vars)?))
         }
@@ -353,12 +348,7 @@ fn media_target_for_addressing(
             })
         }
         manifest::SegmentAddressing::List(sl) => {
-            let path = if let Some(url) = seg.media_url.as_deref() {
-                url.to_string()
-            } else {
-                manifest::segment_list_media_for_index(sl, list_idx)?.to_string()
-            };
-            Ok(manifest::SegmentFetchTarget { path, range: None })
+            Ok(manifest::segment_list_media_target(sl, seg, list_idx)?)
         }
         manifest::SegmentAddressing::Base(sb) => {
             Ok(manifest::segment_base_media_target(sb, seg, vars)?)

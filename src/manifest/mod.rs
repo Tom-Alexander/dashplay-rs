@@ -20,9 +20,9 @@ pub use error::ManifestError;
 pub(crate) use addressing::{
     SegmentAddressing, end_number_for_timeline, resolved_initialization_path,
     segment_addressing_for_representation, segment_addressing_for_timeline,
-    segment_base_for_representation, segment_base_uses_sidx_index, segment_list_init_source,
-    segment_list_media_for_index, segment_template_for_representation,
-    segment_template_uses_global_sidecar_index, segment_template_uses_per_segment_index,
+    segment_base_for_representation, segment_base_uses_sidx_index,
+    segment_template_for_representation, segment_template_uses_global_sidecar_index,
+    segment_template_uses_per_segment_index,
 };
 pub(crate) use alignment::{
     align_start_index_to_resync, align_start_index_to_sap, mid_segment_resync_alignment,
@@ -36,7 +36,8 @@ pub(crate) use bitstream_switching::bitstream_switching_enabled;
 pub(crate) use end_numbers::{SegmentTemplateEndNumbers, parse_segment_template_end_numbers};
 pub(crate) use fetch::{
     media_range_from_per_segment_index, segment_base_index_target, segment_base_init_target,
-    segment_base_media_target, segment_template_index_target,
+    segment_base_media_target, segment_list_init_target, segment_list_media_target,
+    segment_template_index_target,
 };
 pub(crate) use period::{
     current_period_window_at, is_dynamic_mpd, mpd, period_windows, since_availability_start_at,

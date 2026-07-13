@@ -1,4 +1,4 @@
-use dash_mpd::{RepresentationIndex, SegmentBase, SegmentTemplate};
+use dash_mpd::{RepresentationIndex, SegmentBase, SegmentList, SegmentTemplate};
 
 use crate::manifest::ManifestError;
 
@@ -118,6 +118,52 @@ pub(crate) fn segment_base_init_target(
         .unwrap_or_default();
     let range = init.range.as_deref().map(parse_byte_range).transpose()?;
     Ok(SegmentFetchTarget { path, range })
+}
+
+/// `SegmentList` initialization fetch: optional `sourceURL` plus optional `@range` on BaseURL.
+pub(crate) fn segment_list_init_target(
+    sl: &SegmentList,
+    vars: &TemplateVars<'_>,
+) -> Result<Option<SegmentFetchTarget>, ManifestError> {
+    let Some(init) = sl.Initialization.as_ref() else {
+        return Ok(None);
+    };
+    let path = init
+        .sourceURL
+        .as_deref()
+        .map(|s| interpolate_template(s, vars))
+        .unwrap_or_default();
+    let range = init.range.as_deref().map(parse_byte_range).transpose()?;
+    if path.is_empty() && range.is_none() {
+        return Err(ManifestError::MissingInitializationTemplate);
+    }
+    Ok(Some(SegmentFetchTarget { path, range }))
+}
+
+/// Media fetch target for one timeline segment under `SegmentList` addressing.
+///
+/// When `SegmentURL@media` is absent, the relative path is empty and the request uses the
+/// representation BaseURL (byte-range-only list addressing).
+pub(crate) fn segment_list_media_target(
+    sl: &SegmentList,
+    seg: &TimelineSegment,
+    list_idx: usize,
+) -> Result<SegmentFetchTarget, ManifestError> {
+    let path = if let Some(url) = seg.media_url.as_deref() {
+        url.to_string()
+    } else {
+        sl.segment_urls
+            .get(list_idx)
+            .and_then(|su| su.media.clone())
+            .unwrap_or_default()
+    };
+    if path.is_empty() && seg.media_range.is_none() {
+        return Err(ManifestError::MissingMediaTemplate);
+    }
+    Ok(SegmentFetchTarget {
+        path,
+        range: seg.media_range,
+    })
 }
 
 /// Media fetch target for one timeline segment under `SegmentBase` addressing.

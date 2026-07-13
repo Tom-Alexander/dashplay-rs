@@ -196,6 +196,25 @@ async fn dashif_segment_list() {
     assert!(has_end(&events));
 }
 
+/// `SegmentList` with `SegmentURL@mediaRange` / `Initialization@range` (byte-range-only).
+#[tokio::test]
+async fn dashif_segment_list_byte_ranges() {
+    let server = FixtureServer::spawn("vod_segment_list_ranges").await;
+    let events = play_single_track(&server.manifest_url, VOD_TIMEOUT)
+        .await
+        .expect("playback");
+
+    assert_eq!(
+        init_payload(&events).as_deref(),
+        Some(b"dashplay-init-v1".as_ref())
+    );
+    assert_eq!(
+        segment_payloads(&events),
+        vec![b"dashplay-seg-1".to_vec(), b"dashplay-seg-2".to_vec()]
+    );
+    assert!(has_end(&events));
+}
+
 /// TestCases/5a — static multi-period VOD with per-period templates.
 #[tokio::test]
 async fn dashif_multi_period_vod() {

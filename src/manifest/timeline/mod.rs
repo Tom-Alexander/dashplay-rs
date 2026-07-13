@@ -1,10 +1,14 @@
-use dash_mpd::{SegmentBase, SegmentList, SegmentTemplate};
+use dash_mpd::{SegmentBase, SegmentList, SegmentTemplate, SegmentURL};
 
 use crate::manifest::ManifestError;
 
 use super::addressing::SegmentAddressing;
 use super::addressing::segment_template_uses_global_sidecar_index;
-use super::types::{TimelineBuildContext, TimelineSegment};
+use super::types::{ByteRange, TimelineBuildContext, TimelineSegment, parse_byte_range};
+
+fn segment_url_media_range(su: &SegmentURL) -> Result<Option<ByteRange>, ManifestError> {
+    su.mediaRange.as_deref().map(parse_byte_range).transpose()
+}
 
 fn validate_segment_duration_s(
     duration_s: f64,
@@ -150,6 +154,7 @@ fn segments_from_list_timeline(
 
     for (seg, su) in segments.iter_mut().zip(sl.segment_urls.iter()) {
         seg.media_url = su.media.clone();
+        seg.media_range = segment_url_media_range(su)?;
     }
 
     Ok(segments)
@@ -166,22 +171,23 @@ fn segments_from_list_urls(sl: &SegmentList) -> Result<Vec<TimelineSegment>, Man
     }
     let duration_s = duration_ticks as f64 / timescale as f64;
 
-    Ok(sl
-        .segment_urls
+    sl.segment_urls
         .iter()
         .enumerate()
-        .map(|(i, su)| TimelineSegment {
-            number: (i as u64).saturating_add(1),
-            time: (i as u64).saturating_mul(duration_ticks),
-            duration: duration_ticks,
-            duration_s,
-            presentation_time_s: i as f64 * duration_s,
-            sub_number: None,
-            resync_start_chunk: None,
-            media_url: su.media.clone(),
-            media_range: None,
+        .map(|(i, su)| {
+            Ok(TimelineSegment {
+                number: (i as u64).saturating_add(1),
+                time: (i as u64).saturating_mul(duration_ticks),
+                duration: duration_ticks,
+                duration_s,
+                presentation_time_s: i as f64 * duration_s,
+                sub_number: None,
+                resync_start_chunk: None,
+                media_url: su.media.clone(),
+                media_range: segment_url_media_range(su)?,
+            })
         })
-        .collect())
+        .collect()
 }
 pub(crate) fn timeline_segments(
     st: &dash_mpd::SegmentTemplate,

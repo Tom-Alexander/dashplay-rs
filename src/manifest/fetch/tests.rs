@@ -1,11 +1,12 @@
-use dash_mpd::{SegmentBase, SegmentTemplate};
+use dash_mpd::{SegmentBase, SegmentList, SegmentTemplate, SegmentURL};
 
 use super::super::error::ManifestError;
 use super::super::template::TemplateVars;
-use super::super::types::ByteRange;
+use super::super::types::{ByteRange, TimelineSegment};
 use super::{
     media_range_from_per_segment_index, representation_index_fetch_target,
-    segment_base_index_target, segment_base_init_target, segment_template_index_target,
+    segment_base_index_target, segment_base_init_target, segment_list_init_target,
+    segment_list_media_target, segment_template_index_target,
 };
 
 #[test]
@@ -128,4 +129,87 @@ fn minimal_sidx_bytes(seg_sizes: &[(u32, u32)], timescale: u32) -> Vec<u8> {
     out.extend_from_slice(b"sidx");
     out.extend_from_slice(&body);
     out
+}
+
+#[test]
+fn segment_list_init_target_uses_range_on_base_url() {
+    let sl = SegmentList {
+        Initialization: Some(dash_mpd::Initialization {
+            range: Some("0-16".into()),
+            ..Default::default()
+        }),
+        ..Default::default()
+    };
+    let vars = TemplateVars {
+        representation_id: "1",
+        ..Default::default()
+    };
+    let target = segment_list_init_target(&sl, &vars).unwrap().unwrap();
+    assert_eq!(target.path, "");
+    assert_eq!(target.range, Some(ByteRange { start: 0, end: 16 }));
+}
+
+#[test]
+fn segment_list_media_target_byte_range_only() {
+    let sl = SegmentList {
+        segment_urls: vec![
+            SegmentURL {
+                mediaRange: Some("17-31".into()),
+                ..Default::default()
+            },
+            SegmentURL {
+                media: Some("bundle.mp4".into()),
+                mediaRange: Some("32-46".into()),
+                ..Default::default()
+            },
+        ],
+        ..Default::default()
+    };
+    let seg0 = TimelineSegment {
+        number: 1,
+        time: 0,
+        duration: 4000,
+        duration_s: 4.0,
+        presentation_time_s: 0.0,
+        sub_number: None,
+        resync_start_chunk: None,
+        media_url: None,
+        media_range: Some(ByteRange { start: 17, end: 31 }),
+    };
+    let target = segment_list_media_target(&sl, &seg0, 0).unwrap();
+    assert_eq!(target.path, "");
+    assert_eq!(target.range, Some(ByteRange { start: 17, end: 31 }));
+
+    let seg1 = TimelineSegment {
+        number: 2,
+        media_url: Some("bundle.mp4".into()),
+        media_range: Some(ByteRange { start: 32, end: 46 }),
+        ..seg0
+    };
+    let target = segment_list_media_target(&sl, &seg1, 1).unwrap();
+    assert_eq!(target.path, "bundle.mp4");
+    assert_eq!(target.range, Some(ByteRange { start: 32, end: 46 }));
+}
+
+#[test]
+fn segment_list_media_target_rejects_empty_without_range() {
+    let sl = SegmentList {
+        segment_urls: vec![SegmentURL::default()],
+        ..Default::default()
+    };
+    let seg = TimelineSegment {
+        number: 1,
+        time: 0,
+        duration: 4000,
+        duration_s: 4.0,
+        presentation_time_s: 0.0,
+        sub_number: None,
+        resync_start_chunk: None,
+        media_url: None,
+        media_range: None,
+    };
+    assert!(matches!(
+        segment_list_media_target(&sl, &seg, 0),
+        Err(ManifestError::MissingMediaTemplate)
+    ));
 }

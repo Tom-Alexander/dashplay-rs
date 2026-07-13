@@ -350,19 +350,6 @@ pub(crate) fn segment_list_init_source(sl: &SegmentList) -> Result<&str, Manifes
         .ok_or(ManifestError::MissingInitializationTemplate)
 }
 
-/// Media path for a segment index under `SegmentList` addressing (1-based segment number).
-pub(crate) fn segment_list_media_for_index(
-    sl: &SegmentList,
-    segment_index: usize,
-) -> Result<&str, ManifestError> {
-    let su = sl
-        .segment_urls
-        .get(segment_index)
-        .ok_or(ManifestError::EmptySegmentList)?;
-    su.media
-        .as_deref()
-        .ok_or(ManifestError::MissingMediaTemplate)
-}
 pub(crate) fn segment_template_for_representation(
     period: &Period,
     adaptation_set: &AdaptationSet,

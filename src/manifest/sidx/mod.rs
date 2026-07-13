@@ -175,3 +175,6 @@ pub(crate) fn parse_sidx_index_from_template_representation_index(
         sidx.first_offset,
     )
 }
+
+#[cfg(test)]
+mod tests;

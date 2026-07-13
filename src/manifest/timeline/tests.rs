@@ -5,9 +5,10 @@ use dash_mpd::{AdaptationSet, Representation, S, SegmentTemplate, SegmentTimelin
 use crate::clock::resync::ResyncHints;
 use crate::manifest::ManifestError;
 use crate::manifest::{
-    PeriodWindow, TemplateVars, TimelineBuildContext, TimelineSegment, align_start_index_to_resync,
-    align_start_index_to_sap, interpolate_template, mid_segment_resync_alignment,
-    template_vars_for_representation, timeline_segments,
+    PeriodWindow, SegmentAddressing, TemplateVars, TimelineBuildContext, TimelineSegment,
+    align_start_index_to_resync, align_start_index_to_sap, interpolate_template,
+    mid_segment_resync_alignment, template_vars_for_representation, timeline_segments,
+    timeline_segments_for_addressing, timeline_segments_from_list,
 };
 
 fn static_ctx(period_end: Option<Duration>) -> TimelineBuildContext {
@@ -670,4 +671,205 @@ fn align_start_index_keeps_interior_subsegment_when_subsegment_starts_with_sap()
         },
     ];
     assert_eq!(align_start_index_to_sap(&segs, 1, &aset), 1);
+}
+
+#[test]
+fn static_duration_template_emits_expected_segment_count() {
+    let st = SegmentTemplate {
+        timescale: Some(1000),
+        duration: Some(4000.0),
+        presentationTimeOffset: Some(0),
+        startNumber: Some(1),
+        ..Default::default()
+    };
+    let ctx = TimelineBuildContext {
+        is_dynamic: false,
+        period_window: PeriodWindow {
+            idx: 0,
+            start: Duration::ZERO,
+            end: Some(Duration::from_secs(8)),
+        },
+        period_duration: None,
+        media_presentation_duration: Some(Duration::from_secs(8)),
+        max_segment_duration: None,
+        time_shift_buffer_depth: None,
+        since_availability_start: None,
+        resync_hints: None,
+    };
+
+    let segs = timeline_segments(&st, &ctx, None).unwrap();
+    assert_eq!(segs.len(), 2);
+    assert_eq!(segs[0].number, 1);
+    assert_eq!(segs[1].number, 2);
+}
+
+#[test]
+fn static_duration_template_bounds_by_end_number_without_period_extent() {
+    let st = SegmentTemplate {
+        timescale: Some(1000),
+        duration: Some(4000.0),
+        presentationTimeOffset: Some(0),
+        startNumber: Some(1),
+        ..Default::default()
+    };
+    let ctx = TimelineBuildContext {
+        is_dynamic: false,
+        period_window: PeriodWindow {
+            idx: 0,
+            start: Duration::ZERO,
+            end: None,
+        },
+        period_duration: None,
+        media_presentation_duration: None,
+        max_segment_duration: None,
+        time_shift_buffer_depth: None,
+        since_availability_start: None,
+        resync_hints: None,
+    };
+
+    let err = timeline_segments(&st, &ctx, None).unwrap_err();
+    assert!(matches!(
+        err,
+        ManifestError::MissingPeriodExtentForStaticTemplate
+    ));
+
+    let segs = timeline_segments(&st, &ctx, Some(2)).unwrap();
+    assert_eq!(segs.len(), 2);
+    assert_eq!(segs[0].number, 1);
+    assert_eq!(segs[1].number, 2);
+}
+
+#[test]
+fn static_duration_template_prefers_end_number_over_period_extent() {
+    let st = SegmentTemplate {
+        timescale: Some(1000),
+        duration: Some(4000.0),
+        presentationTimeOffset: Some(0),
+        startNumber: Some(1),
+        ..Default::default()
+    };
+    let ctx = TimelineBuildContext {
+        is_dynamic: false,
+        period_window: PeriodWindow {
+            idx: 0,
+            start: Duration::ZERO,
+            end: Some(Duration::from_secs(8)),
+        },
+        period_duration: None,
+        media_presentation_duration: Some(Duration::from_secs(8)),
+        max_segment_duration: None,
+        time_shift_buffer_depth: None,
+        since_availability_start: None,
+        resync_hints: None,
+    };
+
+    let segs = timeline_segments(&st, &ctx, Some(1)).unwrap();
+    assert_eq!(segs.len(), 1);
+    assert_eq!(segs[0].number, 1);
+}
+
+#[test]
+fn dynamic_duration_template_limits_window_to_time_shift_buffer() {
+    let st = SegmentTemplate {
+        timescale: Some(1000),
+        duration: Some(4000.0),
+        presentationTimeOffset: Some(0),
+        startNumber: Some(1),
+        ..Default::default()
+    };
+    let ctx = TimelineBuildContext {
+        is_dynamic: true,
+        period_window: PeriodWindow {
+            idx: 0,
+            start: Duration::ZERO,
+            end: None,
+        },
+        period_duration: None,
+        media_presentation_duration: None,
+        max_segment_duration: None,
+        time_shift_buffer_depth: Some(Duration::from_secs(8)),
+        since_availability_start: Some(Duration::from_secs(20)),
+        resync_hints: None,
+    };
+
+    let segs = timeline_segments(&st, &ctx, None).unwrap();
+    assert_eq!(segs.first().map(|s| s.number), Some(2));
+    assert_eq!(segs.last().map(|s| s.number), Some(6));
+}
+
+#[test]
+fn segment_list_explicit_urls_builds_timeline() {
+    use dash_mpd::{Initialization, SegmentList, SegmentURL};
+
+    let sl = SegmentList {
+        timescale: Some(1000),
+        duration: Some(4000),
+        Initialization: Some(Initialization {
+            sourceURL: Some("init.mp4".into()),
+            ..Default::default()
+        }),
+        segment_urls: vec![
+            SegmentURL {
+                media: Some("seg-1.m4s".into()),
+                ..Default::default()
+            },
+            SegmentURL {
+                media: Some("seg-2.m4s".into()),
+                ..Default::default()
+            },
+        ],
+        ..Default::default()
+    };
+    let ctx = TimelineBuildContext {
+        is_dynamic: false,
+        period_window: PeriodWindow {
+            idx: 0,
+            start: Duration::ZERO,
+            end: Some(Duration::from_secs(8)),
+        },
+        period_duration: None,
+        media_presentation_duration: Some(Duration::from_secs(8)),
+        max_segment_duration: None,
+        time_shift_buffer_depth: None,
+        since_availability_start: None,
+        resync_hints: None,
+    };
+
+    let segs = timeline_segments_from_list(&sl, &ctx).unwrap();
+    assert_eq!(segs.len(), 2);
+    assert_eq!(segs[0].media_url.as_deref(), Some("seg-1.m4s"));
+    assert_eq!(segs[1].media_url.as_deref(), Some("seg-2.m4s"));
+    assert!((segs[0].duration_s - 4.0).abs() < 1e-9);
+    assert!((segs[1].presentation_time_s - 4.0).abs() < 1e-9);
+}
+
+#[test]
+fn timeline_segments_for_per_segment_index_uses_explicit_timeline() {
+    let st = SegmentTemplate {
+        timescale: Some(1000),
+        duration: Some(4000.0),
+        index: Some("idx-$Number$.mp4".into()),
+        indexRange: Some("0-10".into()),
+        media: Some("seg-$Number$.m4s".into()),
+        startNumber: Some(1),
+        ..Default::default()
+    };
+    let ctx = TimelineBuildContext {
+        is_dynamic: false,
+        period_window: PeriodWindow {
+            idx: 0,
+            start: Duration::ZERO,
+            end: Some(Duration::from_secs(8)),
+        },
+        period_duration: None,
+        media_presentation_duration: None,
+        max_segment_duration: None,
+        time_shift_buffer_depth: None,
+        since_availability_start: None,
+        resync_hints: None,
+    };
+    let segs =
+        timeline_segments_for_addressing(&SegmentAddressing::Template(st), &ctx, None).unwrap();
+    assert_eq!(segs.len(), 2);
+    assert!(segs.iter().all(|s| s.media_range.is_none()));
 }

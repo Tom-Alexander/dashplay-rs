@@ -89,3 +89,6 @@ pub(crate) fn current_period_window_at(
         end: None,
     })
 }
+
+#[cfg(test)]
+mod tests;

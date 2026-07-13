@@ -146,3 +146,6 @@ pub(crate) fn segment_base_media_target(
         range: seg.media_range,
     })
 }
+
+#[cfg(test)]
+mod tests;

@@ -92,3 +92,6 @@ pub(crate) fn segment_bases_for_representation(
     bases = expand_base_layer(bases, &representation.BaseURL)?;
     Ok(dedupe_urls(bases))
 }
+
+#[cfg(test)]
+mod tests;

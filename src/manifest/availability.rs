@@ -139,3 +139,6 @@ pub(crate) fn target_presentation_time_at(
     };
     Ok(Some(target_presentation_time_from_since(mpd, since_ast)))
 }
+
+#[cfg(test)]
+mod tests;

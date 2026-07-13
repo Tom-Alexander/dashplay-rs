@@ -14,9 +14,6 @@ mod template;
 mod timeline;
 mod types;
 
-#[cfg(test)]
-mod tests;
-
 pub(crate) use addressing::*;
 pub(crate) use alignment::*;
 pub(crate) use availability::*;

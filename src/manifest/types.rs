@@ -96,3 +96,6 @@ pub(crate) fn parse_byte_range(range: &str) -> Result<ByteRange, ManifestError> 
     }
     Ok(ByteRange { start, end })
 }
+
+#[cfg(test)]
+mod tests;

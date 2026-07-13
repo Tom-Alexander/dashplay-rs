@@ -402,3 +402,6 @@ pub(crate) fn resolved_initialization_path(
             .map(|init_src| interpolate_template(init_src, vars)),
     }
 }
+
+#[cfg(test)]
+mod tests;

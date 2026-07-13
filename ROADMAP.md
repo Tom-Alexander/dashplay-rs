@@ -155,7 +155,7 @@ without changing playback behaviour.
   `resync`).
 - [x] **`descriptors` → `track_selection/`.** Move adaptation-set compatibility
   filtering next to its only consumers.
-- [ ] **`manifest/tests.rs` distribution.** Split the ~900-line catch-all test module
+- [x] **`manifest/tests.rs` distribution.** Split the ~900-line catch-all test module
   into per-submodule `tests.rs` files (mirroring `timeline/tests.rs`).
 - [ ] **DRM renewal split.** Separate `renewal.rs` CDM protocol parsing (`kctl`, license
   policy) from session scheduling (`RenewalState`, backoff, poll timing).

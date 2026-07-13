@@ -96,3 +96,6 @@ impl AdaptationSetEndNumbers {
         self.representations.get(rep_idx).copied().flatten()
     }
 }
+
+#[cfg(test)]
+mod tests;

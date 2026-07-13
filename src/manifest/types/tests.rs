@@ -1,4 +1,4 @@
-use crate::manifest::parse_byte_range;
+use super::parse_byte_range;
 
 #[test]
 fn parse_byte_range_accepts_inclusive_specifier() {

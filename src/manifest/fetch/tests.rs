@@ -1,9 +1,11 @@
 use dash_mpd::{SegmentBase, SegmentTemplate};
 
-use crate::manifest::{
-    ByteRange, ManifestError, TemplateVars, media_range_from_per_segment_index,
-    representation_index_fetch_target, segment_base_index_target, segment_base_init_target,
-    segment_template_index_target,
+use super::super::error::ManifestError;
+use super::super::template::TemplateVars;
+use super::super::types::ByteRange;
+use super::{
+    media_range_from_per_segment_index, representation_index_fetch_target,
+    segment_base_index_target, segment_base_init_target, segment_template_index_target,
 };
 
 #[test]

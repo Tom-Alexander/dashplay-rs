@@ -3,7 +3,7 @@ use std::time::Duration;
 use chrono::{TimeZone, Utc};
 use dash_mpd::{MPD, Period};
 
-use crate::manifest::{current_period_window_at, period_windows};
+use super::{current_period_window_at, period_windows};
 
 #[test]
 fn period_windows_chain_period_starts() {

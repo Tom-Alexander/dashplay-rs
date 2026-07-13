@@ -2,7 +2,7 @@ use dash_mpd::{
     AdaptationSet, Period, Representation, SegmentBase, SegmentList, SegmentTemplate, SegmentURL,
 };
 
-use crate::manifest::{
+use super::{
     SegmentAddressing, segment_addressing_for_representation, segment_list_for_representation,
     segment_template_for_representation, segment_template_for_timeline,
     segment_template_uses_global_sidecar_index, segment_template_uses_per_segment_index,

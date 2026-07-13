@@ -3,10 +3,12 @@ use std::time::Duration;
 use chrono::{TimeZone, Utc};
 use dash_mpd::{Latency, MPD, SegmentTemplate, ServiceDescription};
 
-use crate::manifest::{
-    PeriodWindow, SegmentAddressing, SegmentAvailability, TimelineBuildContext, TimelineSegment,
-    filter_segments_by_availability, segment_is_available, segment_sequence_start_s,
-    target_presentation_time_at, timeline_segments,
+use super::super::addressing::SegmentAddressing;
+use super::super::timeline::timeline_segments;
+use super::super::types::{PeriodWindow, TimelineBuildContext, TimelineSegment};
+use super::{
+    SegmentAvailability, filter_segments_by_availability, segment_is_available,
+    segment_sequence_start_s, target_presentation_time_at,
 };
 
 #[test]

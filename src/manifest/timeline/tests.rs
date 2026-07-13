@@ -2,14 +2,17 @@ use std::time::Duration;
 
 use dash_mpd::{AdaptationSet, Representation, S, SegmentTemplate, SegmentTimeline};
 
-use crate::clock::resync::ResyncHints;
-use crate::manifest::ManifestError;
-use crate::manifest::{
-    PeriodWindow, SegmentAddressing, TemplateVars, TimelineBuildContext, TimelineSegment,
-    align_start_index_to_resync, align_start_index_to_sap, interpolate_template,
-    mid_segment_resync_alignment, template_vars_for_representation, timeline_segments,
-    timeline_segments_for_addressing, timeline_segments_from_list,
+use super::super::addressing::SegmentAddressing;
+use super::super::alignment::{
+    align_start_index_to_resync, align_start_index_to_sap, mid_segment_resync_alignment,
 };
+use super::super::error::ManifestError;
+use super::super::template::{
+    TemplateVars, interpolate_template, template_vars_for_representation,
+};
+use super::super::types::{PeriodWindow, TimelineBuildContext, TimelineSegment};
+use super::{timeline_segments, timeline_segments_for_addressing, timeline_segments_from_list};
+use crate::clock::resync::ResyncHints;
 
 fn static_ctx(period_end: Option<Duration>) -> TimelineBuildContext {
     TimelineBuildContext {

@@ -1,4 +1,5 @@
-use crate::manifest::{end_number_for_timeline, parse_segment_template_end_numbers};
+use super::super::addressing::end_number_for_timeline;
+use super::parse_segment_template_end_numbers;
 
 #[test]
 fn parse_segment_template_end_numbers_reads_adaptation_set_attribute() {

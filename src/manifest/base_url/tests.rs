@@ -1,7 +1,7 @@
 use dash_mpd::{AdaptationSet, BaseURL, Representation};
 use url::Url;
 
-use crate::manifest::{SegmentBaseContext, merge_base_url, segment_bases_for_representation};
+use super::{SegmentBaseContext, merge_base_url, segment_bases_for_representation};
 
 #[test]
 fn merge_base_url_relative_and_absolute() {

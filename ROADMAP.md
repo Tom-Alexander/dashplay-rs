@@ -164,7 +164,7 @@ without changing playback behaviour.
   by fetch/decrypt/emit — prerequisite for buffer-target scheduling (P7).
 - [x] **`TrackSessionState` consolidation.** Replace the many `Arc<Mutex<…>>` handles
   passed through `AdaptationStreamContext` with a single per-track session struct.
-- [ ] **`manifest/mod.rs` targeted re-exports.** Replace `pub(crate) use …::*` barrel
+- [x] **`manifest/mod.rs` targeted re-exports.** Replace `pub(crate) use …::*` barrel
   exports with explicit re-exports or submodule paths so module boundaries stay visible.
 - [x] **Stale doc references.** Update remaining docs that still reference removed files
   (`dash_stream.rs`, monolithic `manifest.rs`).

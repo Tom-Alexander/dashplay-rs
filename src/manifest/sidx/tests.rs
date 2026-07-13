@@ -1,7 +1,8 @@
 use dash_mpd::{SegmentBase, SegmentTemplate};
 
-use crate::manifest::{
-    ByteRange, parse_sidx_index, parse_sidx_index_from_representation_index_base,
+use super::super::types::ByteRange;
+use super::{
+    parse_sidx_index, parse_sidx_index_from_representation_index_base,
     parse_sidx_index_from_template, parse_sidx_index_from_template_representation_index,
 };
 

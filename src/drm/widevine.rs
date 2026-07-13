@@ -221,13 +221,7 @@ impl License {
     #[cfg(test)]
     pub(crate) fn test_force_renewal_due(&self, now: Instant) -> Result<(), LicenseError> {
         let mut inner = self.inner.write().map_err(|_| LicenseError::LockPoisoned)?;
-        inner
-            .renewal
-            .merge_schedule(super::renewal::RenewalSchedule {
-                can_renew: true,
-                renew_after: Some(now),
-                ..super::renewal::RenewalSchedule::default()
-            });
+        inner.renewal.force_due(now);
         Ok(())
     }
 }

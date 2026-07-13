@@ -157,7 +157,7 @@ without changing playback behaviour.
   filtering next to its only consumers.
 - [x] **`manifest/tests.rs` distribution.** Split the ~900-line catch-all test module
   into per-submodule `tests.rs` files (mirroring `timeline/tests.rs`).
-- [ ] **DRM renewal split.** Separate `renewal.rs` CDM protocol parsing (`kctl`, license
+- [x] **DRM renewal split.** Separate `renewal.rs` CDM protocol parsing (`kctl`, license
   policy) from session scheduling (`RenewalState`, backoff, poll timing).
 - [x] **Scheduler / fetch separation.** Introduce a synchronous `SegmentPlan` type
   (segment index, rep, init needed, byte range) produced by scheduling logic and consumed

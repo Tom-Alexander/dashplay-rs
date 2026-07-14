@@ -11,10 +11,37 @@ pub const ROLE_SCHEME: &str = "urn:mpeg:dash:role:2011";
 const AUXILIARY_ESSENTIAL_SCHEMES: &[&str] = &[
     "http://dashif.org/guidelines/trickmode",
     "http://dashif.org/guidelines/thumbnail_tile",
+    // Legacy DASH-IF thumbnail URI (still seen in the wild).
+    "http://dashif.org/thumbnail_tile",
 ];
 
 /// EssentialProperty schemes understood for segment delivery without extra processing.
-const SUPPORTED_ESSENTIAL_SCHEMES: &[&str] = &["urn:mpeg:dash:adaptation-set-switching:2016"];
+///
+/// Per ISO/IEC 23009-1, clients must discard AdaptationSets whose EssentialProperty
+/// `schemeIdUri` is unrecognized. This allow-list covers common codec / colour /
+/// compatibility signalling that does not require DASH-client processing beyond
+/// exposing the descriptor on track metadata for the decoder / application.
+const SUPPORTED_ESSENTIAL_SCHEMES: &[&str] = &[
+    // Cross-AdaptationSet switching (MPEG + legacy DASH-IF).
+    "urn:mpeg:dash:adaptation-set-switching:2016",
+    "http://dashif.org/guidelines/AdaptationSetSwitching",
+    // CICP video / audio source descriptors (ISO/IEC 23001-8).
+    "urn:mpeg:mpegB:cicp:ColourPrimaries",
+    "urn:mpeg:mpegB:cicp:TransferCharacteristics",
+    "urn:mpeg:mpegB:cicp:MatrixCoefficients",
+    "urn:mpeg:mpegB:cicp:VideoFullRangeFlag",
+    "urn:mpeg:mpegB:cicp:VideoFramePackingType",
+    "urn:mpeg:mpegB:cicp:QuincunxSamplingFlag",
+    "urn:mpeg:mpegB:cicp:PackedContentInterpretationType",
+    "urn:mpeg:mpegB:cicp:ChannelConfiguration",
+    // Frame packing (MPEG-DASH).
+    "urn:mpeg:dash:14496:10:frame_packing_arrangement_type:2011",
+    "urn:mpeg:dash:13818:1:stereo_video_format_type:2011",
+    // HDR dynamic metadata format (DVB).
+    "urn:dvb:dash:hdr-dmi",
+    // Subtitle font download signalling (DVB); rendering is application-owned.
+    "urn:dvb:dash:fontdownload:2014",
+];
 
 fn scheme_eq(left: &str, right: &str) -> bool {
     left.eq_ignore_ascii_case(right)
@@ -245,6 +272,38 @@ mod tests {
         let aset = adaptation_set(
             r#"<MPD><Period><AdaptationSet mimeType="video/mp4" contentType="video">
                 <EssentialProperty schemeIdUri="urn:mpeg:dash:adaptation-set-switching:2016" value="2"/>
+            </AdaptationSet></Period></MPD>"#,
+        );
+        assert!(is_playback_adaptation_set(&aset));
+    }
+
+    #[test]
+    fn cicp_colour_primaries_essential_property_is_supported() {
+        let aset = adaptation_set(
+            r#"<MPD><Period><AdaptationSet mimeType="video/mp4" contentType="video">
+                <EssentialProperty schemeIdUri="urn:mpeg:mpegB:cicp:ColourPrimaries" value="9"/>
+                <EssentialProperty schemeIdUri="urn:mpeg:mpegB:cicp:TransferCharacteristics" value="16"/>
+                <EssentialProperty schemeIdUri="urn:mpeg:mpegB:cicp:MatrixCoefficients" value="9"/>
+            </AdaptationSet></Period></MPD>"#,
+        );
+        assert!(is_playback_adaptation_set(&aset));
+    }
+
+    #[test]
+    fn hdr_dmi_essential_property_is_supported() {
+        let aset = adaptation_set(
+            r#"<MPD><Period><AdaptationSet mimeType="video/mp4" contentType="video">
+                <EssentialProperty schemeIdUri="urn:dvb:dash:hdr-dmi" value="HDR10"/>
+            </AdaptationSet></Period></MPD>"#,
+        );
+        assert!(is_playback_adaptation_set(&aset));
+    }
+
+    #[test]
+    fn frame_packing_essential_property_is_supported() {
+        let aset = adaptation_set(
+            r#"<MPD><Period><AdaptationSet mimeType="video/mp4" contentType="video">
+                <EssentialProperty schemeIdUri="urn:mpeg:dash:14496:10:frame_packing_arrangement_type:2011" value="3"/>
             </AdaptationSet></Period></MPD>"#,
         );
         assert!(is_playback_adaptation_set(&aset));

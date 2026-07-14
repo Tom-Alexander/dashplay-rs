@@ -204,7 +204,7 @@ without changing playback behaviour.
   `urn:mpeg:dash:resolve-to-zero:2013` period placeholders.
 - [x] **`Preselection`.** Preselected adaptation-set bundles.
 - [x] **`SubRepresentation`.** Sub-track selection and template inheritance.
-- [~] **`EssentialProperty` breadth.** Accept common codec/compatibility schemes instead of
+- [x] **`EssentialProperty` breadth.** Accept common codec/compatibility schemes instead of
   excluding adaptation sets with unknown essential properties.
 - [~] **`SupplementalProperty` playback semantics.** Execute adaptation-set switching and
   other supplemental signalling beyond metadata collection.

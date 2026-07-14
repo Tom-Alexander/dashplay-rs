@@ -3,6 +3,7 @@
 pub(crate) mod descriptors;
 mod info;
 mod kind;
+mod preselection;
 mod select;
 
 #[cfg(test)]

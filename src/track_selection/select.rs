@@ -6,16 +6,16 @@ use super::descriptors::{
     adaptation_descriptor_metadata, is_playback_adaptation_set, is_thumbnail_tile_adaptation_set,
     is_trick_play_adaptation_set, thumbnail_tile_layout,
 };
-
 use super::info::TrackInfo;
 use super::kind::{TrackDescriptor, TrackKind, TrackPreference, TrackSelection};
+use super::preselection::{ResolvedPreselection, resolve_preselections};
 
 pub(crate) struct SelectedAdaptationSet<'a> {
     pub adaptation_set: &'a AdaptationSet,
     pub info: TrackInfo,
 }
 
-fn track_kind(adaptation_set: &AdaptationSet) -> Option<TrackKind> {
+pub(crate) fn track_kind(adaptation_set: &AdaptationSet) -> Option<TrackKind> {
     if is_trick_play_adaptation_set(adaptation_set) {
         return Some(TrackKind::TrickPlay);
     }
@@ -49,7 +49,7 @@ fn effective_mime_type(adaptation_set: &AdaptationSet) -> Option<String> {
     })
 }
 
-fn effective_language(adaptation_set: &AdaptationSet) -> Option<String> {
+pub(crate) fn effective_language(adaptation_set: &AdaptationSet) -> Option<String> {
     adaptation_set
         .lang
         .clone()
@@ -67,7 +67,7 @@ fn effective_language(adaptation_set: &AdaptationSet) -> Option<String> {
         })
 }
 
-fn codec_values(adaptation_set: &AdaptationSet) -> Vec<String> {
+pub(crate) fn codec_values(adaptation_set: &AdaptationSet) -> Vec<String> {
     let mut codecs = Vec::new();
     for value in std::iter::once(adaptation_set.codecs.as_deref())
         .chain(
@@ -94,7 +94,10 @@ fn codec_values(adaptation_set: &AdaptationSet) -> Vec<String> {
     codecs
 }
 
-fn role_values(adaptation_set: &AdaptationSet, supplemental_roles: &[String]) -> Vec<String> {
+pub(crate) fn role_values(
+    adaptation_set: &AdaptationSet,
+    supplemental_roles: &[String],
+) -> Vec<String> {
     let mut roles: Vec<String> = adaptation_set
         .Role
         .iter()
@@ -246,10 +249,155 @@ fn select_kind(
     }
 }
 
+enum KindCandidate<'a> {
+    Standalone {
+        document_index: usize,
+        adaptation_set: &'a AdaptationSet,
+        info: TrackInfo,
+    },
+    Preselection {
+        preselection: ResolvedPreselection,
+    },
+}
+
+fn rank_kind_candidate(
+    candidate: &KindCandidate<'_>,
+    preference: &TrackPreference,
+) -> (
+    usize,
+    usize,
+    usize,
+    usize,
+    std::cmp::Reverse<u64>,
+    u8,
+    usize,
+) {
+    match candidate {
+        KindCandidate::Standalone {
+            document_index,
+            adaptation_set,
+            info,
+        } => (
+            match_rank(
+                &preference.languages,
+                info.language.iter(),
+                language_matches,
+            ),
+            match_rank(&preference.roles, &info.roles, |role, preferred| {
+                role.eq_ignore_ascii_case(preferred)
+            }),
+            match_rank(&preference.codecs, &info.codecs, codec_matches),
+            descriptor_rank(&preference.accessibility, &info.accessibility),
+            std::cmp::Reverse(adaptation_set.selectionPriority.unwrap_or(1)),
+            // Prefer Preselection bundles over an otherwise-equivalent standalone set so
+            // partial Adaptation Sets are retained under `max_tracks(1)`.
+            1,
+            *document_index,
+        ),
+        KindCandidate::Preselection { preselection } => (
+            match_rank(
+                &preference.languages,
+                preselection.language.iter(),
+                language_matches,
+            ),
+            match_rank(&preference.roles, &preselection.roles, |role, preferred| {
+                role.eq_ignore_ascii_case(preferred)
+            }),
+            match_rank(&preference.codecs, &preselection.codecs, codec_matches),
+            descriptor_rank(&preference.accessibility, &preselection.accessibility),
+            std::cmp::Reverse(preselection.selection_priority),
+            0,
+            preselection.document_index,
+        ),
+    }
+}
+
+fn select_kind_with_preselections<'a>(
+    period: &'a Period,
+    kind: TrackKind,
+    preference: &TrackPreference,
+    standalone: Vec<(usize, &'a AdaptationSet, TrackInfo)>,
+    preselections: &[ResolvedPreselection],
+) -> Vec<(usize, &'a AdaptationSet, TrackInfo)> {
+    let kind_preselections: Vec<ResolvedPreselection> = preselections
+        .iter()
+        .filter(|preselection| preselection.main_kind == kind)
+        .cloned()
+        .collect();
+
+    if kind_preselections.is_empty() {
+        let mut candidates = standalone;
+        select_kind(&mut candidates, preference);
+        return candidates;
+    }
+
+    let mut candidates: Vec<KindCandidate<'a>> = standalone
+        .into_iter()
+        .map(
+            |(document_index, adaptation_set, info)| KindCandidate::Standalone {
+                document_index,
+                adaptation_set,
+                info,
+            },
+        )
+        .chain(
+            kind_preselections
+                .into_iter()
+                .map(|preselection| KindCandidate::Preselection { preselection }),
+        )
+        .collect();
+
+    candidates.sort_by_key(|candidate| rank_kind_candidate(candidate, preference));
+    if let Some(max_tracks) = preference.max_tracks {
+        candidates.truncate(max_tracks);
+    }
+
+    let mut selected = Vec::new();
+    let mut seen = std::collections::HashSet::new();
+    for candidate in candidates {
+        match candidate {
+            KindCandidate::Standalone {
+                document_index,
+                adaptation_set,
+                info,
+            } => {
+                if seen.insert(document_index) {
+                    selected.push((document_index, adaptation_set, info));
+                }
+            }
+            KindCandidate::Preselection { preselection } => {
+                for document_index in preselection.adaptation_indices {
+                    if !seen.insert(document_index) {
+                        continue;
+                    }
+                    let Some(adaptation_set) = period.adaptations.get(document_index) else {
+                        continue;
+                    };
+                    let Some(component_kind) = track_kind(adaptation_set) else {
+                        continue;
+                    };
+                    // Expand only components that match the selected kind; other media
+                    // kinds keep their own selection pass.
+                    if component_kind != kind {
+                        continue;
+                    }
+                    selected.push((
+                        document_index,
+                        adaptation_set,
+                        track_info(adaptation_set, document_index, kind),
+                    ));
+                }
+            }
+        }
+    }
+    selected
+}
+
 pub(crate) fn select_adaptation_sets<'a>(
     period: &'a Period,
     selection: &TrackSelection,
 ) -> Vec<SelectedAdaptationSet<'a>> {
+    let preselections = resolve_preselections(period);
     let mut audio = Vec::new();
     let mut video = Vec::new();
     let mut text = Vec::new();
@@ -260,10 +408,14 @@ pub(crate) fn select_adaptation_sets<'a>(
         let Some(kind) = track_kind(adaptation_set) else {
             continue;
         };
-        if matches!(kind, TrackKind::Audio | TrackKind::Video | TrackKind::Text)
-            && !is_playback_adaptation_set(adaptation_set)
-        {
-            continue;
+        if matches!(kind, TrackKind::Audio | TrackKind::Video | TrackKind::Text) {
+            // Partial Preselection sets are delivered only when their Preselection is chosen.
+            if super::preselection::is_partial_preselection_adaptation_set(adaptation_set) {
+                continue;
+            }
+            if !is_playback_adaptation_set(adaptation_set) {
+                continue;
+            }
         }
         let candidate = (
             document_index,
@@ -279,9 +431,27 @@ pub(crate) fn select_adaptation_sets<'a>(
         }
     }
 
-    select_kind(&mut audio, &selection.audio);
-    select_kind(&mut video, &selection.video);
-    select_kind(&mut text, &selection.text);
+    let audio = select_kind_with_preselections(
+        period,
+        TrackKind::Audio,
+        &selection.audio,
+        audio,
+        &preselections,
+    );
+    let video = select_kind_with_preselections(
+        period,
+        TrackKind::Video,
+        &selection.video,
+        video,
+        &preselections,
+    );
+    let text = select_kind_with_preselections(
+        period,
+        TrackKind::Text,
+        &selection.text,
+        text,
+        &preselections,
+    );
     select_kind(&mut trick_play, &selection.trick_play);
     select_kind(&mut image, &selection.image);
 

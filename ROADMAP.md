@@ -31,7 +31,7 @@ Status legend: `[ ]` not started · `[~]` partial · `[x]` done · `[—]` out o
 | Demux / decode | `[—]` | Out of scope (bytes only) |
 | Metrics / rich events | `[~]` | Per-track [`TrackMetrics`]; fragment + [`MediaEvent`] events |
 | Pluggable networking / ABR | `[x]` | HTTP client trait + `ReqwestClient`; ABR trait + `BolaAbrFactory` |
-| MPD model / remote documents | `[~]` | Preselection, metadata elements; Period xlink done |
+| MPD model / remote documents | `[~]` | Metadata elements remaining; Period xlink + Preselection done |
 | Buffer-target scheduling | `[x]` | Throttles prefetch at 25 s; honours `MPD@minBufferTime` for rebuffer |
 | Bitstream / AS switching | `[ ]` | Init always re-emitted; no cross-AS switch |
 | Containers beyond fMP4/CMAF | `[ ]` | mp2t, WebM, additional image MIME types |
@@ -200,7 +200,7 @@ without changing playback behaviour.
   `SegmentList` / `SegmentBase` at the same hierarchy level.
 - [x] **Remote MPD documents.** `Period@xlink:href` (including remote MPD entities), and
   `urn:mpeg:dash:resolve-to-zero:2013` period placeholders.
-- [ ] **`Preselection`.** Preselected adaptation-set bundles.
+- [x] **`Preselection`.** Preselected adaptation-set bundles.
 - [ ] **`SubRepresentation`.** Sub-track selection and template inheritance.
 - [~] **`EssentialProperty` breadth.** Accept common codec/compatibility schemes instead of
   excluding adaptation sets with unknown essential properties.

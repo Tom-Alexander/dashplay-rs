@@ -300,3 +300,113 @@ fn representation_metadata_is_used_when_adaptation_metadata_is_absent() {
     assert_eq!(selected[0].info.mime_type.as_deref(), Some("video/mp4"));
     assert_eq!(selected[0].info.codecs, vec!["avc1.4d401f"]);
 }
+
+#[test]
+fn preselection_element_selects_partial_adaptation_sets() {
+    let period = period(
+        r#"<MPD><Period>
+                <AdaptationSet id="1" contentType="audio" mimeType="audio/mp4" lang="en">
+                  <SupplementalProperty schemeIdUri="urn:mpeg:dash:preselection:2016"/>
+                  <Role schemeIdUri="urn:mpeg:dash:role:2011" value="main"/>
+                </AdaptationSet>
+                <AdaptationSet id="2" contentType="audio" mimeType="audio/mp4">
+                  <EssentialProperty schemeIdUri="urn:mpeg:dash:preselection:2016"/>
+                </AdaptationSet>
+                <AdaptationSet id="v" contentType="video" mimeType="video/mp4"/>
+                <Preselection id="ps1" preselectionComponents="1 2" lang="en" codecs="mp4a.40.2" tag="1">
+                  <Role schemeIdUri="urn:mpeg:dash:role:2011" value="main"/>
+                </Preselection>
+            </Period></MPD>"#,
+    );
+
+    let selected = select_adaptation_sets(
+        &period,
+        &TrackSelection::default().with_audio(TrackPreference::default().max_tracks(1)),
+    );
+    assert_eq!(
+        selected
+            .iter()
+            .map(|track| track.info.id.as_deref())
+            .collect::<Vec<_>>(),
+        vec![Some("1"), Some("2"), Some("v")]
+    );
+}
+
+#[test]
+fn preselection_language_preference_picks_matching_bundle() {
+    let period = period(
+        r#"<MPD><Period>
+                <AdaptationSet id="1" contentType="audio" mimeType="audio/mp4" lang="en">
+                  <SupplementalProperty schemeIdUri="urn:mpeg:dash:preselection:2016"/>
+                </AdaptationSet>
+                <AdaptationSet id="2" contentType="audio" mimeType="audio/mp4">
+                  <EssentialProperty schemeIdUri="urn:mpeg:dash:preselection:2016"/>
+                </AdaptationSet>
+                <AdaptationSet id="3" contentType="audio" mimeType="audio/mp4" lang="fr">
+                  <SupplementalProperty schemeIdUri="urn:mpeg:dash:preselection:2016"/>
+                </AdaptationSet>
+                <AdaptationSet id="4" contentType="audio" mimeType="audio/mp4">
+                  <EssentialProperty schemeIdUri="urn:mpeg:dash:preselection:2016"/>
+                </AdaptationSet>
+                <Preselection id="en" preselectionComponents="1 2" lang="en" tag="1"/>
+                <Preselection id="fr" preselectionComponents="3 4" lang="fr" tag="2"/>
+            </Period></MPD>"#,
+    );
+    let audio = TrackPreference::default().language("fr").max_tracks(1);
+
+    let selected = select_adaptation_sets(&period, &TrackSelection::default().with_audio(audio));
+    assert_eq!(
+        selected
+            .iter()
+            .map(|track| track.info.id.as_deref())
+            .collect::<Vec<_>>(),
+        vec![Some("3"), Some("4")]
+    );
+}
+
+#[test]
+fn preselection_descriptor_defines_selectable_bundle() {
+    let period = period(
+        r#"<MPD><Period>
+                <AdaptationSet id="1" contentType="audio" mimeType="audio/mp4" lang="de">
+                  <EssentialProperty schemeIdUri="urn:mpeg:dash:preselection:2016" value="bundle,1 2"/>
+                </AdaptationSet>
+                <AdaptationSet id="2" contentType="audio" mimeType="audio/mp4">
+                  <EssentialProperty schemeIdUri="urn:mpeg:dash:preselection:2016"/>
+                </AdaptationSet>
+            </Period></MPD>"#,
+    );
+
+    let selected = select_adaptation_sets(
+        &period,
+        &TrackSelection::default().with_audio(TrackPreference::default().max_tracks(1)),
+    );
+    assert_eq!(
+        selected
+            .iter()
+            .map(|track| track.info.id.as_deref())
+            .collect::<Vec<_>>(),
+        vec![Some("1"), Some("2")]
+    );
+}
+
+#[test]
+fn partial_preselection_adaptation_set_is_not_selected_alone() {
+    let period = period(
+        r#"<MPD><Period>
+                <AdaptationSet id="main" contentType="audio" mimeType="audio/mp4" lang="en"/>
+                <AdaptationSet id="partial" contentType="audio" mimeType="audio/mp4">
+                  <EssentialProperty schemeIdUri="urn:mpeg:dash:preselection:2016"/>
+                </AdaptationSet>
+            </Period></MPD>"#,
+    );
+
+    let selected = select_adaptation_sets(&period, &TrackSelection::default());
+    assert_eq!(
+        selected
+            .iter()
+            .map(|track| track.info.id.as_deref())
+            .collect::<Vec<_>>(),
+        vec![Some("main")]
+    );
+}

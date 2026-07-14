@@ -22,9 +22,52 @@ fn segment_base_init_target_uses_range_on_base_url() {
         representation_id: "1",
         ..Default::default()
     };
-    let target = segment_base_init_target(&sb, &vars).unwrap();
+    let target = segment_base_init_target(&sb, &vars).unwrap().unwrap();
     assert_eq!(target.path, "");
     assert_eq!(target.range, Some(ByteRange { start: 0, end: 6 }));
+}
+
+#[test]
+fn segment_base_init_target_absent_is_none() {
+    let sb = SegmentBase {
+        presentationDuration: Some(8000),
+        timescale: Some(1000),
+        ..Default::default()
+    };
+    let vars = TemplateVars {
+        representation_id: "1",
+        ..Default::default()
+    };
+    assert!(segment_base_init_target(&sb, &vars).unwrap().is_none());
+}
+
+#[test]
+fn segment_base_media_target_whole_file_uses_base_url() {
+    use super::segment_base_media_target;
+
+    let sb = SegmentBase {
+        presentationDuration: Some(8000),
+        timescale: Some(1000),
+        ..Default::default()
+    };
+    let seg = TimelineSegment {
+        number: 1,
+        time: 0,
+        duration: 8000,
+        duration_s: 8.0,
+        presentation_time_s: 0.0,
+        sub_number: None,
+        resync_start_chunk: None,
+        media_url: None,
+        media_range: None,
+    };
+    let vars = TemplateVars {
+        representation_id: "1",
+        ..Default::default()
+    };
+    let target = segment_base_media_target(&sb, &seg, &vars).unwrap();
+    assert_eq!(target.path, "");
+    assert_eq!(target.range, None);
 }
 
 #[test]

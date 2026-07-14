@@ -116,6 +116,34 @@ async fn vod_segment_base_playback() {
 }
 
 #[tokio::test]
+async fn vod_segment_base_presentation_duration_playback() {
+    let server = FixtureServer::spawn("vod_segment_base_presentation_duration").await;
+    let events = play_single_track(&server.manifest_url, TIMEOUT)
+        .await
+        .expect("playback");
+
+    assert_eq!(init_payload(&events).as_deref(), Some(b"INIT!!!".as_ref()));
+    assert_eq!(
+        segment_payloads(&events),
+        vec![b"INIT!!!WHOLE-FILE!!".to_vec()]
+    );
+    assert!(has_end(&events));
+}
+
+#[tokio::test]
+async fn vod_segment_base_whole_file_playback() {
+    let server = FixtureServer::spawn("vod_segment_base_whole_file").await;
+    let events = play_single_track(&server.manifest_url, TIMEOUT)
+        .await
+        .expect("playback");
+
+    // No Initialization: same as WebVTT — no Init event, BaseURL delivered as one Segment.
+    assert!(init_payload(&events).is_none());
+    assert_eq!(segment_payloads(&events), vec![b"WHOLE-FILE!!".to_vec()]);
+    assert!(has_end(&events));
+}
+
+#[tokio::test]
 async fn vod_template_sidecar_index_playback() {
     let server = FixtureServer::spawn("vod_template_index").await;
     let events = play_single_track(&server.manifest_url, TIMEOUT)

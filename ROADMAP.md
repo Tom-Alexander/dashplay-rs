@@ -189,7 +189,7 @@ without changing playback behaviour.
 - [x] **`SegmentList` byte ranges.** `SegmentURL@mediaRange` HTTP Range fetch; byte-range-only
   list addressing without timeline.
 - [x] **Hierarchical `sidx`.** `reference_type ≠ 0` index references.
-- [~] **Whole-file `SegmentBase`.** Single-segment and `@presentationDuration` progressive
+- [x] **Whole-file `SegmentBase`.** Single-segment and `@presentationDuration` progressive
   paths without `@indexRange`.
 - [~] **`@indexRangeExact`.** Distinct semantics from `@indexRange`.
 - [ ] **Sidecar `@indexRangeExact`.** Apply exact-range semantics to
@@ -256,7 +256,7 @@ without changing playback behaviour.
 - [ ] **MPEG-2 Transport Stream.** `mp2t-main` and `mp2t-simple` profile playback.
 - [ ] **WebM / Matroska.** `video/webm`, `audio/webm` segment delivery.
 - [ ] **Additional image MIME types.** `image/png`, `image/bmp`, and other thumbnail schemes.
-- [~] **Progressive MP4.** Non-fragmented whole-file playback via `SegmentBase`.
+- [x] **Progressive MP4.** Non-fragmented whole-file playback via `SegmentBase`.
 - [ ] **Multiplexed A+V.** Single adaptation set carrying multiplexed audio and video.
 - [ ] **`UTCTiming` WebSocket scheme.** `urn:mpeg:dash:utc:websocket`.
 - [ ] **Other `UTCTiming` schemes.** Any scheme not explicitly handled today.

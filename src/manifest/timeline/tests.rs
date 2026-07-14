@@ -1021,3 +1021,69 @@ fn timeline_segments_for_per_segment_index_uses_explicit_timeline() {
     assert_eq!(segs.len(), 2);
     assert!(segs.iter().all(|s| s.media_range.is_none()));
 }
+
+#[test]
+fn whole_file_segment_base_uses_presentation_duration() {
+    use dash_mpd::SegmentBase;
+
+    let sb = SegmentBase {
+        timescale: Some(1000),
+        presentationDuration: Some(8000),
+        ..Default::default()
+    };
+    let ctx = static_ctx(Some(Duration::from_secs(8)));
+    let segs = timeline_segments_for_addressing(&SegmentAddressing::Base(sb), &ctx, None).unwrap();
+    assert_eq!(segs.len(), 1);
+    assert_eq!(segs[0].number, 1);
+    assert_eq!(segs[0].duration, 8000);
+    assert!((segs[0].duration_s - 8.0).abs() < 1e-9);
+    assert!(segs[0].media_range.is_none());
+    assert!(segs[0].media_url.is_none());
+}
+
+#[test]
+fn whole_file_segment_base_falls_back_to_period_extent() {
+    use dash_mpd::SegmentBase;
+
+    let sb = SegmentBase {
+        timescale: Some(1000),
+        ..Default::default()
+    };
+    let ctx = static_ctx(Some(Duration::from_secs(6)));
+    let segs = timeline_segments_for_addressing(&SegmentAddressing::Base(sb), &ctx, None).unwrap();
+    assert_eq!(segs.len(), 1);
+    assert_eq!(segs[0].duration, 6000);
+    assert!((segs[0].duration_s - 6.0).abs() < 1e-9);
+}
+
+#[test]
+fn whole_file_segment_base_requires_duration_or_period_extent() {
+    use dash_mpd::SegmentBase;
+
+    let sb = SegmentBase {
+        timescale: Some(1000),
+        ..Default::default()
+    };
+    let ctx = static_ctx(None);
+    assert!(matches!(
+        timeline_segments_for_addressing(&SegmentAddressing::Base(sb), &ctx, None),
+        Err(ManifestError::MissingPeriodExtentForStaticTemplate)
+    ));
+}
+
+#[test]
+fn indexed_segment_base_still_requires_fetched_sidx() {
+    use dash_mpd::SegmentBase;
+
+    let sb = SegmentBase {
+        timescale: Some(1000),
+        presentationDuration: Some(8000),
+        indexRange: Some("0-10".into()),
+        ..Default::default()
+    };
+    let ctx = static_ctx(Some(Duration::from_secs(8)));
+    assert!(matches!(
+        timeline_segments_for_addressing(&SegmentAddressing::Base(sb), &ctx, None),
+        Err(ManifestError::SegmentBaseIndexNotLoaded)
+    ));
+}

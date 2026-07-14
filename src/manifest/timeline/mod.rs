@@ -83,9 +83,13 @@ pub(crate) fn timeline_segments_for_addressing(
     }
 }
 
+/// Whole-file `SegmentBase` without `@indexRange` / `RepresentationIndex`: a single media
+/// segment at the Representation `BaseURL` (ISO/IEC 23009-1 §5.3.9.2 / §5.3.9.5).
+///
+/// Duration preference: `@presentationDuration`, else Period / MPD presentation extent.
 fn timeline_segments_from_segment_base(
     sb: &SegmentBase,
-    _ctx: &TimelineBuildContext,
+    ctx: &TimelineBuildContext,
 ) -> Result<Vec<TimelineSegment>, ManifestError> {
     if super::addressing::segment_base_uses_sidx_index(sb) {
         return Err(ManifestError::SegmentBaseIndexNotLoaded);
@@ -96,13 +100,19 @@ fn timeline_segments_from_segment_base(
         return Err(ManifestError::ZeroTimescale);
     }
 
-    let duration_ticks = sb
-        .presentationDuration
-        .filter(|d| *d > 0)
-        .ok_or(ManifestError::MissingSegmentDuration)?;
-    let duration_s = duration_ticks as f64 / timescale as f64;
+    let (duration_ticks, duration_s) = if let Some(d) = sb.presentationDuration.filter(|d| *d > 0) {
+        (d, d as f64 / timescale as f64)
+    } else {
+        let duration_s = ctx
+            .period_length_secs()
+            .filter(|x| x.is_finite() && *x > 0.0)
+            .ok_or(ManifestError::MissingPeriodExtentForStaticTemplate)?;
+        let duration_ticks = (duration_s * timescale as f64).round().max(1.0) as u64;
+        (duration_ticks, duration_s)
+    };
+    validate_segment_duration_s(duration_s, ctx)?;
 
-    Ok(vec![TimelineSegment {
+    let segments = vec![TimelineSegment {
         number: 1,
         time: 0,
         duration: duration_ticks,
@@ -112,7 +122,9 @@ fn timeline_segments_from_segment_base(
         resync_start_chunk: None,
         media_url: None,
         media_range: None,
-    }])
+    }];
+    validate_timeline_segments(&segments, ctx)?;
+    Ok(segments)
 }
 
 pub(crate) fn timeline_segments_from_list(

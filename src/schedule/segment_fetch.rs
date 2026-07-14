@@ -316,9 +316,7 @@ fn init_target_for_addressing(
                 }))
         }
         manifest::SegmentAddressing::List(sl) => Ok(manifest::segment_list_init_target(sl, vars)?),
-        manifest::SegmentAddressing::Base(sb) => {
-            Ok(Some(manifest::segment_base_init_target(sb, vars)?))
-        }
+        manifest::SegmentAddressing::Base(sb) => Ok(manifest::segment_base_init_target(sb, vars)?),
     }
 }
 

@@ -103,21 +103,27 @@ pub(crate) fn media_range_from_per_segment_index(
         end: last_range.end,
     })
 }
+/// `SegmentBase` initialization fetch: optional `sourceURL` plus optional `@range` on BaseURL.
+///
+/// Whole-file progressive Representations may omit `Initialization` entirely; the media Segment
+/// is then the complete BaseURL resource.
 pub(crate) fn segment_base_init_target(
     sb: &SegmentBase,
     vars: &TemplateVars<'_>,
-) -> Result<SegmentFetchTarget, ManifestError> {
-    let init = sb
-        .Initialization
-        .as_ref()
-        .ok_or(ManifestError::MissingInitializationTemplate)?;
+) -> Result<Option<SegmentFetchTarget>, ManifestError> {
+    let Some(init) = sb.Initialization.as_ref() else {
+        return Ok(None);
+    };
     let path = init
         .sourceURL
         .as_deref()
         .map(|s| interpolate_template(s, vars))
         .unwrap_or_default();
     let range = init.range.as_deref().map(parse_byte_range).transpose()?;
-    Ok(SegmentFetchTarget { path, range })
+    if path.is_empty() && range.is_none() {
+        return Err(ManifestError::MissingInitializationTemplate);
+    }
+    Ok(Some(SegmentFetchTarget { path, range }))
 }
 
 /// `SegmentList` initialization fetch: optional `sourceURL` plus optional `@range` on BaseURL.
@@ -167,6 +173,10 @@ pub(crate) fn segment_list_media_target(
 }
 
 /// Media fetch target for one timeline segment under `SegmentBase` addressing.
+///
+/// With `@indexRange` / `RepresentationIndex`, `media_range` comes from the parsed `sidx`.
+/// Without an index, an empty path and no range requests the Representation `BaseURL` as a
+/// single whole-file progressive Segment.
 pub(crate) fn segment_base_media_target(
     _sb: &SegmentBase,
     seg: &TimelineSegment,

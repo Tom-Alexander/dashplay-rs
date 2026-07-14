@@ -192,7 +192,7 @@ without changing playback behaviour.
 - [x] **Hierarchical `sidx`.** `reference_type ≠ 0` index references.
 - [x] **Whole-file `SegmentBase`.** Single-segment and `@presentationDuration` progressive
   paths without `@indexRange`.
-- [~] **`@indexRangeExact`.** Distinct semantics from `@indexRange`.
+- [x] **`@indexRangeExact`.** Distinct semantics from `@indexRange`.
 - [ ] **Sidecar `@indexRangeExact`.** Apply exact-range semantics to
   `SegmentTemplate@index` sidecar index fetches.
 - [ ] **Addressing-mode validation.** Enforce mutual exclusivity of `SegmentTemplate` /

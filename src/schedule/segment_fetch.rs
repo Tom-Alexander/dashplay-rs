@@ -459,22 +459,69 @@ async fn sidx_segments_for_rep<'a>(
         }
         let bases =
             manifest::segment_bases_for_representation(segment_base_ctx, adaptation_set, rep)?;
-        let vars = manifest::template_vars_for_representation(rep, adaptation_set);
-        let index_target = manifest::segment_base_index_target(&sb, &vars)?;
-        let index_bytes = if index_target.range.is_some() && index_target.path.is_empty() {
-            let br = index_target
-                .range
-                .ok_or(ManifestError::MissingSegmentBaseIndexRange)?;
-            fetch_bytes_with_base_failover_and_range(client, &bases, "", Some(br), blacklist)
-                .await?
-        } else {
-            fetch_segment_target(client, &bases, &index_target, blacklist).await?
-        };
-        let segs = manifest::parse_sidx_index_for_segment_base(&sb, &index_bytes)?;
+        let segs =
+            fetch_and_parse_segment_base_index(client, &bases, &sb, rep, adaptation_set, blacklist)
+                .await?;
         e.insert(segs);
     }
     Ok(cache
         .get(rep.id.as_deref().unwrap_or_default())
         .map(|v| v.as_slice())
         .unwrap_or(&[]))
+}
+
+/// Fetch `SegmentBase` index bytes (honouring `@indexRangeExact`) and parse the timeline.
+///
+/// When `@indexRangeExact` is false/absent, the Index Segment may extend past `@indexRange`;
+/// additional Range requests are issued until the `sidx` (and nested index boxes) are complete.
+pub(super) async fn fetch_and_parse_segment_base_index(
+    client: &SharedHttpClient,
+    bases: &[url::Url],
+    sb: &dash_mpd::SegmentBase,
+    rep: &Representation,
+    adaptation_set: &AdaptationSet,
+    blacklist: &SegmentBlacklist,
+) -> Result<Vec<manifest::TimelineSegment>, PlayerError> {
+    let vars = manifest::template_vars_for_representation(rep, adaptation_set);
+    let index_target = manifest::segment_base_index_target(sb, &vars)?;
+
+    // Same-file `@indexRange`: extend when the Index Segment is incomplete.
+    if index_target.range.is_some() && index_target.path.is_empty() {
+        let Some(mut br) = index_target.range else {
+            return Err(PlayerError::from(
+                ManifestError::MissingSegmentBaseIndexRange,
+            ));
+        };
+        let mut index_bytes =
+            fetch_bytes_with_base_failover_and_range(client, bases, "", Some(br), blacklist)
+                .await?;
+        loop {
+            match manifest::parse_sidx_index_for_segment_base(sb, &index_bytes) {
+                Ok(segs) => return Ok(segs),
+                Err(ManifestError::IncompleteSidxIndex { need_end }) if need_end > br.end => {
+                    let extend = manifest::ByteRange {
+                        start: br.end.saturating_add(1),
+                        end: need_end,
+                    };
+                    let more = fetch_bytes_with_base_failover_and_range(
+                        client,
+                        bases,
+                        "",
+                        Some(extend),
+                        blacklist,
+                    )
+                    .await?;
+                    index_bytes.extend_from_slice(&more);
+                    br.end = need_end;
+                }
+                Err(e) => return Err(PlayerError::from(e)),
+            }
+        }
+    }
+
+    let index_bytes = fetch_segment_target(client, bases, &index_target, blacklist).await?;
+    Ok(manifest::parse_sidx_index_for_segment_base(
+        sb,
+        &index_bytes,
+    )?)
 }

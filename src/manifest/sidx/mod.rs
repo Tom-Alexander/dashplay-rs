@@ -20,7 +20,183 @@ fn parse_sidx_from_representation_index_bytes(
     }
 }
 
+fn index_range_is_exact(exact: Option<bool>) -> bool {
+    exact == Some(true)
+}
+
+/// Read an ISO BMFF box header at `off`. Returns `(box_size, box_type)`.
+fn read_box_header(data: &[u8], off: usize) -> Result<(usize, [u8; 4]), ManifestError> {
+    if data.len().saturating_sub(off) < 8 {
+        return Err(ManifestError::SidxParse(
+            "truncated box header in index bytes".into(),
+        ));
+    }
+    let raw_size = u32::from_be_bytes([data[off], data[off + 1], data[off + 2], data[off + 3]]);
+    let mut typ = [0u8; 4];
+    typ.copy_from_slice(&data[off + 4..off + 8]);
+    let box_size = if raw_size == 0 {
+        data.len().saturating_sub(off)
+    } else if raw_size == 1 {
+        return Err(ManifestError::SidxParse(
+            "64-bit box largesize is not supported".into(),
+        ));
+    } else {
+        raw_size as usize
+    };
+    if box_size < 8 {
+        return Err(ManifestError::SidxParse("invalid ISO BMFF box size".into()));
+    }
+    Ok((box_size, typ))
+}
+
+/// Locate the first `sidx` within range-relative `index_bytes`.
+///
+/// When `exact` is true, the Index Segment must begin at the first byte (ISO/IEC 23009-1
+/// `@indexRangeExact`). When false, boxes before the `sidx` are skipped (CMAF “scan” case).
+fn find_sidx_offset(
+    index_bytes: &[u8],
+    exact: bool,
+    range_start: u64,
+) -> Result<usize, ManifestError> {
+    if exact {
+        let (box_size, typ) = match read_box_header(index_bytes, 0) {
+            Ok(h) => h,
+            Err(_) => {
+                // Not even an 8-byte header: ask for at least that much.
+                return Err(ManifestError::IncompleteSidxIndex {
+                    need_end: range_start.saturating_add(7),
+                });
+            }
+        };
+        if typ != *b"sidx" {
+            return Err(ManifestError::SidxParse(
+                "indexRangeExact requires sidx at the start of @indexRange".into(),
+            ));
+        }
+        if box_size > index_bytes.len() {
+            // Exact ranges must contain the full Index Segment; if the box is larger than the
+            // fetched exact window this is a content error (do not extend past `@indexRange`).
+            return Err(ManifestError::SidxParse(
+                "sidx box size exceeds exact @indexRange".into(),
+            ));
+        }
+        return Ok(0);
+    }
+
+    let mut off = 0usize;
+    while off < index_bytes.len() {
+        let (box_size, typ) = match read_box_header(index_bytes, off) {
+            Ok(h) => h,
+            Err(_) => {
+                return Err(ManifestError::IncompleteSidxIndex {
+                    need_end: range_start.saturating_add(off as u64).saturating_add(7),
+                });
+            }
+        };
+        if typ == *b"sidx" {
+            if off + box_size > index_bytes.len() {
+                return Err(ManifestError::IncompleteSidxIndex {
+                    need_end: range_start
+                        .saturating_add(off as u64)
+                        .saturating_add(box_size as u64)
+                        .saturating_sub(1),
+                });
+            }
+            return Ok(off);
+        }
+        if off + box_size > index_bytes.len() {
+            // Need more bytes to skip past this box before scanning further.
+            return Err(ManifestError::IncompleteSidxIndex {
+                need_end: range_start
+                    .saturating_add(off as u64)
+                    .saturating_add(box_size as u64)
+                    .saturating_sub(1),
+            });
+        }
+        off += box_size;
+    }
+    Err(ManifestError::SidxParse(
+        "sidx box not found within fetched @indexRange bytes".into(),
+    ))
+}
+
+/// Ensure `index_bytes` covers the full Index Segment rooted at `sidx_off` (including
+/// hierarchical type-1 children that follow the parent in the index).
+fn ensure_index_segment_complete(
+    index_bytes: &[u8],
+    sidx_off: usize,
+    range_start: u64,
+) -> Result<(), ManifestError> {
+    fn walk(
+        data: &[u8],
+        off: usize,
+        range_start: u64,
+        depth: usize,
+    ) -> Result<usize, ManifestError> {
+        const MAX_DEPTH: usize = 32;
+        if depth > MAX_DEPTH {
+            return Err(ManifestError::SidxParse(
+                "sidx hierarchy exceeds maximum depth".into(),
+            ));
+        }
+        let (box_size, typ) = match read_box_header(data, off) {
+            Ok(h) => h,
+            Err(_) => {
+                return Err(ManifestError::IncompleteSidxIndex {
+                    need_end: range_start.saturating_add(off as u64).saturating_add(7),
+                });
+            }
+        };
+        if typ != *b"sidx" {
+            return Err(ManifestError::SidxParse(
+                "expected sidx box in Index Segment".into(),
+            ));
+        }
+        if off + box_size > data.len() {
+            return Err(ManifestError::IncompleteSidxIndex {
+                need_end: range_start
+                    .saturating_add(off as u64)
+                    .saturating_add(box_size as u64)
+                    .saturating_sub(1),
+            });
+        }
+        let sidx = SidxBox::parse(&data[off..off + box_size])?;
+        let mut cursor = off.saturating_add(sidx.box_size);
+        let mut end = cursor;
+        for sref in &sidx.references {
+            if sref.reference_type == 0 {
+                continue;
+            }
+            let nested_size = sref.referenced_size as usize;
+            if nested_size == 0 {
+                return Err(ManifestError::SidxParse(
+                    "hierarchical sidx reference has zero size".into(),
+                ));
+            }
+            if cursor + nested_size > data.len() {
+                return Err(ManifestError::IncompleteSidxIndex {
+                    need_end: range_start
+                        .saturating_add(cursor as u64)
+                        .saturating_add(nested_size as u64)
+                        .saturating_sub(1),
+                });
+            }
+            let nested_end = walk(data, cursor, range_start, depth + 1)?;
+            end = end.max(nested_end);
+            cursor = cursor.saturating_add(nested_size);
+        }
+        Ok(end.max(off + box_size))
+    }
+
+    walk(index_bytes, sidx_off, range_start, 0).map(|_| ())
+}
+
 /// Parse `sidx` index bytes referenced by `SegmentBase@indexRange`.
+///
+/// `index_bytes` must be contiguous file content starting at `@indexRange` start (HTTP Range
+/// body, possibly shorter than the declared window on the first attempt, or longer when the
+/// Index Segment extends past `@indexRange` because `@indexRangeExact` is false). Callers
+/// should loop on [`ManifestError::IncompleteSidxIndex`].
 pub(crate) fn parse_sidx_index(
     sb: &SegmentBase,
     index_bytes: &[u8],
@@ -30,14 +206,27 @@ pub(crate) fn parse_sidx_index(
         .as_deref()
         .ok_or(ManifestError::MissingSegmentBaseIndexRange)?;
     let br = parse_byte_range(index_range)?;
-    // Media starts after the contiguous index range; each `sidx@first_offset` is relative to this.
-    let media_origin = br.end.saturating_add(1);
-    let (sidx, sidx_offset) = parse_sidx_from_index_bytes(index_bytes, index_range)?;
+    let exact = index_range_is_exact(sb.indexRangeExact);
+    let file_base = br.start;
+
+    let sidx_off = find_sidx_offset(index_bytes, exact, file_base)?;
+    ensure_index_segment_complete(index_bytes, sidx_off, file_base)?;
+
+    let sidx = SidxBox::parse(&index_bytes[sidx_off..])?;
+    // `@indexRangeExact=true`: media begins immediately after the declared prefix.
+    // Otherwise: `first_offset` is relative to the first byte after the `sidx` box.
+    let media_origin = if exact {
+        br.end.saturating_add(1)
+    } else {
+        file_base
+            .saturating_add(sidx_off as u64)
+            .saturating_add(sidx.box_size as u64)
+    };
     let timescale = sb.timescale.unwrap_or(u64::from(sidx.timescale));
     let presentation_time_offset = sb.presentationTimeOffset.unwrap_or(0);
     timeline_segments_from_index_blob(
         index_bytes,
-        sidx_offset,
+        sidx_off,
         timescale,
         presentation_time_offset,
         1,

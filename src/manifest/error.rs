@@ -35,6 +35,10 @@ pub enum ManifestError {
     MissingSegmentTemplateIndexVars,
     #[error("failed to parse sidx index: {0}")]
     SidxParse(String),
+    /// `@indexRangeExact` is false (or absent) and the Index Segment extends past the fetched
+    /// bytes. `need_end` is the inclusive absolute file offset that must still be fetched.
+    #[error("sidx index is incomplete; need bytes through offset {need_end}")]
+    IncompleteSidxIndex { need_end: u64 },
     #[error(
         "hierarchical sidx reference is outside the fetched index bytes (interleaved same-file nest not fetched)"
     )]

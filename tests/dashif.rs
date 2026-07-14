@@ -180,6 +180,38 @@ async fn dashif_segment_base_index_range() {
     assert!(has_end(&events));
 }
 
+/// `SegmentBase@indexRangeExact="true"` — index window is exact; media starts after it.
+#[tokio::test]
+async fn dashif_segment_base_index_range_exact() {
+    let server = FixtureServer::spawn("vod_segment_base_index_range_exact").await;
+    let events = play_single_track(&server.manifest_url, VOD_TIMEOUT)
+        .await
+        .expect("playback");
+
+    assert_eq!(init_payload(&events).as_deref(), Some(b"INIT!!!".as_ref()));
+    assert_eq!(
+        segment_payloads(&events),
+        vec![b"SEGMENT-1!!".to_vec(), b"SEGMENT-2!!".to_vec()]
+    );
+    assert!(has_end(&events));
+}
+
+/// `SegmentBase@indexRangeExact="false"` — Index Segment may extend past `@indexRange`.
+#[tokio::test]
+async fn dashif_segment_base_index_range_inexact() {
+    let server = FixtureServer::spawn("vod_segment_base_index_range_inexact").await;
+    let events = play_single_track(&server.manifest_url, VOD_TIMEOUT)
+        .await
+        .expect("playback");
+
+    assert_eq!(init_payload(&events).as_deref(), Some(b"INIT!!!".as_ref()));
+    assert_eq!(
+        segment_payloads(&events),
+        vec![b"SEGMENT-1!!".to_vec(), b"SEGMENT-2!!".to_vec()]
+    );
+    assert!(has_end(&events));
+}
+
 /// Explicit `SegmentList` / `SegmentURL` addressing.
 #[tokio::test]
 async fn dashif_segment_list() {

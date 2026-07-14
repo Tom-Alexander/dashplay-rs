@@ -15,13 +15,11 @@ use crate::PlayerError;
 use crate::abr::SharedAbrFactory;
 use crate::drm::DrmSessionCoordinator;
 use crate::http::SharedHttpClient;
-use crate::manifest::ManifestError;
 use crate::manifest::{self, TimelineBuildContext};
 use crate::metrics::TrackMetrics;
 use crate::playback_control::{PlaybackController, PlaybackState};
 use crate::segment::SegmentError;
 use crate::segment_blacklist::SegmentBlacklist;
-use crate::segment_fetcher::fetch_bytes_with_base_failover_and_range;
 use crate::track_session::TrackSessionState;
 use crate::types::PlayerEvent;
 
@@ -31,8 +29,8 @@ use super::segment_emit::{
     emit_segment, latest_buffer_s, partial_chunk_meta, record_quality_switch_and_throughput,
 };
 use super::segment_fetch::{
-    RepFetchEnv, fetch_cmaf_media_with_rep_fallback, fetch_init_with_rep_fallback,
-    fetch_media_with_rep_fallback, fetch_segment_target,
+    RepFetchEnv, fetch_and_parse_segment_base_index, fetch_cmaf_media_with_rep_fallback,
+    fetch_init_with_rep_fallback, fetch_media_with_rep_fallback, fetch_segment_target,
 };
 use super::segment_plan::{SegmentPlanContext, plan_init, plan_segment};
 
@@ -134,25 +132,22 @@ pub(crate) async fn run_adaptation_stream(ctx: AdaptationStreamContext) -> Resul
                 .representations
                 .first()
                 .ok_or(SegmentError::ExhaustedRepresentations)?;
+            let merged_sb =
+                manifest::segment_base_for_representation(&period, &adaptation_set, rep)?;
             let bases = manifest::segment_bases_for_representation(
                 &segment_base_ctx,
                 &adaptation_set,
                 rep,
             )?;
-            let merged_sb =
-                manifest::segment_base_for_representation(&period, &adaptation_set, rep)?;
-            let vars = manifest::template_vars_for_representation(rep, &adaptation_set);
-            let index_target = manifest::segment_base_index_target(&merged_sb, &vars)?;
-            let index_bytes = if index_target.range.is_some() && index_target.path.is_empty() {
-                let br = index_target
-                    .range
-                    .ok_or(ManifestError::MissingSegmentBaseIndexRange)?;
-                fetch_bytes_with_base_failover_and_range(&client, &bases, "", Some(br), &blacklist)
-                    .await?
-            } else {
-                fetch_segment_target(&client, &bases, &index_target, &blacklist).await?
-            };
-            manifest::parse_sidx_index_for_segment_base(&merged_sb, &index_bytes)?
+            fetch_and_parse_segment_base_index(
+                &client,
+                &bases,
+                &merged_sb,
+                rep,
+                &adaptation_set,
+                &blacklist,
+            )
+            .await?
         }
         manifest::SegmentAddressing::Template(st)
             if manifest::segment_template_uses_global_sidecar_index(st) =>

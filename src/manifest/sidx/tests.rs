@@ -39,6 +39,92 @@ fn parse_sidx_index_builds_timeline_with_byte_ranges() {
 }
 
 #[test]
+fn index_range_exact_true_anchors_media_after_declared_prefix() {
+    // Exact range includes padding after the sidx; media starts after the declared end.
+    let seg1_len = 11u32;
+    let sidx = minimal_sidx_bytes(&[(false, seg1_len, 1000)], 1000, 0, 0);
+    let pad = [0u8; 4];
+    let mut index = sidx.clone();
+    index.extend_from_slice(&pad);
+    let index_start = 10u64;
+    let index_end = index_start + index.len() as u64 - 1;
+    let sb = SegmentBase {
+        timescale: Some(1000),
+        indexRange: Some(format!("{index_start}-{index_end}")),
+        indexRangeExact: Some(true),
+        ..Default::default()
+    };
+    let segs = parse_sidx_index(&sb, &index).unwrap();
+    assert_eq!(
+        segs[0].media_range,
+        Some(ByteRange {
+            start: index_end + 1,
+            end: index_end + u64::from(seg1_len),
+        })
+    );
+}
+
+#[test]
+fn index_range_exact_false_scans_prefix_and_anchors_after_sidx() {
+    // Non-exact oversized window: scan past a leading free box to the sidx.
+    let seg1_len = 11u32;
+    let sidx = minimal_sidx_bytes(&[(false, seg1_len, 1000)], 1000, 0, 0);
+    let mut free = (8u32 + 4).to_be_bytes().to_vec();
+    free.extend_from_slice(b"free");
+    free.extend_from_slice(&[0, 0, 0, 0]);
+    let mut index = free.clone();
+    index.extend_from_slice(&sidx);
+    let sb = SegmentBase {
+        timescale: Some(1000),
+        indexRange: Some(format!("0-{}", index.len() - 1)),
+        indexRangeExact: Some(false),
+        ..Default::default()
+    };
+    let segs = parse_sidx_index(&sb, &index).unwrap();
+    let media_start = free.len() as u64 + sidx.len() as u64;
+    assert_eq!(
+        segs[0].media_range,
+        Some(ByteRange {
+            start: media_start,
+            end: media_start + u64::from(seg1_len) - 1,
+        })
+    );
+}
+
+#[test]
+fn index_range_exact_false_incomplete_sidx_requests_extension() {
+    let sidx = minimal_sidx_bytes(&[(false, 11, 1000)], 1000, 0, 0);
+    let partial = &sidx[..8]; // header only
+    let sb = SegmentBase {
+        timescale: Some(1000),
+        indexRange: Some("100-107".into()), // intentionally short bootstrap window
+        indexRangeExact: Some(false),
+        ..Default::default()
+    };
+    let err = parse_sidx_index(&sb, partial).unwrap_err();
+    match err {
+        ManifestError::IncompleteSidxIndex { need_end } => {
+            assert_eq!(need_end, 100 + sidx.len() as u64 - 1);
+        }
+        other => panic!("expected IncompleteSidxIndex, got {other:?}"),
+    }
+}
+
+#[test]
+fn index_range_exact_true_rejects_non_sidx_prefix() {
+    let mut free = 8u32.to_be_bytes().to_vec();
+    free.extend_from_slice(b"free");
+    let sb = SegmentBase {
+        timescale: Some(1000),
+        indexRange: Some(format!("0-{}", free.len() - 1)),
+        indexRangeExact: Some(true),
+        ..Default::default()
+    };
+    let err = parse_sidx_index(&sb, &free).unwrap_err();
+    assert!(matches!(err, ManifestError::SidxParse(_)));
+}
+
+#[test]
 fn parse_sidx_index_from_template_sidecar_uses_first_offset() {
     let seg1_len = 11u32;
     let seg2_len = 11u32;

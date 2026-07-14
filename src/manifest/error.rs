@@ -17,6 +17,12 @@ pub enum ManifestError {
     MissingSegmentList,
     #[error("missing SegmentBase")]
     MissingSegmentBase,
+    /// ISO/IEC 23009-1 §5.3.9: at most one of `SegmentTemplate`, `SegmentList`, or
+    /// `SegmentBase` may appear on the same Period, AdaptationSet, or Representation.
+    #[error(
+        "conflicting segment addressing modes at {0}: at most one of SegmentTemplate, SegmentList, or SegmentBase may appear at the same hierarchy level"
+    )]
+    ConflictingSegmentAddressing(&'static str),
     #[error("invalid byte range specifier: {0}")]
     InvalidByteRange(String),
     #[error("missing SegmentBase@indexRange")]

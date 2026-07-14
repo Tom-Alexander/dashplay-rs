@@ -2,11 +2,13 @@ use dash_mpd::{
     AdaptationSet, Period, Representation, SegmentBase, SegmentList, SegmentTemplate, SegmentURL,
 };
 
+use crate::manifest::ManifestError;
+
 use super::{
-    SegmentAddressing, segment_addressing_for_representation, segment_list_for_representation,
-    segment_template_for_representation, segment_template_for_timeline,
-    segment_template_uses_global_sidecar_index, segment_template_uses_per_segment_index,
-    segment_template_uses_sidecar_index,
+    SegmentAddressing, segment_addressing_for_representation, segment_addressing_for_timeline,
+    segment_list_for_representation, segment_template_for_representation,
+    segment_template_for_timeline, segment_template_uses_global_sidecar_index,
+    segment_template_uses_per_segment_index, segment_template_uses_sidecar_index,
 };
 
 #[test]
@@ -117,6 +119,83 @@ fn segment_list_inheritance_merges_period_and_representation() {
 
     let addressing = segment_addressing_for_representation(&period, &adaptation_set, rep).unwrap();
     assert!(matches!(addressing, SegmentAddressing::List(_)));
+}
+
+#[test]
+fn segment_addressing_rejects_conflicting_modes_at_period() {
+    let period = Period {
+        SegmentTemplate: Some(SegmentTemplate {
+            media: Some("tpl-$Number$.m4s".into()),
+            ..Default::default()
+        }),
+        SegmentList: Some(SegmentList {
+            segment_urls: vec![SegmentURL {
+                media: Some("list.m4s".into()),
+                ..Default::default()
+            }],
+            ..Default::default()
+        }),
+        ..Default::default()
+    };
+    let adaptation_set = AdaptationSet {
+        representations: vec![Representation::default()],
+        ..Default::default()
+    };
+    let err = segment_addressing_for_timeline(&period, &adaptation_set).unwrap_err();
+    assert!(matches!(
+        err,
+        ManifestError::ConflictingSegmentAddressing("Period")
+    ));
+}
+
+#[test]
+fn segment_addressing_rejects_conflicting_modes_at_adaptation_set() {
+    let period = Period::default();
+    let adaptation_set = AdaptationSet {
+        SegmentTemplate: Some(SegmentTemplate {
+            media: Some("tpl-$Number$.m4s".into()),
+            ..Default::default()
+        }),
+        SegmentBase: Some(SegmentBase {
+            indexRange: Some("0-10".into()),
+            ..Default::default()
+        }),
+        representations: vec![Representation::default()],
+        ..Default::default()
+    };
+    let err = segment_addressing_for_timeline(&period, &adaptation_set).unwrap_err();
+    assert!(matches!(
+        err,
+        ManifestError::ConflictingSegmentAddressing("AdaptationSet")
+    ));
+}
+
+#[test]
+fn segment_addressing_rejects_conflicting_modes_at_representation() {
+    let period = Period::default();
+    let adaptation_set = AdaptationSet {
+        representations: vec![Representation {
+            SegmentList: Some(SegmentList {
+                segment_urls: vec![SegmentURL {
+                    media: Some("list.m4s".into()),
+                    ..Default::default()
+                }],
+                ..Default::default()
+            }),
+            SegmentBase: Some(SegmentBase {
+                indexRange: Some("0-10".into()),
+                ..Default::default()
+            }),
+            ..Default::default()
+        }],
+        ..Default::default()
+    };
+    let rep = &adaptation_set.representations[0];
+    let err = segment_addressing_for_representation(&period, &adaptation_set, rep).unwrap_err();
+    assert!(matches!(
+        err,
+        ManifestError::ConflictingSegmentAddressing("Representation")
+    ));
 }
 
 #[test]

@@ -127,6 +127,70 @@ pub(crate) enum SegmentAddressing {
     Base(SegmentBase),
 }
 
+/// ISO/IEC 23009-1 §5.3.9: at most one of `SegmentTemplate`, `SegmentList`, or
+/// `SegmentBase` may appear on the same Period, AdaptationSet, or Representation.
+fn validate_addressing_modes_at_level(
+    level: &'static str,
+    has_template: bool,
+    has_list: bool,
+    has_base: bool,
+) -> Result<(), ManifestError> {
+    let count = u8::from(has_template) + u8::from(has_list) + u8::from(has_base);
+    if count > 1 {
+        Err(ManifestError::ConflictingSegmentAddressing(level))
+    } else {
+        Ok(())
+    }
+}
+
+fn validate_period_addressing(period: &Period) -> Result<(), ManifestError> {
+    validate_addressing_modes_at_level(
+        "Period",
+        period.SegmentTemplate.is_some(),
+        period.SegmentList.is_some(),
+        period.SegmentBase.is_some(),
+    )
+}
+
+fn validate_adaptation_set_addressing(adaptation_set: &AdaptationSet) -> Result<(), ManifestError> {
+    validate_addressing_modes_at_level(
+        "AdaptationSet",
+        adaptation_set.SegmentTemplate.is_some(),
+        adaptation_set.SegmentList.is_some(),
+        adaptation_set.SegmentBase.is_some(),
+    )
+}
+
+fn validate_representation_addressing(
+    representation: &Representation,
+) -> Result<(), ManifestError> {
+    validate_addressing_modes_at_level(
+        "Representation",
+        representation.SegmentTemplate.is_some(),
+        representation.SegmentList.is_some(),
+        representation.SegmentBase.is_some(),
+    )
+}
+
+/// Reject MPDs that declare more than one addressing mode on any node in the chain.
+fn validate_addressing_hierarchy(
+    period: &Period,
+    adaptation_set: &AdaptationSet,
+    representation: Option<&Representation>,
+) -> Result<(), ManifestError> {
+    validate_period_addressing(period)?;
+    validate_adaptation_set_addressing(adaptation_set)?;
+    match representation {
+        Some(rep) => validate_representation_addressing(rep)?,
+        None => {
+            for rep in &adaptation_set.representations {
+                validate_representation_addressing(rep)?;
+            }
+        }
+    }
+    Ok(())
+}
+
 fn has_segment_list_in_chain(
     period: &Period,
     adaptation_set: &AdaptationSet,
@@ -293,6 +357,7 @@ pub(crate) fn segment_addressing_for_timeline(
     period: &Period,
     adaptation_set: &AdaptationSet,
 ) -> Result<SegmentAddressing, ManifestError> {
+    validate_addressing_hierarchy(period, adaptation_set, None)?;
     if adaptation_set_uses_segment_list(period, adaptation_set) {
         return Ok(SegmentAddressing::List(segment_list_for_timeline(
             period,
@@ -320,6 +385,7 @@ pub(crate) fn segment_addressing_for_representation(
     adaptation_set: &AdaptationSet,
     representation: &Representation,
 ) -> Result<SegmentAddressing, ManifestError> {
+    validate_addressing_hierarchy(period, adaptation_set, Some(representation))?;
     if has_segment_list_in_chain(period, adaptation_set, Some(representation)) {
         return Ok(SegmentAddressing::List(segment_list_for_representation(
             period,

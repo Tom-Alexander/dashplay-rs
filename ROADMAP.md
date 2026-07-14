@@ -196,7 +196,7 @@ without changing playback behaviour.
 - [x] **`@indexRangeExact`.** Distinct semantics from `@indexRange`.
 - [x] **Sidecar `@indexRangeExact`.** Apply exact-range semantics to
   `SegmentTemplate@index` sidecar index fetches.
-- [ ] **Addressing-mode validation.** Enforce mutual exclusivity of `SegmentTemplate` /
+- [x] **Addressing-mode validation.** Enforce mutual exclusivity of `SegmentTemplate` /
   `SegmentList` / `SegmentBase` at the same hierarchy level.
 - [ ] **Remote MPD documents.** `MPD@xlink:href`, `Period@xlink:href`, and
   `urn:mpeg:dash:resolve-to-zero:2013` period placeholders.

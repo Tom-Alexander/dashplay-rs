@@ -111,6 +111,17 @@ fn collect_essential_properties(adaptation_set: &AdaptationSet) -> Vec<TrackDesc
                 .iter()
                 .flat_map(|representation| representation.essential_property.iter()),
         )
+        .chain(
+            adaptation_set
+                .representations
+                .iter()
+                .flat_map(|representation| {
+                    representation
+                        .SubRepresentation
+                        .iter()
+                        .flat_map(|sub| sub.essential_property.iter())
+                }),
+        )
         .map(to_descriptor)
         .collect()
 }
@@ -124,6 +135,17 @@ fn collect_supplemental_properties(adaptation_set: &AdaptationSet) -> Vec<TrackD
                 .representations
                 .iter()
                 .flat_map(|representation| representation.supplemental_property.iter()),
+        )
+        .chain(
+            adaptation_set
+                .representations
+                .iter()
+                .flat_map(|representation| {
+                    representation
+                        .SubRepresentation
+                        .iter()
+                        .flat_map(|sub| sub.supplemental_property.iter())
+                }),
         )
         .map(supplemental_to_descriptor)
         .collect()
@@ -162,9 +184,18 @@ pub(crate) fn is_playback_adaptation_set(adaptation_set: &AdaptationSet) -> bool
 /// Returns whether a representation can be delivered, including auxiliary trick-play and thumbnail
 /// descriptors.
 pub(crate) fn is_delivery_representation(representation: &dash_mpd::Representation) -> bool {
-    representation.essential_property.iter().all(|property| {
+    let representation_ok = representation.essential_property.iter().all(|property| {
         is_auxiliary_essential_scheme(&property.schemeIdUri)
             || essential_property_supported(&property.schemeIdUri)
+    });
+    if !representation_ok {
+        return false;
+    }
+    representation.SubRepresentation.iter().all(|sub| {
+        sub.essential_property.iter().all(|property| {
+            is_auxiliary_essential_scheme(&property.schemeIdUri)
+                || essential_property_supported(&property.schemeIdUri)
+        })
     })
 }
 

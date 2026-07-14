@@ -9,6 +9,7 @@ use super::descriptors::{
 use super::info::TrackInfo;
 use super::kind::{TrackDescriptor, TrackKind, TrackPreference, TrackSelection};
 use super::preselection::{ResolvedPreselection, resolve_preselections};
+use super::sub_representation::{resolve_sub_tracks, sub_representation_codec_values};
 
 pub(crate) struct SelectedAdaptationSet<'a> {
     pub adaptation_set: &'a AdaptationSet,
@@ -91,6 +92,14 @@ pub(crate) fn codec_values(adaptation_set: &AdaptationSet) -> Vec<String> {
             }
         }
     }
+    for codec in sub_representation_codec_values(adaptation_set) {
+        if !codecs
+            .iter()
+            .any(|existing: &String| existing.eq_ignore_ascii_case(&codec))
+        {
+            codecs.push(codec);
+        }
+    }
     codecs
 }
 
@@ -133,6 +142,29 @@ fn track_info(
     let (essential_properties, supplemental_properties, supplemental_roles) =
         adaptation_descriptor_metadata(adaptation_set);
 
+    let sub_tracks = resolve_sub_tracks(adaptation_set);
+    let mut accessibility: Vec<TrackDescriptor> = adaptation_set
+        .Accessibility
+        .iter()
+        .chain(
+            adaptation_set
+                .ContentComponent
+                .iter()
+                .flat_map(|component| component.Accessibility.iter()),
+        )
+        .map(|descriptor| TrackDescriptor {
+            scheme_id_uri: descriptor.schemeIdUri.clone(),
+            value: descriptor.value.clone(),
+        })
+        .collect();
+    for sub_track in &sub_tracks {
+        for descriptor in &sub_track.accessibility {
+            if !accessibility.iter().any(|existing| existing == descriptor) {
+                accessibility.push(descriptor.clone());
+            }
+        }
+    }
+
     TrackInfo {
         period_adaptation_index,
         id: adaptation_set.id.clone(),
@@ -147,20 +179,8 @@ fn track_info(
         language: effective_language(adaptation_set),
         roles: role_values(adaptation_set, &supplemental_roles),
         codecs: codec_values(adaptation_set),
-        accessibility: adaptation_set
-            .Accessibility
-            .iter()
-            .chain(
-                adaptation_set
-                    .ContentComponent
-                    .iter()
-                    .flat_map(|component| component.Accessibility.iter()),
-            )
-            .map(|descriptor| TrackDescriptor {
-                scheme_id_uri: descriptor.schemeIdUri.clone(),
-                value: descriptor.value.clone(),
-            })
-            .collect(),
+        sub_tracks,
+        accessibility,
         essential_properties,
         supplemental_properties,
     }

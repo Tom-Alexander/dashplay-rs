@@ -299,6 +299,42 @@ fn representation_metadata_is_used_when_adaptation_metadata_is_absent() {
     assert_eq!(selected[0].info.kind, TrackKind::Video);
     assert_eq!(selected[0].info.mime_type.as_deref(), Some("video/mp4"));
     assert_eq!(selected[0].info.codecs, vec!["avc1.4d401f"]);
+    assert!(selected[0].info.sub_tracks.is_empty());
+}
+
+#[test]
+fn sub_representation_codecs_participate_in_preference_ranking() {
+    let period = period(
+        r#"<MPD xmlns="urn:mpeg:dash:schema:mpd:2011"><Period>
+                <AdaptationSet id="hevc" mimeType="video/mp4" contentType="video">
+                  <Representation id="h" bandwidth="1000000" codecs="hvc1.1.6.L93.B0"/>
+                </AdaptationSet>
+                <AdaptationSet id="avc" mimeType="video/mp4" width="640" height="480">
+                  <ContentComponent id="0" contentType="video"/>
+                  <ContentComponent id="1" contentType="audio" lang="en"/>
+                  <Representation id="mux" bandwidth="512000">
+                    <SubRepresentation level="0" contentComponent="0" bandwidth="128000"
+                                       codecs="avc1.4D401E" maxPlayoutRate="4"/>
+                    <SubRepresentation level="2" contentComponent="1" bandwidth="64000"
+                                       codecs="mp4a.40"/>
+                  </Representation>
+                </AdaptationSet>
+            </Period></MPD>"#,
+    );
+    let video = TrackPreference::default().codec("avc1").max_tracks(1);
+
+    let selected = select_adaptation_sets(&period, &TrackSelection::default().with_video(video));
+    assert_eq!(selected[0].info.id.as_deref(), Some("avc"));
+    assert_eq!(selected[0].info.codecs, vec!["avc1.4D401E", "mp4a.40"]);
+    assert_eq!(selected[0].info.sub_tracks.len(), 2);
+    assert_eq!(selected[0].info.sub_tracks[0].level, Some(0));
+    assert!(selected[0].info.sub_tracks[0].max_playout_rate);
+    assert_eq!(
+        selected[0].info.sub_tracks[1].language.as_deref(),
+        Some("en")
+    );
+    assert_eq!(selected[0].info.sub_tracks[0].width, Some(640));
+    assert_eq!(selected[0].info.sub_tracks[0].height, Some(480));
 }
 
 #[test]

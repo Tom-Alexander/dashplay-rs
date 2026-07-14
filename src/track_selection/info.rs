@@ -1,6 +1,7 @@
 //! Public metadata for selected adaptation-set tracks.
 
 use super::kind::{TrackDescriptor, TrackKind};
+use super::sub_representation::SubTrackInfo;
 
 /// Public metadata for one selected adaptation-set track.
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -22,8 +23,11 @@ pub struct TrackInfo {
     pub language: Option<String>,
     /// DASH `Role@value` values.
     pub roles: Vec<String>,
-    /// Effective RFC 6381 codec strings advertised by the adaptation set or representations.
+    /// Effective RFC 6381 codec strings advertised by the adaptation set, representations, or
+    /// sub-representations.
     pub codecs: Vec<String>,
+    /// Resolved `SubRepresentation` entries under this adaptation set's representations.
+    pub sub_tracks: Vec<SubTrackInfo>,
     /// DASH accessibility descriptors as `(schemeIdUri, value)` pairs.
     pub accessibility: Vec<TrackDescriptor>,
     /// `EssentialProperty` descriptors aggregated from the adaptation set and its children.

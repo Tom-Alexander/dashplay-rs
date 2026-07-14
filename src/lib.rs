@@ -95,7 +95,9 @@ pub use player::{
     Player, PlayerMergedAsyncRead, PlayerMergedOutput, PlayerTrackOutput, PlayerTrackOutputs,
 };
 pub use segment::SegmentError;
-pub use track_selection::{TrackDescriptor, TrackInfo, TrackKind, TrackPreference, TrackSelection};
+pub use track_selection::{
+    SubTrackInfo, TrackDescriptor, TrackInfo, TrackKind, TrackPreference, TrackSelection,
+};
 pub use types::{
     BufferFeedback, BufferFeedbackError, PartialSegmentChunk, PlayerEvent, PlayerEventError,
     PlayerOutputs, PlayerTrack,

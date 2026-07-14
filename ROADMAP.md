@@ -201,7 +201,7 @@ without changing playback behaviour.
 - [x] **Remote MPD documents.** `Period@xlink:href` (including remote MPD entities), and
   `urn:mpeg:dash:resolve-to-zero:2013` period placeholders.
 - [x] **`Preselection`.** Preselected adaptation-set bundles.
-- [ ] **`SubRepresentation`.** Sub-track selection and template inheritance.
+- [x] **`SubRepresentation`.** Sub-track selection and template inheritance.
 - [~] **`EssentialProperty` breadth.** Accept common codec/compatibility schemes instead of
   excluding adaptation sets with unknown essential properties.
 - [~] **`SupplementalProperty` playback semantics.** Execute adaptation-set switching and

@@ -23,14 +23,14 @@ Status legend: `[ ]` not started · `[~]` partial · `[x]` done · `[—]` out o
 | Timeline / live edge | `[x]` | SegmentTemplate + SegmentTimeline, UTCTiming, TSBD filtering |
 | Segment fetch + BaseURL failover | `[x]` | Blacklisting on failure |
 | Multi-period (live + VOD) | `[x]` | Init re-emission on period transition |
-| ABR (BOLA) | `[x]` | Consumer-reported buffer via [`BufferFeedback`] |
+| ABR (BOLA / LoL+) | `[x]` | Default BOLA; optional [`LolPlusAbrFactory`]; consumer buffer + live latency/rate |
 | DRM | `[~]` | Widevine only; requires external CDM device |
 | Track selection | `[~]` | MIME type + language/role/codec/accessibility; text, trick-play, and image tracks opt-in |
 | Segment addressing | `[~]` | `SegmentTemplate`, `SegmentList` / `SegmentURL`, `SegmentBase` + byte ranges |
 | Playback control (seek/pause/stop) | `[x]` | `PlaybackController` with state machine |
 | Demux / decode | `[—]` | Out of scope (bytes only) |
 | Metrics / rich events | `[~]` | Per-track [`TrackMetrics`]; fragment + [`MediaEvent`] events |
-| Pluggable networking / ABR | `[x]` | HTTP client trait + `ReqwestClient`; ABR trait + `BolaAbrFactory` |
+| Pluggable networking / ABR | `[x]` | HTTP client trait + `ReqwestClient`; ABR trait + `BolaAbrFactory` / `LolPlusAbrFactory` |
 | MPD model / remote documents | `[~]` | Metadata elements remaining; Period xlink + Preselection done |
 | Buffer-target scheduling | `[x]` | Throttles prefetch at 25 s; honours `MPD@minBufferTime` for rebuffer |
 | Bitstream / AS switching | `[ ]` | Init always re-emitted; no cross-AS switch |
@@ -92,7 +92,9 @@ These close the largest gaps between "delivers some streams" and "handles confor
 - [x] **Pluggable HTTP client.** Abstract networking behind a trait so `reqwest` is one
   of several backends (WASM/browser fetch, custom TLS, embedded stacks).
 - [x] **Pluggable ABR.** Introduce an ABR trait/rules engine; keep BOLA as the default
-  implementation.
+  implementation; LoL+ available via [`LolPlusAbrFactory`].
+- [x] **LoL+ ABR.** SOM-based Low-on-Latency-plus with dynamic weight selection, QoE
+  evaluator, and live latency / playback-rate inputs.
 
 ## P4 — Additional DRM and advanced DASH
 
@@ -228,7 +230,8 @@ without changing playback behaviour.
 - [ ] **Manifest-derived BOLA parameters.** Derive segment duration and buffer limits from
   MPD segment durations instead of hardcoded 4 s / 25 s assumptions.
 - [ ] **Parallel segment prefetch.** Concurrent segment downloads per track.
-- [ ] **ABR inputs.** Playback rate and dropped-frame signals per `ARCHITECTURE.md`.
+- [~] **ABR inputs.** Live latency and suggested playback rate are fed into ABR (used by
+  LoL+); dropped-frame signals remain pending per `ARCHITECTURE.md`.
 - [ ] **User quality constraints.** Max/min bitrate cap, fixed quality rung, data-saver mode.
 - [x] **Mid-playback track switching.** Change audio language or subtitles without
   restarting (`PlaybackController::set_track_selection`).

@@ -46,6 +46,7 @@ use thiserror::Error;
 
 pub mod abr;
 pub use abr::bola::{Bola, BolaDecision, QualityLevel};
+pub use abr::lol_plus::{LolPlus, LolPlusDecision};
 mod clock;
 mod delivered_segments;
 pub mod drm;
@@ -70,8 +71,9 @@ mod track_session;
 mod types;
 
 pub use abr::{
-    AbrController, AbrCreateContext, AbrDecision, AbrFactory, BolaAbrFactory, QualityRung,
-    SharedAbrFactory, quality_ladder_from_adaptation_set, shared as shared_abr_factory,
+    AbrController, AbrCreateContext, AbrDecision, AbrFactory, BolaAbrFactory, LolPlusAbrFactory,
+    QualityRung, SharedAbrFactory, quality_ladder_from_adaptation_set,
+    shared as shared_abr_factory,
 };
 pub use dash_mpd::SubtitleType;
 #[cfg(feature = "drm")]

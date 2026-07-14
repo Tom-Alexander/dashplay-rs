@@ -2,15 +2,17 @@
 //!
 //! The default backend is [`BolaAbrFactory`]. Supply a custom [`AbrFactory`] via
 //! [`crate::MediaPlayer::with_abr_factory`] or [`crate::Player::with_abr_factory`] to
-//! integrate alternative algorithms or rule engines.
+//! integrate alternative algorithms (e.g. [`LolPlusAbrFactory`]) or rule engines.
 
 pub mod bola;
+pub mod lol_plus;
 
 use std::sync::Arc;
 
 use dash_mpd::AdaptationSet;
 
 pub use bola::BolaAbrFactory;
+pub use lol_plus::LolPlusAbrFactory;
 
 use crate::clock::service_description::ResolvedOperatingConstraints;
 use crate::track_selection::descriptors::is_delivery_representation;
@@ -42,12 +44,20 @@ pub struct AbrDecision {
 pub struct AbrCreateContext<'a> {
     /// Resolved `OperatingBandwidth` / `OperatingQuality` for this media type.
     pub(crate) operating: Option<&'a ResolvedOperatingConstraints>,
+    /// Nominal media segment duration (seconds) when known from the timeline.
+    pub(crate) segment_duration_s: Option<f64>,
 }
 
 /// Per-adaptation-set ABR state (dash.js: one rules controller per stream).
 pub trait AbrController: Send + Sync {
     /// Notify the controller that consumer-reported buffer occupancy changed.
     fn update_buffer(&mut self, buffer_s: f64);
+
+    /// Notify the controller of measured live latency (seconds). Default: no-op.
+    fn update_latency(&mut self, _latency_s: f64) {}
+
+    /// Notify the controller of current / suggested playback rate. Default: no-op.
+    fn update_playback_rate(&mut self, _rate: f64) {}
 
     /// Record throughput after a segment download completes.
     fn observe_segment_download(
@@ -58,7 +68,9 @@ pub trait AbrController: Send + Sync {
     );
 
     /// Choose the quality index for the next segment.
-    fn decide(&self) -> AbrDecision;
+    ///
+    /// May mutate learning state (e.g. LoL+ SOM updates).
+    fn decide(&mut self) -> AbrDecision;
 
     /// Map a quality index to `AdaptationSet.representations` index.
     fn representation_index_for_quality_index(&self, quality_index: usize) -> usize;
@@ -263,6 +275,28 @@ mod tests {
             .create(&set, &AbrCreateContext::default())
             .expect("controller");
         assert_eq!(controller.rung_count(), 2);
+    }
+
+    #[test]
+    fn lol_plus_factory_creates_controller() {
+        let set = adaptation_set_with_bandwidths(&[500_000, 1_000_000, 2_000_000]);
+        let factory = LolPlusAbrFactory::default();
+        let mut controller = factory
+            .create(
+                &set,
+                &AbrCreateContext {
+                    segment_duration_s: Some(2.0),
+                    ..Default::default()
+                },
+            )
+            .expect("controller");
+        assert_eq!(controller.rung_count(), 3);
+        controller.update_buffer(4.0);
+        controller.update_latency(1.2);
+        controller.update_playback_rate(1.0);
+        controller.observe_segment_download(5_000_000.0, 1_250_000, 1);
+        let decision = controller.decide();
+        assert!(decision.quality_index < 3);
     }
 
     #[test]

@@ -134,7 +134,7 @@ async fn custom_abr_factory_selects_fixed_representation() -> Result<(), dashpla
         ) {
         }
 
-        fn decide(&self) -> AbrDecision {
+        fn decide(&mut self) -> AbrDecision {
             AbrDecision {
                 quality_index: self.quality_index,
                 bitrate_bps: self.rungs[self.quality_index].bitrate_bps,
@@ -182,6 +182,39 @@ async fn custom_abr_factory_selects_fixed_representation() -> Result<(), dashpla
             b"dashplay-abr-low-seg-2".to_vec(),
         ]
     );
+    assert!(has_end(&events));
+    Ok(())
+}
+
+#[tokio::test]
+async fn lol_plus_abr_factory_plays_fixture() -> Result<(), dashplayrs::PlayerError> {
+    use dashplayrs::{LolPlusAbrFactory, Player, shared_abr_factory};
+
+    let server = FixtureServer::spawn("vod_abr").await;
+    let player = Player::new(server.manifest_url.as_str(), None)?.with_abr_factory(
+        shared_abr_factory(LolPlusAbrFactory {
+            // Prefer the low rung until throughput is observed, then adapt.
+            ..LolPlusAbrFactory::default()
+        }),
+    );
+    let outputs = player.start_tracks().await?;
+    let buffer_feedback = outputs.buffer_feedback(0).expect("one track");
+    let _ = buffer_feedback.report(5.0);
+    let _drain = common::spawn_playback_buffer_simulation(buffer_feedback, 5.0);
+    let mut rx = outputs
+        .tracks
+        .into_iter()
+        .next()
+        .expect("one track")
+        .into_receiver();
+    let events = common::collect_events(&mut rx, ABR_TIMEOUT).await;
+    outputs.join.await.unwrap()?;
+
+    assert!(
+        init_payload(&events).is_some(),
+        "expected at least one init"
+    );
+    assert!(!segment_payloads(&events).is_empty());
     assert!(has_end(&events));
     Ok(())
 }

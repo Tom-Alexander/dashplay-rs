@@ -8,7 +8,7 @@ A pure Rust implementation of an MPEG-DASH player library.
 - **Live streaming** — Dynamic manifests, time-shift buffer windows, periodic manifest refresh, and multi-period transitions with init re-emission
 - **Multi-track output** — Separate audio, video, and text adaptation sets, or a single merged byte stream
 - **Track selection** — Ordered language, role, codec, and accessibility preferences with per-kind output limits (audio, video, and opt-in subtitles/captions)
-- **Adaptive bitrate** — pluggable [`AbrFactory`](#abr) with BOLA ([`BolaAbrFactory`](#abr)) as the default; automatic representation switching and init re-emission on quality changes
+- **Adaptive bitrate** — pluggable [`AbrFactory`](#abr) with BOLA ([`BolaAbrFactory`](#abr)) as the default and optional LoL+ ([`LolPlusAbrFactory`](#abr)) for CMAF low-latency; automatic representation switching and init re-emission on quality changes
 - **Widevine DRM** — PSSH and license URL parsing from the MPD, license acquisition, and in-pipeline segment decryption
 - **Custom license handling** — Pluggable async license fetcher for custom headers, cookies, or proxies
 - **Pluggable HTTP client** — [`HttpClient`](#http-client) trait with a default [`ReqwestClient`](#http-client); swap in browser fetch, embedded stacks, or custom TLS
@@ -330,7 +330,7 @@ wrappers around the same controller. Clone handles (`outputs.playback.clone()`) 
 | `TrackDescriptor` | Accessibility descriptor scheme/value matcher and metadata |
 | [`WidevineLicenseFetcher`](#widevinelicensefetcher) | Custom async Widevine license HTTP handler |
 | [`HttpClient`](#http-client) / [`ReqwestClient`](#http-client) | Pluggable HTTP transport for manifest, segment, and clock-sync requests |
-| [`AbrFactory`](#abr) / [`BolaAbrFactory`](#abr) | Pluggable adaptive bitrate; default BOLA implementation |
+| [`AbrFactory`](#abr) / [`BolaAbrFactory`](#abr) / [`LolPlusAbrFactory`](#abr) | Pluggable adaptive bitrate; default BOLA, optional LoL+ |
 | [`HttpRequest`](#http-client) / [`HttpResponse`](#http-client) / [`HttpError`](#http-client) | Request/response types for custom HTTP backends |
 | `shared` | Wrap a concrete [`HttpClient`](#http-client) in [`SharedHttpClient`](#http-client) |
 | [`PlayerError`](#playererror) | Unified error type for the playback pipeline |
@@ -713,14 +713,16 @@ MediaPlayer::with_http_client(self, client: SharedHttpClient) -> MediaPlayer
 ### ABR
 
 Adaptive bitrate is abstracted behind [`AbrFactory`](src/abr/mod.rs) so playback is not tied to
-a single algorithm. The default backend is [`BolaAbrFactory`](src/abr/bola.rs) (BOLA).
+a single algorithm. The default backend is [`BolaAbrFactory`](src/abr/bola.rs) (BOLA). For CMAF
+low-latency live, use [`LolPlusAbrFactory`](src/abr/lol_plus/) (LoL+ SOM).
 
 | Type / function | Description |
 |-----------------|-------------|
 | `AbrFactory` | Creates a per-adaptation-set [`AbrController`] when a stream starts |
-| `AbrController` | Stateful controller: buffer updates, throughput observations, `decide()` |
+| `AbrController` | Stateful controller: buffer/latency/rate updates, throughput observations, `decide()` |
 | `AbrDecision` | Chosen quality index and nominal bitrate |
 | `BolaAbrFactory` | Default BOLA backend; configure `ewma_alpha` on the struct |
+| `LolPlusAbrFactory` | LoL+ SOM backend for low-latency live; configure duration/latency/seed |
 | `SharedAbrFactory` | `Arc<dyn AbrFactory>` shared across playback tasks |
 | `shared_abr_factory(factory)` | Wrap a concrete factory for use with `with_abr_factory` |
 | `quality_ladder_from_adaptation_set` | Build a bandwidth-ordered ladder from an adaptation set |
@@ -776,6 +778,25 @@ by [`BolaAbrFactory`](#abr); also exposed for standalone or custom ABR integrati
 | `Bola::update_buffer(seconds)` | Update buffer occupancy |
 | `Bola::decide()` | Select the next representation |
 | `Bola::buffer_s()` / `throughput_bps()` / `v()` / `qualities()` | Inspect state |
+
+---
+
+### `lol_plus`
+
+Low-on-Latency-plus (LoL+) SOM ABR for CMAF low-latency live. Used by
+[`LolPlusAbrFactory`](#abr); also exposed for standalone integrations.
+
+| Type | Description |
+|------|-------------|
+| `LolPlus` | Stateful SOM decision engine |
+| `LolPlusDecision` | Chosen quality index and safety-downshift flag |
+
+```rust
+use dashplayrs::{LolPlusAbrFactory, Player, shared_abr_factory};
+
+let player = Player::new(url, None)?
+    .with_abr_factory(shared_abr_factory(LolPlusAbrFactory::default()));
+```
 
 ---
 

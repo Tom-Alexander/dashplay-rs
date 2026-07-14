@@ -92,7 +92,7 @@ impl AbrController for BolaAbrController {
         self.has_throughput_sample = true;
     }
 
-    fn decide(&self) -> AbrDecision {
+    fn decide(&mut self) -> AbrDecision {
         if !self.has_throughput_sample {
             if let Some(idx) = self.preferred_quality_index {
                 return AbrDecision {

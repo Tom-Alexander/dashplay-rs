@@ -167,7 +167,7 @@ mod tests {
         ) {
         }
 
-        fn decide(&self) -> AbrDecision {
+        fn decide(&mut self) -> AbrDecision {
             AbrDecision {
                 quality_index: self.quality_index,
                 bitrate_bps: 1_000_000.0,

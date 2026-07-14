@@ -47,6 +47,29 @@ fn align_start_index_with_resync(
     manifest::align_start_with_resync_hints(segments, start_idx, hints, target_presentation_time_s)
 }
 
+fn nominal_segment_duration_s(segments: &[manifest::TimelineSegment]) -> Option<f64> {
+    let mut sum = 0.0;
+    let mut count = 0usize;
+    for seg in segments {
+        if seg.duration_s.is_finite() && seg.duration_s > 0.0 {
+            sum += seg.duration_s;
+            count += 1;
+        }
+    }
+    if count == 0 {
+        None
+    } else {
+        Some(sum / count as f64)
+    }
+}
+
+fn feed_abr_live_inputs(abr: &mut dyn crate::abr::AbrController, playback: &PlaybackController) {
+    if let Some(latency) = playback.live_latency() {
+        abr.update_latency(latency.as_secs_f64());
+    }
+    abr.update_playback_rate(playback.suggested_playback_rate());
+}
+
 pub(crate) struct AdaptationStreamContext {
     pub client: SharedHttpClient,
     pub segment_base_ctx: manifest::SegmentBaseContext,
@@ -225,11 +248,13 @@ pub(crate) async fn run_adaptation_stream(ctx: AdaptationStreamContext) -> Resul
         &adaptation_set,
         &crate::abr::AbrCreateContext {
             operating: operating_constraints.as_ref(),
+            segment_duration_s: nominal_segment_duration_s(&segments),
         },
     ) else {
         return Ok(());
     };
 
+    feed_abr_live_inputs(abr.as_mut(), &playback);
     abr.update_buffer(latest_buffer_s(&buffer_rx));
     metrics.record_buffer(latest_buffer_s(&buffer_rx));
 
@@ -304,6 +329,7 @@ pub(crate) async fn run_adaptation_stream(ctx: AdaptationStreamContext) -> Resul
             return Ok(());
         }
 
+        feed_abr_live_inputs(abr.as_mut(), &playback);
         abr.update_buffer(latest_buffer_s(&buffer_rx));
         metrics.record_buffer(latest_buffer_s(&buffer_rx));
         let plan = plan_segment(

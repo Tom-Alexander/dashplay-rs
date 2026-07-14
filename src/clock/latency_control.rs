@@ -37,9 +37,9 @@ pub(crate) struct LatencyPolicy {
 }
 
 impl LatencyPolicy {
-    /// Parse policy from the first `ServiceDescription` with a usable `Latency@target`.
+    /// Parse policy from the first in-scope `ServiceDescription` with a usable `Latency@target`.
     pub(crate) fn from_mpd(mpd: &MPD) -> Option<Self> {
-        for sd in &mpd.ServiceDescription {
+        for sd in crate::clock::service_description::in_scope_service_descriptions(mpd) {
             for lat in &sd.Latency {
                 let target_ms = lat.target?;
                 if !target_ms.is_finite() || target_ms < 0.0 {
@@ -256,6 +256,36 @@ mod tests {
         let p = LatencyPolicy::from_mpd(&mpd).expect("policy");
         assert!((p.rate_min - DEFAULT_RATE_MIN).abs() < 1e-9);
         assert!((p.rate_max - DEFAULT_RATE_MAX).abs() < 1e-9);
+    }
+
+    #[test]
+    fn from_mpd_skips_out_of_scope_service_description() {
+        use dash_mpd::Scope;
+        let mpd = MPD {
+            ServiceDescription: vec![
+                ServiceDescription {
+                    scopes: vec![Scope {
+                        schemeIdUri: "urn:example:other".into(),
+                        ..Default::default()
+                    }],
+                    Latency: vec![Latency {
+                        target: Some(1000.0),
+                        ..Default::default()
+                    }],
+                    ..Default::default()
+                },
+                ServiceDescription {
+                    Latency: vec![Latency {
+                        target: Some(3500.0),
+                        ..Default::default()
+                    }],
+                    ..Default::default()
+                },
+            ],
+            ..Default::default()
+        };
+        let p = LatencyPolicy::from_mpd(&mpd).expect("policy");
+        assert_eq!(p.target, Duration::from_millis(3500));
     }
 
     #[test]

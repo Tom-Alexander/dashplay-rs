@@ -98,10 +98,11 @@ These close the largest gaps between "delivers some streams" and "handles confor
 
 - [ ] **Additional DRM systems.** ClearKey, PlayReady, FairPlay, and other
   `ContentProtection` schemes beyond Widevine.
-- [~] **Low-Latency DASH.** `availabilityTimeComplete`, `ServiceDescription`, resync
-  points, chunked/partial segment transfer, and player-side target-latency catch-up
-  are done; remaining: `Resync@type` 0/1 recovery, non-`Latency` `ServiceDescription`
-  elements.
+- [x] **Low-Latency DASH.** `availabilityTimeComplete`, `ServiceDescription` (Latency,
+  PlaybackRate, Scope, OperatingQuality, OperatingBandwidth), resync points including
+  `Resync@type` 0/1 recovery and mid-segment type 2/3, chunked/partial segment transfer,
+  and player-side target-latency catch-up. (`PlaybackRestrictions` / `ClientDataReporting`
+  remain deferred.)
 - [x] **In-band producer reference time.** Parse `prft` boxes for
   `ProducerReferenceTime@inband=true` clock correction.
 - [x] **Mid-segment resync.** Use `Resync@type` 2/3 random-access points during seek

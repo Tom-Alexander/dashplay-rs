@@ -70,8 +70,8 @@ mod track_session;
 mod types;
 
 pub use abr::{
-    AbrController, AbrDecision, AbrFactory, BolaAbrFactory, QualityRung, SharedAbrFactory,
-    quality_ladder_from_adaptation_set, shared as shared_abr_factory,
+    AbrController, AbrCreateContext, AbrDecision, AbrFactory, BolaAbrFactory, QualityRung,
+    SharedAbrFactory, quality_ladder_from_adaptation_set, shared as shared_abr_factory,
 };
 pub use dash_mpd::SubtitleType;
 #[cfg(feature = "drm")]

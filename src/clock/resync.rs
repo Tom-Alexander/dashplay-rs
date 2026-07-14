@@ -54,7 +54,7 @@ impl ProducerReferenceAnchor {
 
 /// `@referenceId` from the first in-scope [`ServiceDescription::Latency`] entry, if any.
 pub(crate) fn latency_reference_id(mpd: &MPD) -> Option<String> {
-    for sd in &mpd.ServiceDescription {
+    for sd in crate::clock::service_description::in_scope_service_descriptions(mpd) {
         for lat in &sd.Latency {
             if let Some(id) = lat.referenceId.as_ref().filter(|s| !s.is_empty()) {
                 return Some(id.clone());

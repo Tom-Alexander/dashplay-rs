@@ -24,9 +24,7 @@ pub(crate) use addressing::{
     segment_template_for_representation, segment_template_uses_global_sidecar_index,
     segment_template_uses_per_segment_index,
 };
-pub(crate) use alignment::{
-    align_start_index_to_resync, align_start_index_to_sap, mid_segment_resync_alignment,
-};
+pub(crate) use alignment::{align_start_index_to_sap, align_start_with_resync_hints};
 pub(crate) use availability::{
     SegmentAvailability, filter_segments_by_availability, target_presentation_time_at,
     target_presentation_time_from_since, uses_chunked_segment_transfer,

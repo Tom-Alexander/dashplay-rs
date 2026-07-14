@@ -12,6 +12,7 @@ use dash_mpd::AdaptationSet;
 
 pub use bola::BolaAbrFactory;
 
+use crate::clock::service_description::ResolvedOperatingConstraints;
 use crate::track_selection::descriptors::is_delivery_representation;
 
 /// Quality rung in an adaptation-set ladder, ordered low→high bitrate.
@@ -23,6 +24,8 @@ pub struct QualityRung {
     pub label: String,
     /// Nominal `@bandwidth` in bits per second.
     pub bitrate_bps: f64,
+    /// Representation `@qualityRanking` when present (lower is better).
+    pub quality_ranking: Option<u8>,
 }
 
 /// Next-segment representation choice returned by an [`AbrController`].
@@ -32,6 +35,13 @@ pub struct AbrDecision {
     pub quality_index: usize,
     /// Nominal bitrate of the chosen rung (bps).
     pub bitrate_bps: f64,
+}
+
+/// Inputs for constructing an [`AbrController`] for one adaptation set.
+#[derive(Debug, Clone, Copy, Default)]
+pub struct AbrCreateContext<'a> {
+    /// Resolved `OperatingBandwidth` / `OperatingQuality` for this media type.
+    pub(crate) operating: Option<&'a ResolvedOperatingConstraints>,
 }
 
 /// Per-adaptation-set ABR state (dash.js: one rules controller per stream).
@@ -63,7 +73,11 @@ pub trait AbrController: Send + Sync {
 /// Creates an [`AbrController`] for each adaptation set when a stream starts.
 pub trait AbrFactory: Send + Sync {
     /// Build a controller for `adaptation_set`, or `None` when no delivery representations exist.
-    fn create(&self, adaptation_set: &AdaptationSet) -> Option<Box<dyn AbrController>>;
+    fn create(
+        &self,
+        adaptation_set: &AdaptationSet,
+        ctx: &AbrCreateContext<'_>,
+    ) -> Option<Box<dyn AbrController>>;
 }
 
 /// Shared handle to an [`AbrFactory`] implementation.
@@ -93,12 +107,101 @@ pub fn quality_ladder_from_adaptation_set(adaptation_set: &AdaptationSet) -> Vec
                 representation_index: idx,
                 label,
                 bitrate_bps: bw,
+                quality_ranking: r.qualityRanking,
             })
         })
         .collect();
 
     ladder.sort_by(|a, b| a.bitrate_bps.total_cmp(&b.bitrate_bps));
     ladder
+}
+
+/// Filter a quality ladder by [`ResolvedOperatingConstraints`] min/max envelopes.
+///
+/// If filtering would remove every rung, the original ladder is retained so playback can continue.
+pub(crate) fn apply_operating_constraints(
+    ladder: Vec<QualityRung>,
+    constraints: &ResolvedOperatingConstraints,
+) -> Vec<QualityRung> {
+    if constraints.is_empty() || ladder.is_empty() {
+        return ladder;
+    }
+
+    let filtered: Vec<QualityRung> = ladder
+        .iter()
+        .filter(|rung| rung_matches_constraints(rung, constraints))
+        .cloned()
+        .collect();
+
+    if filtered.is_empty() {
+        ladder
+    } else {
+        filtered
+    }
+}
+
+/// Ladder index nearest to `OperatingBandwidth@target` / `OperatingQuality@target`, if any.
+pub(crate) fn preferred_quality_index(
+    ladder: &[QualityRung],
+    constraints: &ResolvedOperatingConstraints,
+) -> Option<usize> {
+    if ladder.is_empty() {
+        return None;
+    }
+
+    if let Some(target_bw) = constraints.bandwidth_target {
+        let target = target_bw as f64;
+        return ladder
+            .iter()
+            .enumerate()
+            .min_by(|(_, a), (_, b)| {
+                (a.bitrate_bps - target)
+                    .abs()
+                    .total_cmp(&(b.bitrate_bps - target).abs())
+            })
+            .map(|(i, _)| i);
+    }
+
+    if let Some(target_q) = constraints.quality_target {
+        return ladder
+            .iter()
+            .enumerate()
+            .filter_map(|(i, r)| r.quality_ranking.map(|q| (i, q as u64)))
+            .min_by_key(|(_, q)| target_q.abs_diff(*q))
+            .map(|(i, _)| i);
+    }
+
+    None
+}
+
+fn rung_matches_constraints(rung: &QualityRung, c: &ResolvedOperatingConstraints) -> bool {
+    let bw = rung.bitrate_bps as u64;
+    if let Some(min) = c.bandwidth_min {
+        if bw < min {
+            return false;
+        }
+    }
+    if let Some(max) = c.bandwidth_max {
+        if bw > max {
+            return false;
+        }
+    }
+    if let Some(ranking) = rung.quality_ranking {
+        let q = ranking as u64;
+        if let Some(min) = c.quality_min {
+            if q < min {
+                return false;
+            }
+        }
+        if let Some(max) = c.quality_max {
+            if q > max {
+                return false;
+            }
+        }
+    } else if c.quality_min.is_some() || c.quality_max.is_some() {
+        // Ranking constraints present but rung has no ranking: keep (unable to evaluate).
+    }
+    true
 }
 
 /// Quality indices from `start` down to the lowest rung (inclusive), for representation fallback.
@@ -109,6 +212,7 @@ pub(crate) fn quality_indices_for_fallback(start: usize) -> impl DoubleEndedIter
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::clock::service_description::ResolvedOperatingConstraints;
     use dash_mpd::{AdaptationSet, Representation};
 
     fn adaptation_set_with_bandwidths(bandwidths: &[u64]) -> AdaptationSet {
@@ -119,6 +223,22 @@ mod tests {
                 .map(|(idx, bw)| Representation {
                     id: Some(format!("rep-{idx}")),
                     bandwidth: Some(*bw),
+                    ..Default::default()
+                })
+                .collect(),
+            ..Default::default()
+        }
+    }
+
+    fn adaptation_set_with_rankings(entries: &[(u64, u8)]) -> AdaptationSet {
+        AdaptationSet {
+            representations: entries
+                .iter()
+                .enumerate()
+                .map(|(idx, (bw, rank))| Representation {
+                    id: Some(format!("rep-{idx}")),
+                    bandwidth: Some(*bw),
+                    qualityRanking: Some(*rank),
                     ..Default::default()
                 })
                 .collect(),
@@ -139,7 +259,70 @@ mod tests {
     fn bola_factory_creates_controller() {
         let set = adaptation_set_with_bandwidths(&[500_000, 1_000_000]);
         let factory = BolaAbrFactory::default();
-        let controller = factory.create(&set).expect("controller");
+        let controller = factory
+            .create(&set, &AbrCreateContext::default())
+            .expect("controller");
         assert_eq!(controller.rung_count(), 2);
+    }
+
+    #[test]
+    fn operating_bandwidth_filters_ladder() {
+        let set = adaptation_set_with_bandwidths(&[100_000, 500_000, 1_000_000, 3_000_000]);
+        let ladder = quality_ladder_from_adaptation_set(&set);
+        let constraints = ResolvedOperatingConstraints {
+            bandwidth_min: Some(400_000),
+            bandwidth_max: Some(1_500_000),
+            ..Default::default()
+        };
+        let filtered = apply_operating_constraints(ladder, &constraints);
+        assert_eq!(filtered.len(), 2);
+        assert_eq!(filtered[0].bitrate_bps, 500_000.0);
+        assert_eq!(filtered[1].bitrate_bps, 1_000_000.0);
+    }
+
+    #[test]
+    fn operating_quality_filters_by_ranking() {
+        let set = adaptation_set_with_rankings(&[
+            (100_000, 4),
+            (500_000, 2),
+            (1_000_000, 1),
+            (2_000_000, 3),
+        ]);
+        let ladder = quality_ladder_from_adaptation_set(&set);
+        let constraints = ResolvedOperatingConstraints {
+            quality_min: Some(1),
+            quality_max: Some(2),
+            ..Default::default()
+        };
+        let filtered = apply_operating_constraints(ladder, &constraints);
+        assert_eq!(filtered.len(), 2);
+        assert!(
+            filtered
+                .iter()
+                .all(|r| matches!(r.quality_ranking, Some(1) | Some(2)))
+        );
+    }
+
+    #[test]
+    fn preferred_quality_nearest_bandwidth_target() {
+        let set = adaptation_set_with_bandwidths(&[100_000, 500_000, 1_000_000]);
+        let ladder = quality_ladder_from_adaptation_set(&set);
+        let constraints = ResolvedOperatingConstraints {
+            bandwidth_target: Some(600_000),
+            ..Default::default()
+        };
+        assert_eq!(preferred_quality_index(&ladder, &constraints), Some(1));
+    }
+
+    #[test]
+    fn empty_filter_keeps_ladder() {
+        let set = adaptation_set_with_bandwidths(&[100_000, 200_000]);
+        let ladder = quality_ladder_from_adaptation_set(&set);
+        let constraints = ResolvedOperatingConstraints {
+            bandwidth_min: Some(5_000_000),
+            ..Default::default()
+        };
+        let filtered = apply_operating_constraints(ladder.clone(), &constraints);
+        assert_eq!(filtered.len(), ladder.len());
     }
 }

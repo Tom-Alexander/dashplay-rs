@@ -106,7 +106,11 @@ async fn custom_abr_factory_selects_fixed_representation() -> Result<(), dashpla
     }
 
     impl AbrFactory for FixedQualityAbrFactory {
-        fn create(&self, adaptation_set: &AdaptationSet) -> Option<Box<dyn AbrController>> {
+        fn create(
+            &self,
+            adaptation_set: &AdaptationSet,
+            _ctx: &dashplayrs::AbrCreateContext<'_>,
+        ) -> Option<Box<dyn AbrController>> {
             let rungs = quality_ladder_from_adaptation_set(adaptation_set);
             if rungs.is_empty() {
                 return None;

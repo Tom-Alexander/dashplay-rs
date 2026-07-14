@@ -190,7 +190,9 @@ mod tests {
     #[test]
     fn plan_init_uses_abr_decision() {
         let set = adaptation_set_with_id("v1");
-        let mut abr = BolaAbrFactory::default().create(&set).expect("controller");
+        let mut abr = BolaAbrFactory::default()
+            .create(&set, &crate::abr::AbrCreateContext::default())
+            .expect("controller");
         abr.update_buffer(10.0);
         let plan = plan_init(abr.as_mut(), 10.0);
         assert_eq!(plan.quality_index, abr.decide().quality_index);

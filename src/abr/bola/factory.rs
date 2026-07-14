@@ -4,7 +4,8 @@ use dash_mpd::AdaptationSet;
 
 use super::algorithm::{Bola, QualityLevel};
 use crate::abr::{
-    AbrController, AbrDecision, AbrFactory, QualityRung, quality_ladder_from_adaptation_set,
+    AbrController, AbrCreateContext, AbrDecision, AbrFactory, QualityRung,
+    apply_operating_constraints, preferred_quality_index, quality_ladder_from_adaptation_set,
 };
 
 /// Default [`AbrFactory`] using BOLA (Buffer Occupancy based Lyapunov Algorithm).
@@ -21,8 +22,12 @@ impl Default for BolaAbrFactory {
 }
 
 impl AbrFactory for BolaAbrFactory {
-    fn create(&self, adaptation_set: &AdaptationSet) -> Option<Box<dyn AbrController>> {
-        BolaAbrController::from_adaptation_set(adaptation_set, self.ewma_alpha)
+    fn create(
+        &self,
+        adaptation_set: &AdaptationSet,
+        ctx: &AbrCreateContext<'_>,
+    ) -> Option<Box<dyn AbrController>> {
+        BolaAbrController::from_adaptation_set(adaptation_set, self.ewma_alpha, ctx)
             .map(|controller| Box::new(controller) as Box<dyn AbrController>)
     }
 }
@@ -30,11 +35,24 @@ impl AbrFactory for BolaAbrFactory {
 struct BolaAbrController {
     bola: Bola,
     rungs: Vec<QualityRung>,
+    /// Prefer this ladder index until the first throughput sample (Operating*@target).
+    preferred_quality_index: Option<usize>,
+    has_throughput_sample: bool,
 }
 
 impl BolaAbrController {
-    fn from_adaptation_set(adaptation_set: &AdaptationSet, ewma_alpha: f64) -> Option<Self> {
-        let rungs = quality_ladder_from_adaptation_set(adaptation_set);
+    fn from_adaptation_set(
+        adaptation_set: &AdaptationSet,
+        ewma_alpha: f64,
+        ctx: &AbrCreateContext<'_>,
+    ) -> Option<Self> {
+        let mut rungs = quality_ladder_from_adaptation_set(adaptation_set);
+        let preferred = if let Some(ops) = ctx.operating {
+            rungs = apply_operating_constraints(rungs, ops);
+            preferred_quality_index(&rungs, ops)
+        } else {
+            None
+        };
         if rungs.is_empty() {
             return None;
         }
@@ -51,6 +69,8 @@ impl BolaAbrController {
         Some(Self {
             bola: Bola::new(qualities, ewma_alpha),
             rungs,
+            preferred_quality_index: preferred,
+            has_throughput_sample: false,
         })
     }
 }
@@ -69,9 +89,18 @@ impl AbrController for BolaAbrController {
         let estimated = self.bola.estimated_segment_bytes_for_quality(quality_index);
         self.bola
             .observe_segment_download(throughput_bps, downloaded_bytes, estimated);
+        self.has_throughput_sample = true;
     }
 
     fn decide(&self) -> AbrDecision {
+        if !self.has_throughput_sample {
+            if let Some(idx) = self.preferred_quality_index {
+                return AbrDecision {
+                    quality_index: idx,
+                    bitrate_bps: self.rungs[idx].bitrate_bps,
+                };
+            }
+        }
         let decision = self.bola.decide();
         AbrDecision {
             quality_index: decision.quality_index,

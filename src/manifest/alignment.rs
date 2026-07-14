@@ -34,12 +34,16 @@ pub(crate) fn align_start_index_to_sap(
     i
 }
 
-/// When [`crate::clock::resync::ResyncHints::random_access_interval_s`] is set, snap `start_idx` to the
-/// nearest segment on the resync grid (DASH-IF IOP §9.X.6.2.8).
+/// When [`crate::clock::resync::ResyncHints::random_access_interval_s`] is set, snap `start_idx`
+/// to the nearest segment on the resync grid (DASH-IF IOP §9.X.6.2.8 / `Resync@type` 1).
+///
+/// When `target_presentation_time_s` is provided, the RAP grid is computed from that seek/recovery
+/// target; otherwise the provisional segment presentation time is used (cold live join).
 pub(crate) fn align_start_index_to_resync(
     segments: &[TimelineSegment],
     start_idx: usize,
     hints: crate::clock::resync::ResyncHints,
+    target_presentation_time_s: Option<f64>,
 ) -> usize {
     let Some(interval_s) = hints
         .random_access_interval_s
@@ -50,7 +54,10 @@ pub(crate) fn align_start_index_to_resync(
     if segments.is_empty() {
         return 0;
     }
-    let anchor_t = segments[start_idx.min(segments.len() - 1)].presentation_time_s;
+    let idx = start_idx.min(segments.len() - 1);
+    let anchor_t = target_presentation_time_s
+        .unwrap_or(segments[idx].presentation_time_s)
+        .max(0.0);
     let grid_t = (anchor_t / interval_s).floor() * interval_s;
     segments
         .iter()
@@ -75,22 +82,19 @@ fn segment_sequence_start_presentation_s(seg: &TimelineSegment) -> f64 {
     }
 }
 
-/// Align seek/recovery to the nearest in-segment resync point (`Resync@type` 2/3).
+/// Align seek/recovery to an in-segment grid (RAP for `Resync@type` 2/3, CMAF chunks for `@type` 0).
 ///
 /// Returns the timeline index and an optional 1-based CMAF chunk index to start emitting from
 /// within the first segment of the trimmed playback window.
-pub(crate) fn mid_segment_resync_alignment(
+fn mid_segment_grid_alignment(
     segments: &[TimelineSegment],
     start_idx: usize,
     target_presentation_time_s: f64,
-    hints: crate::clock::resync::ResyncHints,
+    interval_s: f64,
 ) -> (usize, Option<u64>) {
-    let Some(interval_s) = hints
-        .random_access_interval_s
-        .filter(|x| x.is_finite() && *x > 0.0)
-    else {
+    if !(interval_s.is_finite() && interval_s > 0.0) {
         return (start_idx, None);
-    };
+    }
     if segments.is_empty() {
         return (0, None);
     }
@@ -118,4 +122,64 @@ pub(crate) fn mid_segment_resync_alignment(
     let chunk = (offset_s / interval_s).floor() as u64 + 1;
 
     (aligned_idx, Some(chunk.max(1)))
+}
+
+/// Align seek/recovery to the nearest in-segment RAP (`Resync@type` 2/3).
+pub(crate) fn mid_segment_resync_alignment(
+    segments: &[TimelineSegment],
+    start_idx: usize,
+    target_presentation_time_s: f64,
+    hints: crate::clock::resync::ResyncHints,
+) -> (usize, Option<u64>) {
+    let Some(interval_s) = hints
+        .random_access_interval_s
+        .filter(|x| x.is_finite() && *x > 0.0)
+    else {
+        return (start_idx, None);
+    };
+    mid_segment_grid_alignment(segments, start_idx, target_presentation_time_s, interval_s)
+}
+
+/// Align seek/recovery to the nearest CMAF chunk boundary (`Resync@type` 0).
+pub(crate) fn mid_segment_chunk_alignment(
+    segments: &[TimelineSegment],
+    start_idx: usize,
+    target_presentation_time_s: f64,
+    hints: crate::clock::resync::ResyncHints,
+) -> (usize, Option<u64>) {
+    let Some(interval_s) = hints.chunk_duration_s.filter(|x| x.is_finite() && *x > 0.0) else {
+        return (start_idx, None);
+    };
+    mid_segment_grid_alignment(segments, start_idx, target_presentation_time_s, interval_s)
+}
+
+/// Apply `Resync` hints for seek/recovery with DASH-IF priority: type 2/3 → type 1 → type 0.
+///
+/// Without a presentation-time target, only type-1 segment-boundary snapping is applied.
+pub(crate) fn align_start_with_resync_hints(
+    segments: &[TimelineSegment],
+    start_idx: usize,
+    hints: crate::clock::resync::ResyncHints,
+    target_presentation_time_s: Option<f64>,
+) -> (usize, Option<u64>) {
+    if let Some(target) = target_presentation_time_s {
+        if hints.random_access_within_segment && hints.random_access_interval_s.is_some() {
+            return mid_segment_resync_alignment(segments, start_idx, target, hints);
+        }
+        if hints.random_access_interval_s.is_some() && !hints.random_access_within_segment {
+            return (
+                align_start_index_to_resync(segments, start_idx, hints, Some(target)),
+                None,
+            );
+        }
+        if hints.chunk_duration_s.is_some() {
+            return mid_segment_chunk_alignment(segments, start_idx, target, hints);
+        }
+        return (start_idx, None);
+    }
+
+    (
+        align_start_index_to_resync(segments, start_idx, hints, None),
+        None,
+    )
 }

@@ -43,17 +43,7 @@ fn align_start_index_with_resync(
     let Some(hints) = timeline_ctx.resync_hints else {
         return (start_idx, None);
     };
-
-    if hints.random_access_within_segment {
-        if let Some(target) = target_presentation_time_s {
-            return manifest::mid_segment_resync_alignment(segments, start_idx, target, hints);
-        }
-    }
-
-    (
-        manifest::align_start_index_to_resync(segments, start_idx, hints),
-        None,
-    )
+    manifest::align_start_with_resync_hints(segments, start_idx, hints, target_presentation_time_s)
 }
 
 pub(crate) struct AdaptationStreamContext {
@@ -83,6 +73,9 @@ pub(crate) struct AdaptationStreamContext {
     pub abr_factory: SharedAbrFactory,
     /// `@referenceId` from `ServiceDescription::Latency` when present.
     pub prt_reference_id: Option<String>,
+    /// `OperatingBandwidth` / `OperatingQuality` constraints for this adaptation set.
+    pub operating_constraints:
+        Option<crate::clock::service_description::ResolvedOperatingConstraints>,
 }
 
 /// Run the fragment loop for one adaptation set until segments are exhausted for this manifest snapshot.
@@ -109,6 +102,7 @@ pub(crate) async fn run_adaptation_stream(ctx: AdaptationStreamContext) -> Resul
         playback,
         abr_factory,
         prt_reference_id,
+        operating_constraints,
     } = ctx;
 
     let seek_generation_at_start = playback.seek_generation();
@@ -222,7 +216,12 @@ pub(crate) async fn run_adaptation_stream(ctx: AdaptationStreamContext) -> Resul
         }
     };
 
-    let Some(mut abr) = abr_factory.create(&adaptation_set) else {
+    let Some(mut abr) = abr_factory.create(
+        &adaptation_set,
+        &crate::abr::AbrCreateContext {
+            operating: operating_constraints.as_ref(),
+        },
+    ) else {
         return Ok(());
     };
 

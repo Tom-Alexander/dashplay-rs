@@ -167,6 +167,20 @@ impl PlaybackLoopState {
                         let playback = playback.clone();
                         let abr_factory = abr_factory.clone();
                         let prt_reference_id = period_ctx.prt_reference_id.clone();
+                        let operating =
+                            crate::clock::service_description::OperatingConstraints::from_mpd(
+                                tick.mpd,
+                            );
+                        let media_type = adaptation_set.contentType.as_deref().or_else(|| {
+                            adaptation_set
+                                .mimeType
+                                .as_deref()
+                                .and_then(|m| m.split('/').next())
+                        });
+                        let operating_constraints = operating
+                            .as_ref()
+                            .map(|ops| ops.resolve_for_media(media_type))
+                            .filter(|c| !c.is_empty());
                         let template_end_numbers = tick.template_end_numbers.clone();
                         let period_idx = current_window.idx;
 
@@ -194,6 +208,7 @@ impl PlaybackLoopState {
                                 playback,
                                 abr_factory,
                                 prt_reference_id,
+                                operating_constraints,
                             })
                             .await
                         });

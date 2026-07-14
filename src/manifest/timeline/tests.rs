@@ -4,7 +4,8 @@ use dash_mpd::{AdaptationSet, Representation, S, SegmentTemplate, SegmentTimelin
 
 use super::super::addressing::SegmentAddressing;
 use super::super::alignment::{
-    align_start_index_to_resync, align_start_index_to_sap, mid_segment_resync_alignment,
+    align_start_index_to_resync, align_start_index_to_sap, align_start_with_resync_hints,
+    mid_segment_chunk_alignment, mid_segment_resync_alignment,
 };
 use super::super::error::ManifestError;
 use super::super::template::{
@@ -59,8 +60,127 @@ fn align_start_index_to_resync_snaps_to_grid() {
         random_access_markers: false,
         random_access_within_segment: false,
     };
-    assert_eq!(align_start_index_to_resync(&segments, 2, hints), 1);
-    assert_eq!(align_start_index_to_resync(&segments, 1, hints), 1);
+    assert_eq!(align_start_index_to_resync(&segments, 2, hints, None), 1);
+    assert_eq!(align_start_index_to_resync(&segments, 1, hints, None), 1);
+}
+
+#[test]
+fn align_start_index_to_resync_uses_target_presentation_time() {
+    // Segments every 2s; RAP every 4s. Seek target 5.5s → grid 4.0 → segment index 2.
+    let segments = vec![
+        TimelineSegment {
+            number: 1,
+            presentation_time_s: 0.0,
+            duration_s: 2.0,
+            ..default_timeline_segment()
+        },
+        TimelineSegment {
+            number: 2,
+            presentation_time_s: 2.0,
+            duration_s: 2.0,
+            ..default_timeline_segment()
+        },
+        TimelineSegment {
+            number: 3,
+            presentation_time_s: 4.0,
+            duration_s: 2.0,
+            ..default_timeline_segment()
+        },
+        TimelineSegment {
+            number: 4,
+            presentation_time_s: 6.0,
+            duration_s: 2.0,
+            ..default_timeline_segment()
+        },
+    ];
+    let hints = ResyncHints {
+        chunk_duration_s: None,
+        random_access_interval_s: Some(4.0),
+        random_access_markers: false,
+        random_access_within_segment: false,
+    };
+    // Provisional start_idx from "contains target" would be 2 (seg at 4.0); type-1 RAP every 4s
+    // with target 5.5 → grid 4.0 → still index 2. With target 3.5 → grid 0.0 → index 0.
+    assert_eq!(
+        align_start_index_to_resync(&segments, 2, hints, Some(3.5)),
+        0
+    );
+    assert_eq!(
+        align_start_index_to_resync(&segments, 2, hints, Some(5.5)),
+        2
+    );
+}
+
+#[test]
+fn mid_segment_chunk_alignment_type0() {
+    let segments = vec![TimelineSegment {
+        number: 1,
+        presentation_time_s: 4.0,
+        duration_s: 4.0,
+        ..default_timeline_segment()
+    }];
+    let hints = ResyncHints {
+        chunk_duration_s: Some(0.5),
+        random_access_interval_s: None,
+        random_access_markers: false,
+        random_access_within_segment: false,
+    };
+    let (idx, chunk) = mid_segment_chunk_alignment(&segments, 0, 5.2, hints);
+    assert_eq!(idx, 0);
+    assert_eq!(chunk, Some(3)); // 4.0 + 2*0.5 = 5.0s → chunk 3
+}
+
+#[test]
+fn align_start_with_resync_hints_prefers_type2_over_type0() {
+    let segments = vec![TimelineSegment {
+        number: 1,
+        presentation_time_s: 4.0,
+        duration_s: 4.0,
+        ..default_timeline_segment()
+    }];
+    let hints = ResyncHints {
+        chunk_duration_s: Some(0.25),
+        random_access_interval_s: Some(1.0),
+        random_access_markers: false,
+        random_access_within_segment: true,
+    };
+    let (idx, chunk) = align_start_with_resync_hints(&segments, 0, hints, Some(5.2));
+    assert_eq!(idx, 0);
+    // RAP every 1.0s: 4.0 + 1.0 = 5.0 → chunk 2 (not type-0's 0.25s grid)
+    assert_eq!(chunk, Some(2));
+}
+
+#[test]
+fn align_start_with_resync_hints_type1_before_type0() {
+    let segments = vec![
+        TimelineSegment {
+            number: 1,
+            presentation_time_s: 0.0,
+            duration_s: 2.0,
+            ..default_timeline_segment()
+        },
+        TimelineSegment {
+            number: 2,
+            presentation_time_s: 2.0,
+            duration_s: 2.0,
+            ..default_timeline_segment()
+        },
+        TimelineSegment {
+            number: 3,
+            presentation_time_s: 4.0,
+            duration_s: 2.0,
+            ..default_timeline_segment()
+        },
+    ];
+    let hints = ResyncHints {
+        chunk_duration_s: Some(0.5),
+        random_access_interval_s: Some(4.0),
+        random_access_markers: false,
+        random_access_within_segment: false,
+    };
+    let (idx, chunk) = align_start_with_resync_hints(&segments, 2, hints, Some(5.0));
+    assert_eq!(idx, 2); // type-1 RAP grid at 4.0
+    assert_eq!(chunk, None);
 }
 
 #[test]

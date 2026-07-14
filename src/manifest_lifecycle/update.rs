@@ -10,6 +10,7 @@ use crate::manifest::merge_base_url;
 
 use super::content_steering::ContentSteeringState;
 use super::patch::{self, MpdPatchError};
+use super::xlink::{self, XlinkError};
 
 /// Cached manifest state used across live refreshes.
 #[derive(Debug, Default)]
@@ -72,7 +73,7 @@ impl ManifestSession {
         fetch_uri: &Url,
     ) -> Result<(String, MPD), PlayerError> {
         if let Some(patch_uri) = self.patch_fetch_uri(fetch_uri)? {
-            match self.try_fetch_patch(client, &patch_uri).await {
+            match self.try_fetch_patch(client, fetch_uri, &patch_uri).await {
                 Ok(result) => return Ok(result),
                 Err(_err) => {}
             }
@@ -80,8 +81,11 @@ impl ManifestSession {
 
         let resp = client.send(HttpRequest::get(fetch_uri.clone())).await?;
         let text = resp.text()?;
-        let parsed = dash_mpd::parse(&text)?;
-        Ok((text, parsed))
+        let resolved = xlink::resolve_period_xlinks(client, fetch_uri, &text)
+            .await
+            .map_err(map_xlink_error)?;
+        let parsed = dash_mpd::parse(&resolved)?;
+        Ok((resolved, parsed))
     }
 
     fn patch_fetch_uri(&self, fetch_uri: &Url) -> Result<Option<Url>, ManifestError> {
@@ -105,19 +109,27 @@ impl ManifestSession {
     async fn try_fetch_patch(
         &self,
         client: &SharedHttpClient,
+        manifest_uri: &Url,
         patch_uri: &Url,
     ) -> Result<(String, MPD), PlayerError> {
         let base_xml = self.mpd_xml.as_deref().ok_or(ManifestError::NotLoaded)?;
         let resp = client.send(HttpRequest::get(patch_uri.clone())).await?;
         let patch_xml = resp.text()?;
         let updated = patch::apply_mpd_patch(base_xml, &patch_xml).map_err(map_patch_error)?;
-        let parsed = dash_mpd::parse(&updated)?;
-        Ok((updated, parsed))
+        let resolved = xlink::resolve_period_xlinks(client, manifest_uri, &updated)
+            .await
+            .map_err(map_xlink_error)?;
+        let parsed = dash_mpd::parse(&resolved)?;
+        Ok((resolved, parsed))
     }
 }
 
 fn map_patch_error(err: MpdPatchError) -> ManifestError {
     ManifestError::Parse(dash_mpd::DashMpdError::Parsing(err.to_string()))
+}
+
+fn map_xlink_error(err: XlinkError) -> ManifestError {
+    ManifestError::Xlink(err.to_string())
 }
 
 /// Resolve the manifest URI for the next refresh from the latest `Location` element.

@@ -11,7 +11,7 @@ use super::http::ReqwestClient;
 #[cfg(not(feature = "reqwest-http"))]
 use super::http::UnconfiguredHttpClient;
 use super::http::{HttpRequest, SharedHttpClient, shared};
-use super::manifest;
+use super::manifest::{self, ManifestError};
 use super::playback_control::PlaybackController;
 use super::stream_controller::PlaybackLoopState;
 use super::track_selection::{TrackSelection, select_adaptation_sets};
@@ -96,9 +96,16 @@ impl MediaPlayer {
             .send(HttpRequest::get(self.manifest_uri.clone()))
             .await?;
         let text = resp.text()?;
-        let mpd = dash_mpd::parse(&text)?;
+        let resolved = crate::manifest_lifecycle::resolve_period_xlinks(
+            &self.client,
+            &self.manifest_uri,
+            &text,
+        )
+        .await
+        .map_err(|e| ManifestError::Xlink(e.to_string()))?;
+        let mpd = dash_mpd::parse(&resolved)?;
         self.manifest = Some(mpd);
-        self.mpd_xml = Some(text);
+        self.mpd_xml = Some(resolved);
         Ok(())
     }
 

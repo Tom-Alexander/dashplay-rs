@@ -79,4 +79,6 @@ pub enum ManifestError {
         "SegmentTimeline S@r<0 needs a following S@t, Period end, or (for dynamic MPD) availabilityStartTime"
     )]
     UnboundedSegmentTimelineRepeat,
+    #[error("Period xlink resolution: {0}")]
+    Xlink(String),
 }

@@ -208,7 +208,7 @@ without changing playback behaviour.
   excluding adaptation sets with unknown essential properties.
 - [x] **`SupplementalProperty` playback semantics.** Execute adaptation-set switching and
   other supplemental signalling beyond metadata collection.
-- [ ] **`AdaptationSet/Switching` and `RandomAccess`.** Seamless AS switch and explicit
+- [x] **`AdaptationSet/Switching` and `RandomAccess`.** Seamless AS switch and explicit
   random-access hints beyond SAP-aligned seek.
 - [ ] **MPD metadata elements.** `ProgramInformation`, `Metrics` (DASH reporting
   descriptors), `AssetIdentifier`, `Rating`, `Period/Label`, `Representation/Label`.

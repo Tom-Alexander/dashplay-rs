@@ -11,7 +11,8 @@ use dash_mpd::AdaptationSet;
 
 use crate::abr::AbrController;
 use crate::manifest::{
-    self, ByteRange, SegmentAddressing, SegmentAvailability, TimelineBuildContext, TimelineSegment,
+    self, ByteRange, SegmentAddressing, SegmentAvailability, SwitchingHint, TimelineBuildContext,
+    TimelineSegment, bitstream_switch_opportunity, is_switch_opportunity, switching_hints_for,
 };
 
 /// First-segment init fetch decision for a track.
@@ -34,6 +35,8 @@ pub(crate) struct SegmentPlanContext<'a> {
     pub timeline_ctx: &'a TimelineBuildContext,
     /// Cached init segments keyed by `(period_adaptation_index, representation_id)`.
     pub cached_inits: &'a HashMap<(usize, String), Bytes>,
+    /// Previous ABR quality index; used to hold switches until a `Switching` opportunity.
+    pub last_quality_index: Option<usize>,
 }
 
 /// Download plan for one media segment, produced synchronously before fetch/decrypt/emit.
@@ -70,6 +73,32 @@ pub(crate) fn plan_init(abr: &mut dyn AbrController, buffer_s: f64) -> InitPlan 
     }
 }
 
+fn switching_hints_for_rung(
+    ctx: &SegmentPlanContext<'_>,
+    period_adaptation_index: usize,
+    representation_index: usize,
+) -> Vec<SwitchingHint> {
+    let Some(adaptation_set) = ctx
+        .adaptation_sets
+        .get(&period_adaptation_index)
+        .or_else(|| {
+            ctx.adaptation_sets
+                .get(&ctx.primary_period_adaptation_index)
+        })
+    else {
+        return Vec::new();
+    };
+    let rep = adaptation_set.representations.get(representation_index);
+    let mut hints = switching_hints_for(adaptation_set, rep);
+    // Cross-AS switching: when the target has no Switching of its own, use group signalling.
+    if hints.is_empty() {
+        for aset in ctx.adaptation_sets.values() {
+            hints.extend(switching_hints_for(aset, None));
+        }
+    }
+    hints
+}
+
 /// Plan the next media segment download from ABR state and cached init segments.
 pub(crate) fn plan_segment(
     abr: &mut dyn AbrController,
@@ -79,7 +108,24 @@ pub(crate) fn plan_segment(
     ctx: &SegmentPlanContext<'_>,
 ) -> SegmentPlan {
     abr.update_buffer(buffer_s);
-    let quality_index = abr.decide().quality_index;
+    let mut quality_index = abr.decide().quality_index;
+
+    // ISO/IEC 23009-1 §5.3.3.4: when `Switching` is present, only change representation
+    // at switch-to opportunities for the target.
+    if let Some(prev_q) = ctx.last_quality_index {
+        if prev_q != quality_index {
+            let rung = abr.rung_for_quality_index(quality_index);
+            let hints = switching_hints_for_rung(
+                ctx,
+                rung.period_adaptation_index,
+                rung.representation_index,
+            );
+            if !hints.is_empty() && !is_switch_opportunity(segment, &hints) {
+                quality_index = prev_q;
+            }
+        }
+    }
+
     let rung = abr.rung_for_quality_index(quality_index);
     let period_adaptation_index = rung.period_adaptation_index;
     let representation_index = rung.representation_index;
@@ -94,11 +140,13 @@ pub(crate) fn plan_segment(
     let rep = &adaptation_set.representations[representation_index];
     let rep_id = rep.id.as_deref().unwrap_or_default();
     let cache_key = (period_adaptation_index, rep_id.to_string());
+    let switching_hints = switching_hints_for(adaptation_set, Some(rep));
     let bitstream = ctx
         .bitstream_switching
         .get(&period_adaptation_index)
         .copied()
-        .unwrap_or(false);
+        .unwrap_or(false)
+        || bitstream_switch_opportunity(segment, &switching_hints);
     let init_needed = if bitstream
         && ctx
             .cached_inits
@@ -213,7 +261,9 @@ mod tests {
             }
         }
 
-        fn rung_for_quality_index(&self, _quality_index: usize) -> &QualityRung {
+        fn rung_for_quality_index(&self, quality_index: usize) -> &QualityRung {
+            // Single-rung fixtures ignore quality_index; multi-rep tests build a matching rung.
+            let _ = quality_index;
             &self.rung
         }
 
@@ -232,6 +282,40 @@ mod tests {
                 bitrate_bps: 1_000_000.0,
                 quality_ranking: None,
             },
+        }
+    }
+
+    /// ABR that maps quality index to representation index 1:1 for Switching tests.
+    struct IndexedAbr {
+        desired_quality: usize,
+        rungs: Vec<QualityRung>,
+    }
+
+    impl AbrController for IndexedAbr {
+        fn update_buffer(&mut self, _buffer_s: f64) {}
+
+        fn observe_segment_download(
+            &mut self,
+            _throughput_bps: f64,
+            _downloaded_bytes: usize,
+            _quality_index: usize,
+        ) {
+        }
+
+        fn decide(&mut self) -> AbrDecision {
+            let q = self.desired_quality.min(self.rungs.len().saturating_sub(1));
+            AbrDecision {
+                quality_index: q,
+                bitrate_bps: self.rungs[q].bitrate_bps,
+            }
+        }
+
+        fn rung_for_quality_index(&self, quality_index: usize) -> &QualityRung {
+            &self.rungs[quality_index.min(self.rungs.len() - 1)]
+        }
+
+        fn rung_count(&self) -> usize {
+            self.rungs.len()
         }
     }
 
@@ -263,6 +347,7 @@ mod tests {
             addressing: &addressing,
             timeline_ctx: &timeline,
             cached_inits: &cached,
+            last_quality_index: None,
         };
         let plan = plan_segment(abr.as_mut(), 5.0, &segment(1), 2, &ctx);
         assert_eq!(plan.list_index, 12);
@@ -291,6 +376,7 @@ mod tests {
             addressing: &addressing,
             timeline_ctx: &timeline,
             cached_inits: &cached,
+            last_quality_index: None,
         };
         let plan = plan_segment(abr.as_mut(), 5.0, &segment(1), 0, &ctx);
         assert!(!plan.init_needed);
@@ -329,9 +415,87 @@ mod tests {
             addressing: &addressing,
             timeline_ctx: &timeline,
             cached_inits: &cached,
+            last_quality_index: None,
         };
         let plan = plan_segment(abr.as_mut(), 5.0, &segment(1), 0, &ctx);
         assert!(!plan.init_needed);
         assert_eq!(plan.representation_index, 1);
+    }
+
+    #[test]
+    fn plan_segment_holds_quality_until_switching_opportunity() {
+        let set = AdaptationSet {
+            Switching: vec![dash_mpd::Switching {
+                interval: Some(4000),
+                stype: Some("media".into()),
+            }],
+            representations: vec![
+                Representation {
+                    id: Some("lo".into()),
+                    bandwidth: Some(100_000),
+                    ..Default::default()
+                },
+                Representation {
+                    id: Some("hi".into()),
+                    bandwidth: Some(500_000),
+                    ..Default::default()
+                },
+            ],
+            ..Default::default()
+        };
+        let sets = single_set_map(set);
+        let bitstream = no_bitstream();
+        let mut cached = HashMap::new();
+        cached.insert((0, "lo".to_string()), Bytes::from_static(b"init"));
+        cached.insert((0, "hi".to_string()), Bytes::from_static(b"init2"));
+        let mut abr = Box::new(IndexedAbr {
+            desired_quality: 1,
+            rungs: vec![
+                QualityRung {
+                    period_adaptation_index: 0,
+                    representation_index: 0,
+                    label: "lo".into(),
+                    bitrate_bps: 100_000.0,
+                    quality_ranking: None,
+                },
+                QualityRung {
+                    period_adaptation_index: 0,
+                    representation_index: 1,
+                    label: "hi".into(),
+                    bitrate_bps: 500_000.0,
+                    quality_ranking: None,
+                },
+            ],
+        }) as Box<dyn AbrController>;
+        let timeline = timeline_ctx(false);
+        let addressing = SegmentAddressing::Template(Default::default());
+        let ctx = SegmentPlanContext {
+            segment_start_index: 0,
+            primary_period_adaptation_index: 0,
+            adaptation_sets: &sets,
+            bitstream_switching: &bitstream,
+            addressing: &addressing,
+            timeline_ctx: &timeline,
+            cached_inits: &cached,
+            last_quality_index: Some(0),
+        };
+        let held = plan_segment(abr.as_mut(), 5.0, &segment_at(2000), 0, &ctx);
+        assert_eq!(held.quality_index, 0);
+        let switched = plan_segment(abr.as_mut(), 5.0, &segment_at(4000), 1, &ctx);
+        assert_eq!(switched.quality_index, 1);
+    }
+
+    fn segment_at(time: u64) -> TimelineSegment {
+        TimelineSegment {
+            number: 1,
+            time,
+            duration: 2000,
+            duration_s: 2.0,
+            presentation_time_s: time as f64 / 1000.0,
+            sub_number: None,
+            resync_start_chunk: None,
+            media_url: None,
+            media_range: None,
+        }
     }
 }

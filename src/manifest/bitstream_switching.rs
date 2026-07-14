@@ -15,6 +15,7 @@ use super::addressing::SegmentAddressing;
 /// - `AdaptationSet@bitstreamSwitching` is true (or inherited from `Period@bitstreamSwitching`)
 /// - Timeline or per-representation `SegmentTemplate` / `SegmentList` declares a Bitstream
 ///   Switching Segment via `@bitstreamSwitching` or a `BitstreamSwitching` child element
+/// - A `Switching` element with `@type="bitstream"` is present (ISO/IEC 23009-1 §5.3.3.4)
 pub(crate) fn bitstream_switching_enabled(
     period: &Period,
     adaptation_set: &AdaptationSet,
@@ -23,10 +24,20 @@ pub(crate) fn bitstream_switching_enabled(
     if adaptation_set_bitstream_switching(period, adaptation_set) {
         return true;
     }
+    if super::switch_access::switching_declares_bitstream(
+        &super::switch_access::switching_hints_for(adaptation_set, None),
+    ) {
+        return true;
+    }
     if addressing_declares_bitstream_switching(addressing) {
         return true;
     }
     for rep in &adaptation_set.representations {
+        if super::switch_access::switching_declares_bitstream(
+            &super::switch_access::switching_hints_for(adaptation_set, Some(rep)),
+        ) {
+            return true;
+        }
         if let Ok(rep_addressing) =
             super::addressing::segment_addressing_for_representation(period, adaptation_set, rep)
             && addressing_declares_bitstream_switching(&rep_addressing)
@@ -56,7 +67,7 @@ fn addressing_declares_bitstream_switching(addressing: &SegmentAddressing) -> bo
 
 #[cfg(test)]
 mod tests {
-    use dash_mpd::{BitstreamSwitching, SegmentList, SegmentTemplate};
+    use dash_mpd::{BitstreamSwitching, SegmentList, SegmentTemplate, Switching};
 
     use super::*;
 
@@ -159,6 +170,38 @@ mod tests {
         assert!(!bitstream_switching_enabled(
             &Period::default(),
             &AdaptationSet::default(),
+            &empty_addressing()
+        ));
+    }
+
+    #[test]
+    fn switching_element_bitstream_type_enables() {
+        let set = AdaptationSet {
+            Switching: vec![Switching {
+                interval: Some(4000),
+                stype: Some("bitstream".into()),
+            }],
+            ..Default::default()
+        };
+        assert!(bitstream_switching_enabled(
+            &Period::default(),
+            &set,
+            &empty_addressing()
+        ));
+    }
+
+    #[test]
+    fn switching_element_media_type_does_not_enable() {
+        let set = AdaptationSet {
+            Switching: vec![Switching {
+                interval: Some(4000),
+                stype: Some("media".into()),
+            }],
+            ..Default::default()
+        };
+        assert!(!bitstream_switching_enabled(
+            &Period::default(),
+            &set,
             &empty_addressing()
         ));
     }

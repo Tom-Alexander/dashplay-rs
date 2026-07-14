@@ -78,6 +78,8 @@ pub(crate) struct AdaptationStreamContext {
     pub period: Period,
     pub timeline_ctx: TimelineBuildContext,
     pub template_end_numbers: Option<manifest::SegmentTemplateEndNumbers>,
+    /// `RandomAccess` elements recovered from raw MPD XML (`dash-mpd` omits them).
+    pub random_access: Option<manifest::RandomAccessSupplements>,
     pub period_idx: usize,
     pub adaptation_set: AdaptationSet,
     /// Switch / DVB-fallback peer adaptation sets keyed by period adaptation index.
@@ -114,6 +116,7 @@ pub(crate) async fn run_adaptation_stream(ctx: AdaptationStreamContext) -> Resul
         period,
         timeline_ctx,
         template_end_numbers,
+        random_access,
         period_idx,
         adaptation_set,
         switch_peers,
@@ -251,6 +254,15 @@ pub(crate) async fn run_adaptation_stream(ctx: AdaptationStreamContext) -> Resul
                 &timeline_ctx,
                 Some(target_in_period),
             );
+            let ra_hints = random_access
+                .as_ref()
+                .map(|s| s.hints_for(period_idx, period_adaptation_index, None))
+                .unwrap_or_default();
+            let start_idx = if timeline_ctx.resync_hints.is_none() {
+                manifest::align_start_index_with_random_access(&segments_all, start_idx, &ra_hints)
+            } else {
+                start_idx
+            };
             let start_idx = delivered_tracker.advance_start_index(&segments_all, start_idx);
             let mut slice = segments_all[start_idx..].to_vec();
             if let Some(chunk) = resync_start_chunk {
@@ -263,6 +275,15 @@ pub(crate) async fn run_adaptation_stream(ctx: AdaptationStreamContext) -> Resul
             let start_idx = manifest::align_start_index_to_sap(&segments_all, 0, &adaptation_set);
             let (start_idx, _) =
                 align_start_index_with_resync(&segments_all, start_idx, &timeline_ctx, None);
+            let ra_hints = random_access
+                .as_ref()
+                .map(|s| s.hints_for(period_idx, period_adaptation_index, None))
+                .unwrap_or_default();
+            let start_idx = if timeline_ctx.resync_hints.is_none() {
+                manifest::align_start_index_with_random_access(&segments_all, start_idx, &ra_hints)
+            } else {
+                start_idx
+            };
             let start_idx = delivered_tracker.advance_start_index(&segments_all, start_idx);
             (segments_all[start_idx..].to_vec(), start_idx)
         }
@@ -367,6 +388,7 @@ pub(crate) async fn run_adaptation_stream(ctx: AdaptationStreamContext) -> Resul
                 addressing: &addressing,
                 timeline_ctx: &timeline_ctx,
                 cached_inits: &encrypted_init_by_rep,
+                last_quality_index,
             },
         );
 

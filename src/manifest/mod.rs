@@ -11,6 +11,7 @@ mod fetch;
 mod inheritance;
 mod period;
 mod sidx;
+mod switch_access;
 mod template;
 mod timeline;
 mod types;
@@ -24,7 +25,9 @@ pub(crate) use addressing::{
     segment_template_for_representation, segment_template_uses_global_sidecar_index,
     segment_template_uses_per_segment_index,
 };
-pub(crate) use alignment::{align_start_index_to_sap, align_start_with_resync_hints};
+pub(crate) use alignment::{
+    align_start_index_to_sap, align_start_index_with_random_access, align_start_with_resync_hints,
+};
 pub(crate) use availability::{
     SegmentAvailability, filter_segments_by_availability, target_presentation_time_at,
     target_presentation_time_from_since, uses_chunked_segment_transfer,
@@ -41,6 +44,10 @@ pub(crate) use period::{
     current_period_window_at, is_dynamic_mpd, mpd, period_windows, since_availability_start_at,
 };
 pub(crate) use sidx::{parse_sidx_index_for_segment_base, parse_sidx_index_from_template};
+pub(crate) use switch_access::{
+    RandomAccessSupplements, SwitchingHint, bitstream_switch_opportunity, is_switch_opportunity,
+    parse_random_access_supplements, switching_hints_for,
+};
 pub(crate) use template::{TemplateVars, interpolate_template, template_vars_for_representation};
 pub(crate) use timeline::timeline_segments_for_addressing;
 pub(crate) use types::{

@@ -23,6 +23,7 @@ pub(crate) struct ManifestTick<'a> {
     pub is_dynamic: bool,
     pub wall_now: DateTime<Utc>,
     pub template_end_numbers: Option<SegmentTemplateEndNumbers>,
+    pub random_access: Option<crate::manifest::RandomAccessSupplements>,
 }
 
 pub(crate) async fn refresh_manifest(
@@ -45,6 +46,7 @@ pub(crate) async fn manifest_tick<'a>(
     let is_dynamic = manifest::is_dynamic_mpd(mpd);
     let wall_now = utc_timing::wall_clock_utc(client, mpd, Some(&active_manifest_uri)).await;
     let template_end_numbers = Some(manifest::parse_segment_template_end_numbers(xml)?);
+    let random_access = Some(manifest::parse_random_access_supplements(xml)?);
 
     Ok(ManifestTick {
         mpd,
@@ -55,6 +57,7 @@ pub(crate) async fn manifest_tick<'a>(
         is_dynamic,
         wall_now,
         template_end_numbers,
+        random_access,
     })
 }
 

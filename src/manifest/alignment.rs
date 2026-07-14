@@ -1,5 +1,6 @@
 use dash_mpd::AdaptationSet;
 
+use super::switch_access::{self, RandomAccessHint};
 use super::types::TimelineSegment;
 
 /// Rewind a timeline index so playback begins at a DASH random-access point aligned with
@@ -32,6 +33,18 @@ pub(crate) fn align_start_index_to_sap(
         }
     }
     i
+}
+
+/// Snap `start_idx` to a prior `RandomAccess@interval` opportunity (ISO/IEC 23009-1 §5.3.5.5).
+///
+/// Used when Resync hints are absent so seek/join can honour explicit RAP grids beyond
+/// `startWithSAP` segment-boundary alignment.
+pub(crate) fn align_start_index_with_random_access(
+    segments: &[TimelineSegment],
+    start_idx: usize,
+    hints: &[RandomAccessHint],
+) -> usize {
+    switch_access::align_start_index_to_random_access(segments, start_idx, hints)
 }
 
 /// When [`crate::clock::resync::ResyncHints::random_access_interval_s`] is set, snap `start_idx`

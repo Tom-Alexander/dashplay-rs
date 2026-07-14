@@ -189,6 +189,7 @@ impl PlaybackLoopState {
                             .map(|ops| ops.resolve_for_media(media_type))
                             .filter(|c| !c.is_empty());
                         let template_end_numbers = tick.template_end_numbers.clone();
+                        let random_access = tick.random_access.clone();
                         let period_idx = current_window.idx;
 
                         let period = period.clone();
@@ -201,6 +202,7 @@ impl PlaybackLoopState {
                                 period,
                                 timeline_ctx,
                                 template_end_numbers,
+                                random_access,
                                 period_idx,
                                 adaptation_set,
                                 switch_peers,

@@ -1,5 +1,5 @@
 //! Playback lifecycle controls: seek, pause, resume, stop, playhead position,
-//! track selection, and observable state.
+//! track selection, LL-DASH latency catch-up, and observable state.
 
 use std::sync::Arc;
 use std::sync::Mutex;
@@ -9,6 +9,9 @@ use std::time::Duration;
 use thiserror::Error;
 use tokio::sync::watch;
 
+use super::clock::latency_control::{
+    LatencyControlUpdate, LatencyPolicy, LiveClock, evaluate as evaluate_latency,
+};
 use super::track_selection::TrackSelection;
 
 /// Explicit playback lifecycle state (see `ARCHITECTURE.md`).
@@ -63,12 +66,22 @@ struct Inner {
     pending_track_selection: Mutex<Option<TrackSelection>>,
     /// Per-track start time of the last delivered segment (presentation timeline).
     track_delivery_positions: Mutex<Vec<Option<Duration>>>,
+    latency_policy: Mutex<Option<LatencyPolicy>>,
+    live_clock: Mutex<Option<LiveClock>>,
+    suggested_rate_tx: watch::Sender<f64>,
+    suggested_rate_rx: watch::Receiver<f64>,
+    live_latency_tx: watch::Sender<Option<Duration>>,
+    live_latency_rx: watch::Receiver<Option<Duration>>,
+    /// Avoid repeated max-latency seeks until latency recovers below `@max`.
+    latency_seek_armed: AtomicBool,
 }
 
 impl PlaybackController {
     pub(crate) fn new() -> Self {
         let (state_tx, state_rx) = watch::channel(PlaybackState::Idle);
         let (playhead_tx, playhead_rx) = watch::channel(None);
+        let (suggested_rate_tx, suggested_rate_rx) = watch::channel(1.0);
+        let (live_latency_tx, live_latency_rx) = watch::channel(None);
         Self {
             inner: Arc::new(Inner {
                 state_tx,
@@ -82,6 +95,13 @@ impl PlaybackController {
                 seek_generation: AtomicU64::new(0),
                 pending_track_selection: Mutex::new(None),
                 track_delivery_positions: Mutex::new(Vec::new()),
+                latency_policy: Mutex::new(None),
+                live_clock: Mutex::new(None),
+                suggested_rate_tx,
+                suggested_rate_rx,
+                live_latency_tx,
+                live_latency_rx,
+                latency_seek_armed: AtomicBool::new(true),
             }),
         }
     }
@@ -109,6 +129,29 @@ impl PlaybackController {
     /// Watch presentation time updates.
     pub fn subscribe_presentation_time(&self) -> watch::Receiver<Option<Duration>> {
         self.inner.playhead_tx.subscribe()
+    }
+
+    /// Suggested consumption rate for LL-DASH target-latency catch-up (`1.0` when inactive).
+    ///
+    /// Derived from measured live latency vs `ServiceDescription/Latency@target`, clamped
+    /// to `PlaybackRate` bounds. Apply this rate on the consumer media clock.
+    pub fn suggested_playback_rate(&self) -> f64 {
+        *self.inner.suggested_rate_rx.borrow()
+    }
+
+    /// Watch suggested consumption rate updates.
+    pub fn subscribe_suggested_playback_rate(&self) -> watch::Receiver<f64> {
+        self.inner.suggested_rate_tx.subscribe()
+    }
+
+    /// Measured live latency when LL-DASH latency control is active.
+    pub fn live_latency(&self) -> Option<Duration> {
+        *self.inner.live_latency_rx.borrow()
+    }
+
+    /// Watch live latency updates.
+    pub fn subscribe_live_latency(&self) -> watch::Receiver<Option<Duration>> {
+        self.inner.live_latency_tx.subscribe()
     }
 
     /// Suspend segment delivery until [`Self::resume`].
@@ -205,7 +248,83 @@ impl PlaybackController {
         self.inner.paused.store(false, Ordering::Release);
         self.reset_track_delivery_positions();
         self.set_presentation_time(None);
+        self.clear_latency_control();
         let _ = self.inner.state_tx.send(PlaybackState::LoadingManifest);
+    }
+
+    /// Install LL-DASH latency policy and a live clock anchored at `since_ast`.
+    pub(crate) fn set_latency_control(
+        &self,
+        policy: Option<LatencyPolicy>,
+        since_ast: Option<Duration>,
+    ) {
+        *self
+            .inner
+            .latency_policy
+            .lock()
+            .unwrap_or_else(|e| e.into_inner()) = policy;
+        *self
+            .inner
+            .live_clock
+            .lock()
+            .unwrap_or_else(|e| e.into_inner()) = since_ast.map(LiveClock::new);
+        self.inner.latency_seek_armed.store(true, Ordering::Release);
+        if policy.is_none() {
+            let _ = self.inner.suggested_rate_tx.send(1.0);
+            let _ = self.inner.live_latency_tx.send(None);
+        }
+    }
+
+    fn clear_latency_control(&self) {
+        self.set_latency_control(None, None);
+    }
+
+    /// Recompute catch-up rate (and optional max-latency seek) after playhead movement.
+    pub(crate) fn refresh_latency_control(&self) -> Option<LatencyControlUpdate> {
+        if self.is_paused() || self.is_stopped() {
+            return None;
+        }
+        if matches!(self.state(), PlaybackState::Seeking) {
+            return None;
+        }
+        let policy = (*self
+            .inner
+            .latency_policy
+            .lock()
+            .unwrap_or_else(|e| e.into_inner()))?;
+        let clock = self
+            .inner
+            .live_clock
+            .lock()
+            .unwrap_or_else(|e| e.into_inner())
+            .clone()?;
+        let presentation_time = self.presentation_time()?;
+        let previous_rate = *self.inner.suggested_rate_rx.borrow();
+        let mut update = evaluate_latency(&clock, presentation_time, &policy, previous_rate);
+
+        let _ = self.inner.live_latency_tx.send(Some(update.latency));
+        if update.rate_changed {
+            let _ = self.inner.suggested_rate_tx.send(update.rate);
+        }
+
+        if update.seek_target.is_some() {
+            if !self.inner.latency_seek_armed.swap(false, Ordering::AcqRel) {
+                update.seek_target = None;
+            }
+        } else {
+            self.inner.latency_seek_armed.store(true, Ordering::Release);
+        }
+
+        Some(update)
+    }
+
+    /// `Latency@target` when latency control is active.
+    pub(crate) fn latency_target(&self) -> Option<Duration> {
+        self.inner
+            .latency_policy
+            .lock()
+            .unwrap_or_else(|e| e.into_inner())
+            .map(|p| p.target)
     }
 
     /// Record a delivered segment and update the session playhead when it advances.
@@ -315,6 +434,7 @@ fn synchronized_delivery_frontier(positions: &[Option<Duration>]) -> Option<Dura
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::clock::latency_control::LatencyPolicy;
 
     #[test]
     fn state_tracks_commands_on_shared_handle() {
@@ -390,5 +510,58 @@ mod tests {
         assert_eq!(playback.presentation_time(), Some(Duration::from_secs(4)));
         assert_eq!(playback.take_seek_target(), Some(Duration::from_secs(4)));
         assert_eq!(playback.take_track_selection(), Some(selection));
+    }
+
+    #[test]
+    fn latency_control_suggests_catch_up_rate() {
+        let playback = PlaybackController::new();
+        playback.mark_started();
+        playback.set_state(PlaybackState::Playing);
+        playback.set_latency_control(
+            Some(LatencyPolicy {
+                target: Duration::from_millis(3500),
+                min: Some(Duration::from_secs(2)),
+                max: Some(Duration::from_secs(6)),
+                rate_min: 0.96,
+                rate_max: 1.04,
+            }),
+            Some(Duration::from_secs(20)),
+        );
+        playback.record_segment_delivery(0, Duration::from_secs(15));
+
+        let update = playback.refresh_latency_control().expect("update");
+        assert!(update.rate > 1.0);
+        assert!(update.rate_changed);
+        assert!((playback.suggested_playback_rate() - update.rate).abs() < 1e-9);
+        assert!(playback.live_latency().is_some());
+        assert_eq!(playback.latency_target(), Some(Duration::from_millis(3500)));
+    }
+
+    #[test]
+    fn latency_control_seeks_when_above_max() {
+        let playback = PlaybackController::new();
+        playback.mark_started();
+        playback.set_state(PlaybackState::Playing);
+        playback.set_latency_control(
+            Some(LatencyPolicy {
+                target: Duration::from_millis(3500),
+                min: Some(Duration::from_secs(2)),
+                max: Some(Duration::from_secs(6)),
+                rate_min: 0.96,
+                rate_max: 1.04,
+            }),
+            Some(Duration::from_secs(20)),
+        );
+        // latency = 20 - 10 = 10s > max 6s
+        playback.record_segment_delivery(0, Duration::from_secs(10));
+        let update = playback.refresh_latency_control().expect("update");
+        let seek = update.seek_target.expect("seek target");
+        assert!(
+            (seek.as_secs_f64() - 16.5).abs() < 0.05,
+            "expected ~16.5s target edge, got {seek:?}"
+        );
+        // Second evaluation should not re-arm a seek while still over max.
+        let update2 = playback.refresh_latency_control().expect("update");
+        assert!(update2.seek_target.is_none());
     }
 }

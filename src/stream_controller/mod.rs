@@ -16,6 +16,7 @@ use super::drm::DrmSessionCoordinator;
 
 use super::PlayerError;
 use super::abr::SharedAbrFactory;
+use super::clock::latency_control::LatencyPolicy;
 use super::http::SharedHttpClient;
 use super::manifest_lifecycle::ManifestSession;
 use super::playback_control::{PlaybackController, PlaybackState};
@@ -128,6 +129,11 @@ impl PlaybackLoopState {
                             track_selection: &track_selection,
                             track_sessions: &track_sessions,
                         })?;
+
+                    playback.set_latency_control(
+                        LatencyPolicy::from_mpd(tick.mpd),
+                        period_ctx.reference_since_ast(),
+                    );
 
                     apply_track_selection_updates(&tracks, &adaptation_sets);
 

@@ -212,6 +212,26 @@ impl PlayerTrackOutputs {
         self.playback.subscribe_presentation_time()
     }
 
+    /// Suggested LL-DASH consumption rate (`1.0` when inactive).
+    pub fn suggested_playback_rate(&self) -> f64 {
+        self.playback.suggested_playback_rate()
+    }
+
+    /// Watch suggested consumption rate updates.
+    pub fn subscribe_suggested_playback_rate(&self) -> watch::Receiver<f64> {
+        self.playback.subscribe_suggested_playback_rate()
+    }
+
+    /// Measured live latency when LL-DASH latency control is active.
+    pub fn live_latency(&self) -> Option<std::time::Duration> {
+        self.playback.live_latency()
+    }
+
+    /// Watch live latency updates.
+    pub fn subscribe_live_latency(&self) -> watch::Receiver<Option<std::time::Duration>> {
+        self.playback.subscribe_live_latency()
+    }
+
     /// Suspend segment delivery until [`Self::resume`].
     pub fn pause(&self) -> Result<(), PlaybackControlError> {
         self.playback.pause()

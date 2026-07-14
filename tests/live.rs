@@ -1,10 +1,10 @@
 mod common;
 
 use common::{
-    AdvancingLiveServer, FixtureServer, InbandProducerReferenceLiveServer, PartialLiveServer,
-    ProducerReferenceLiveServer, assert_no_duplicate_segments, has_end, init_payload,
-    init_payloads, partial_segment_payloads, play_single_track_live, segment_numbers,
-    segment_payloads,
+    AdvancingLiveServer, FixtureServer, InbandProducerReferenceLiveServer, LatencyLiveServer,
+    PartialLiveServer, ProducerReferenceLiveServer, assert_no_duplicate_segments, has_end,
+    init_payload, init_payloads, partial_segment_payloads, play_single_track_live,
+    playback_rate_suggestions, segment_numbers, segment_payloads,
 };
 
 const LIVE_TIMEOUT: std::time::Duration = std::time::Duration::from_millis(800);
@@ -237,4 +237,33 @@ async fn live_partial_segment_transfer_emits_chunked_cmaf_fragments() {
         "expected final chunk of seg-5, got {partials:?}"
     );
     assert!(!has_end(&events));
+}
+
+#[tokio::test]
+async fn live_service_description_latency_suggests_catch_up_rate() {
+    let server = LatencyLiveServer::spawn().await;
+    let events = play_single_track_live(&server.manifest_url, LIVE_TIMEOUT)
+        .await
+        .expect("playback");
+
+    assert!(
+        !segment_payloads(&events).is_empty(),
+        "expected live segments, got {:?}",
+        segment_payloads(&events)
+    );
+    let suggestions = playback_rate_suggestions(&events);
+    assert!(
+        !suggestions.is_empty(),
+        "expected PlaybackRateSuggested events, got none (events={events:?})"
+    );
+    assert!(
+        suggestions.iter().any(|(rate, _)| *rate > 1.0),
+        "expected catch-up rate > 1.0, got {suggestions:?}"
+    );
+    assert!(
+        suggestions
+            .iter()
+            .all(|(rate, _)| *rate >= 0.96 && *rate <= 1.04),
+        "rates must stay within PlaybackRate bounds, got {suggestions:?}"
+    );
 }

@@ -235,6 +235,90 @@ impl Drop for PartialLiveServer {
     }
 }
 
+/// Dynamic live server with `ServiceDescription/Latency@target` for catch-up tests.
+pub struct LatencyLiveServer {
+    pub manifest_url: Url,
+    shutdown: Option<oneshot::Sender<()>>,
+    handle: JoinHandle<()>,
+}
+
+impl LatencyLiveServer {
+    pub async fn spawn() -> Self {
+        let root = fixture_dir("live_duration");
+        let files = Arc::new(load_fixture_files(&root));
+        let state = PartialLiveState { files };
+
+        let app = Router::new()
+            .route("/manifest.mpd", get(serve_latency_live_manifest))
+            .route("/{*path}", get(serve_partial_live_path))
+            .with_state(state);
+
+        let listener = tokio::net::TcpListener::bind("127.0.0.1:0")
+            .await
+            .expect("bind test server");
+        let addr = listener.local_addr().expect("local addr");
+
+        let (shutdown_tx, shutdown_rx) = oneshot::channel();
+        let handle = tokio::spawn(async move {
+            axum::serve(listener, app)
+                .with_graceful_shutdown(async {
+                    let _ = shutdown_rx.await;
+                })
+                .await
+                .expect("serve");
+        });
+
+        let manifest_url =
+            Url::parse(&format!("http://{addr}/manifest.mpd")).expect("manifest url");
+
+        Self {
+            manifest_url,
+            shutdown: Some(shutdown_tx),
+            handle,
+        }
+    }
+}
+
+impl Drop for LatencyLiveServer {
+    fn drop(&mut self) {
+        if let Some(tx) = self.shutdown.take() {
+            let _ = tx.send(());
+        }
+        self.handle.abort();
+    }
+}
+
+async fn serve_latency_live_manifest() -> Response {
+    // since_ast ≈ 20s via UTCTiming; Latency@target=500ms → playhead behind target → catch-up.
+    let body = r#"<?xml version="1.0" encoding="UTF-8"?>
+<MPD xmlns="urn:mpeg:dash:schema:mpd:2011"
+     type="dynamic"
+     minimumUpdatePeriod="PT0.5S"
+     availabilityStartTime="2020-05-01T12:00:00Z"
+     timeShiftBufferDepth="PT20S"
+     minBufferTime="PT2S">
+  <UTCTiming schemeIdUri="urn:mpeg:dash:utc:direct:2014" value="2020-05-01T12:00:20Z"/>
+  <ServiceDescription id="0">
+    <Latency target="500" min="200" max="8000"/>
+    <PlaybackRate min="0.96" max="1.04"/>
+  </ServiceDescription>
+  <Period>
+    <AdaptationSet mimeType="video/mp4" contentType="video">
+      <SegmentTemplate timescale="1000" duration="4000" initialization="init.mp4" media="seg-$Number$.m4s" startNumber="1"/>
+      <Representation id="1" bandwidth="100000" codecs="avc1.42E01E" width="640" height="360"/>
+      <ProducerReferenceTime id="0" type="encoder" wallClockTime="2020-05-01T12:00:00Z" presentationTime="0"/>
+    </AdaptationSet>
+  </Period>
+</MPD>
+"#;
+
+    Response::builder()
+        .status(StatusCode::OK)
+        .header("Content-Type", "application/dash+xml")
+        .body(Body::from(body))
+        .unwrap_or_else(|_| StatusCode::INTERNAL_SERVER_ERROR.into_response())
+}
+
 async fn serve_partial_live_manifest() -> Response {
     let body = r#"<?xml version="1.0" encoding="UTF-8"?>
 <MPD xmlns="urn:mpeg:dash:schema:mpd:2011"
@@ -1077,6 +1161,20 @@ pub fn partial_segment_payloads(
             dashplayrs::PlayerEvent::Segment { partial, data, .. } => {
                 Some((*partial, trim_payload(data.as_ref())))
             }
+            _ => None,
+        })
+        .collect()
+}
+
+pub fn playback_rate_suggestions(events: &[dashplayrs::PlayerEvent]) -> Vec<(f64, StdDuration)> {
+    events
+        .iter()
+        .filter_map(|ev| match ev {
+            dashplayrs::PlayerEvent::PlaybackRateSuggested {
+                rate,
+                latency,
+                target_latency: _,
+            } => Some((*rate, *latency)),
             _ => None,
         })
         .collect()

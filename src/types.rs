@@ -108,6 +108,18 @@ pub enum PlayerEvent {
         /// Seconds from the start of the presentation; `None` before the first segment.
         presentation_time: Option<Duration>,
     },
+    /// Suggested consumption rate to chase `ServiceDescription/Latency@target`.
+    ///
+    /// Apply this rate to the decoder / media clock; the library does not render.
+    /// Absent when the MPD has no usable `Latency@target`. Rate is `1.0` at the target.
+    PlaybackRateSuggested {
+        /// Multiplier relative to real time (`1.0` = normal speed).
+        rate: f64,
+        /// Measured live latency (`since availabilityStartTime` − presentation time).
+        latency: Duration,
+        /// `Latency@target` from the MPD.
+        target_latency: Duration,
+    },
     /// The active representation changed on the adaptation ladder.
     BitrateChanged {
         from_quality_index: usize,

@@ -22,7 +22,15 @@ pub(crate) struct PeriodContext {
     pub segment_base_ctx: SegmentBaseContext,
     pub period_target_time: Option<Duration>,
     pub since_ast_utc: Option<Duration>,
+    /// Prefer PRT-corrected since-AST when available (same value used for live edge).
+    pub since_ast_for_latency: Option<Duration>,
     pub prt_reference_id: Option<String>,
+}
+
+impl PeriodContext {
+    pub(crate) fn reference_since_ast(&self) -> Option<Duration> {
+        self.since_ast_for_latency.or(self.since_ast_utc)
+    }
 }
 
 pub(crate) struct PeriodContextInputs<'a> {
@@ -115,6 +123,7 @@ pub(crate) fn build_period_context<'a>(
             segment_base_ctx,
             period_target_time,
             since_ast_utc,
+            since_ast_for_latency: reference_since_ast,
             prt_reference_id,
         },
         adaptation_sets,

@@ -26,6 +26,7 @@
 //!             | PlayerEvent::ManifestLoaded { .. }
 //!             | PlayerEvent::PlaybackStarted
 //!             | PlayerEvent::PlayheadUpdated { .. }
+//!             | PlayerEvent::PlaybackRateSuggested { .. }
 //!             | PlayerEvent::TrackChanged { .. }
 //!             | PlayerEvent::MediaEvent(_) => {}
 //!             PlayerEvent::End | PlayerEvent::PlaybackEnded | PlayerEvent::Error(_) => break,

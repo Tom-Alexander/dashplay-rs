@@ -83,6 +83,7 @@ pub(super) fn emit_segment(
             presentation_time: playback.presentation_time(),
         });
     }
+    apply_latency_control(tx, playback);
     metrics.record_segment_delivered();
 
     if !*playback_started_emitted {
@@ -100,6 +101,24 @@ pub(super) fn segment_presentation_time(
     seg: &manifest::TimelineSegment,
 ) -> Duration {
     period_start + Duration::from_secs_f64(seg.presentation_time_s.max(0.0))
+}
+
+fn apply_latency_control(tx: &broadcast::Sender<PlayerEvent>, playback: &PlaybackController) {
+    let Some(update) = playback.refresh_latency_control() else {
+        return;
+    };
+    if update.rate_changed {
+        if let Some(target_latency) = playback.latency_target() {
+            let _ = tx.send(PlayerEvent::PlaybackRateSuggested {
+                rate: update.rate,
+                latency: update.latency,
+                target_latency,
+            });
+        }
+    }
+    if let Some(seek_target) = update.seek_target {
+        let _ = playback.seek(seek_target);
+    }
 }
 
 #[allow(clippy::too_many_arguments)]

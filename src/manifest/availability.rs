@@ -39,15 +39,7 @@ impl SegmentAvailability {
 
 /// `@target` from the first [`ServiceDescription::Latency`] entry (milliseconds per DASH-IF IOP).
 pub(crate) fn target_latency_from_mpd(mpd: &MPD) -> Option<Duration> {
-    for sd in &mpd.ServiceDescription {
-        for lat in &sd.Latency {
-            let target_ms = lat.target?;
-            if target_ms.is_finite() && target_ms >= 0.0 {
-                return Some(Duration::from_secs_f64(target_ms / 1000.0));
-            }
-        }
-    }
-    None
+    crate::clock::latency_control::LatencyPolicy::from_mpd(mpd).map(|p| p.target)
 }
 
 /// MPD media-timeline seconds (from `availabilityStartTime`) when a segment sequence starts.

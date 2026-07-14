@@ -99,8 +99,9 @@ These close the largest gaps between "delivers some streams" and "handles confor
 - [ ] **Additional DRM systems.** ClearKey, PlayReady, FairPlay, and other
   `ContentProtection` schemes beyond Widevine.
 - [~] **Low-Latency DASH.** `availabilityTimeComplete`, `ServiceDescription`, resync
-  points, and chunked/partial segment transfer are done; remaining: `Resync@type` 0/1
-  recovery, non-`Latency` `ServiceDescription` elements, player-side target-latency control.
+  points, chunked/partial segment transfer, and player-side target-latency catch-up
+  are done; remaining: `Resync@type` 0/1 recovery, non-`Latency` `ServiceDescription`
+  elements.
 - [x] **In-band producer reference time.** Parse `prft` boxes for
   `ProducerReferenceTime@inband=true` clock correction.
 - [x] **Mid-segment resync.** Use `Resync@type` 2/3 random-access points during seek
@@ -242,7 +243,7 @@ without changing playback behaviour.
 - [ ] **Dynamic MPD static-duration semantics.** `@type="dynamic"` with static presentation
   duration behaviour.
 - [ ] **Multi-period overlap / sync buffer.** Handling beyond init re-emission.
-- [~] **LL-DASH target latency control.** Adjust consumption rate to chase
+- [x] **LL-DASH target latency control.** Adjust consumption rate to chase
   `ServiceDescription/Latency@target`.
 
 ## P8 — Networking, platform, and containers (unsupported backlog)

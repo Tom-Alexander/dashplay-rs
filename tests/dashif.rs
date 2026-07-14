@@ -509,7 +509,7 @@ async fn dashif_trick_play_track_delivers_when_enabled() {
     let outputs = player.start_tracks().await.expect("start");
 
     assert_eq!(
-        outputs.tracks[0].info.kind,
+        outputs.tracks[0].info().kind,
         dashplayrs::TrackKind::TrickPlay
     );
     let mut rx = outputs.tracks.into_iter().next().unwrap().into_receiver();

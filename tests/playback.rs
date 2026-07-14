@@ -242,8 +242,8 @@ async fn track_preferences_limit_outputs_and_expose_metadata() {
     let outputs = player.start_tracks().await.expect("start");
 
     assert_eq!(outputs.track_count(), 1);
-    assert_eq!(outputs.tracks[0].info.kind, dashplayrs::TrackKind::Audio);
-    assert_eq!(outputs.tracks[0].info.codecs, vec!["mp4a.40.2"]);
+    assert_eq!(outputs.tracks[0].info().kind, dashplayrs::TrackKind::Audio);
+    assert_eq!(outputs.tracks[0].info().codecs, vec!["mp4a.40.2"]);
 
     let mut rx = outputs
         .tracks
@@ -639,9 +639,9 @@ async fn ttml_subtitle_track_delivers_init_and_segments() {
     let outputs = player.start_tracks().await.expect("start");
 
     assert_eq!(outputs.track_count(), 1);
-    assert_eq!(outputs.tracks[0].info.kind, dashplayrs::TrackKind::Text);
+    assert_eq!(outputs.tracks[0].info().kind, dashplayrs::TrackKind::Text);
     assert_eq!(
-        outputs.tracks[0].info.subtitle_type,
+        outputs.tracks[0].info().subtitle_type,
         Some(dashplayrs::SubtitleType::Ttml)
     );
 
@@ -677,7 +677,7 @@ async fn vtt_subtitle_track_delivers_segments_without_init() {
     let outputs = player.start_tracks().await.expect("start");
 
     assert_eq!(
-        outputs.tracks[0].info.subtitle_type,
+        outputs.tracks[0].info().subtitle_type,
         Some(dashplayrs::SubtitleType::Vtt)
     );
 
@@ -710,11 +710,11 @@ async fn inband_stpp_subtitle_track_delivers_fragments() {
     let outputs = player.start_tracks().await.expect("start");
 
     assert_eq!(
-        outputs.tracks[0].info.subtitle_type,
+        outputs.tracks[0].info().subtitle_type,
         Some(dashplayrs::SubtitleType::Stpp)
     );
     assert_eq!(
-        outputs.tracks[0].info.mime_type.as_deref(),
+        outputs.tracks[0].info().mime_type.as_deref(),
         Some("application/mp4")
     );
 
@@ -755,8 +755,8 @@ async fn subtitle_and_video_tracks_play_in_parallel() {
     let outputs = player.start_tracks().await.expect("start");
 
     assert_eq!(outputs.track_count(), 2);
-    assert_eq!(outputs.tracks[0].info.kind, dashplayrs::TrackKind::Text);
-    assert_eq!(outputs.tracks[1].info.kind, dashplayrs::TrackKind::Video);
+    assert_eq!(outputs.tracks[0].info().kind, dashplayrs::TrackKind::Text);
+    assert_eq!(outputs.tracks[1].info().kind, dashplayrs::TrackKind::Video);
 
     let all = play_all_tracks_with_outputs(outputs, TIMEOUT)
         .await
@@ -792,11 +792,11 @@ async fn trick_play_track_delivers_init_and_segments() {
 
     assert_eq!(outputs.track_count(), 1);
     assert_eq!(
-        outputs.tracks[0].info.kind,
+        outputs.tracks[0].info().kind,
         dashplayrs::TrackKind::TrickPlay
     );
     assert_eq!(
-        outputs.tracks[0].info.mime_type.as_deref(),
+        outputs.tracks[0].info().mime_type.as_deref(),
         Some("video/mp4")
     );
 
@@ -835,10 +835,10 @@ async fn image_thumbnail_track_delivers_init_and_segments() {
     let outputs = player.start_tracks().await.expect("start");
 
     assert_eq!(outputs.track_count(), 1);
-    assert_eq!(outputs.tracks[0].info.kind, dashplayrs::TrackKind::Image);
-    assert_eq!(outputs.tracks[0].info.thumbnail_tile, Some((4, 2)));
+    assert_eq!(outputs.tracks[0].info().kind, dashplayrs::TrackKind::Image);
+    assert_eq!(outputs.tracks[0].info().thumbnail_tile, Some((4, 2)));
     assert_eq!(
-        outputs.tracks[0].info.mime_type.as_deref(),
+        outputs.tracks[0].info().mime_type.as_deref(),
         Some("image/jpeg")
     );
 
@@ -876,9 +876,9 @@ async fn trick_play_and_video_tracks_play_in_parallel() {
     let outputs = player.start_tracks().await.expect("start");
 
     assert_eq!(outputs.track_count(), 2);
-    assert_eq!(outputs.tracks[0].info.kind, dashplayrs::TrackKind::Video);
+    assert_eq!(outputs.tracks[0].info().kind, dashplayrs::TrackKind::Video);
     assert_eq!(
-        outputs.tracks[1].info.kind,
+        outputs.tracks[1].info().kind,
         dashplayrs::TrackKind::TrickPlay
     );
 

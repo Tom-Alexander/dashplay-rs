@@ -1,4 +1,5 @@
-//! Playback lifecycle controls: seek, pause, resume, stop, playhead position, and observable state.
+//! Playback lifecycle controls: seek, pause, resume, stop, playhead position,
+//! track selection, and observable state.
 
 use std::sync::Arc;
 use std::sync::Mutex;
@@ -7,6 +8,8 @@ use std::time::Duration;
 
 use thiserror::Error;
 use tokio::sync::watch;
+
+use super::track_selection::TrackSelection;
 
 /// Explicit playback lifecycle state (see `ARCHITECTURE.md`).
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -57,6 +60,7 @@ struct Inner {
     stopped: AtomicBool,
     seek_target: Mutex<Option<Duration>>,
     seek_generation: AtomicU64,
+    pending_track_selection: Mutex<Option<TrackSelection>>,
     /// Per-track start time of the last delivered segment (presentation timeline).
     track_delivery_positions: Mutex<Vec<Option<Duration>>>,
 }
@@ -76,6 +80,7 @@ impl PlaybackController {
                 stopped: AtomicBool::new(false),
                 seek_target: Mutex::new(None),
                 seek_generation: AtomicU64::new(0),
+                pending_track_selection: Mutex::new(None),
                 track_delivery_positions: Mutex::new(Vec::new()),
             }),
         }
@@ -134,6 +139,42 @@ impl PlaybackController {
         self.reset_track_delivery_positions();
         self.set_presentation_time(Some(presentation_time));
         let _ = self.inner.state_tx.send(PlaybackState::Seeking);
+        Ok(())
+    }
+
+    /// Change adaptation-set preferences without restarting playback.
+    ///
+    /// In-flight adaptation streams are interrupted and resumed from the current
+    /// presentation time (or `0` before the first segment) using `selection`.
+    ///
+    /// The number of track slots is fixed at [`crate::MediaPlayer::start`]: a new
+    /// selection that would require more tracks than were allocated is truncated to
+    /// the existing slot count. Prefer starting with the needed `max_tracks` (for
+    /// example text `max_tracks(1)`) so language or role switches keep one stream
+    /// per media kind.
+    ///
+    /// Switched tracks emit [`crate::PlayerEvent::TrackChanged`] then a fresh
+    /// [`crate::PlayerEvent::Init`] before continuing segments.
+    pub fn set_track_selection(
+        &self,
+        selection: TrackSelection,
+    ) -> Result<(), PlaybackControlError> {
+        self.require_active()?;
+        *self
+            .inner
+            .pending_track_selection
+            .lock()
+            .unwrap_or_else(|e| e.into_inner()) = Some(selection);
+        let resume_at = self.presentation_time().unwrap_or(Duration::ZERO);
+        *self
+            .inner
+            .seek_target
+            .lock()
+            .unwrap_or_else(|e| e.into_inner()) = Some(resume_at);
+        self.inner.seek_generation.fetch_add(1, Ordering::AcqRel);
+        self.reset_track_delivery_positions();
+        self.set_presentation_time(Some(resume_at));
+        let _ = self.inner.state_tx.send(PlaybackState::Buffering);
         Ok(())
     }
 
@@ -251,6 +292,15 @@ impl PlaybackController {
             .take()
     }
 
+    /// Take a pending track-selection update, if any.
+    pub(crate) fn take_track_selection(&self) -> Option<TrackSelection> {
+        self.inner
+            .pending_track_selection
+            .lock()
+            .unwrap_or_else(|e| e.into_inner())
+            .take()
+    }
+
     pub(crate) async fn wait_while_paused(&self) {
         while self.is_paused() && !self.is_stopped() {
             crate::platform::sleep(Duration::from_millis(50)).await;
@@ -322,5 +372,23 @@ mod tests {
         playback.record_segment_delivery(0, Duration::from_secs(2));
         assert!(rx.has_changed().unwrap());
         assert_eq!(*rx.borrow_and_update(), Some(Duration::from_secs(2)));
+    }
+
+    #[test]
+    fn set_track_selection_resumes_from_playhead() {
+        let playback = PlaybackController::new();
+        playback.mark_started();
+        playback.record_segment_delivery(0, Duration::from_secs(4));
+
+        let selection = TrackSelection::default().with_audio(
+            crate::TrackPreference::default()
+                .language("fr")
+                .max_tracks(1),
+        );
+        playback.set_track_selection(selection.clone()).unwrap();
+        assert_eq!(playback.state(), PlaybackState::Buffering);
+        assert_eq!(playback.presentation_time(), Some(Duration::from_secs(4)));
+        assert_eq!(playback.take_seek_target(), Some(Duration::from_secs(4)));
+        assert_eq!(playback.take_track_selection(), Some(selection));
     }
 }

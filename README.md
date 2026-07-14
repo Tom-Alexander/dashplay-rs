@@ -141,12 +141,12 @@ let outputs = Player::new("https://example.com/manifest.mpd", None)?
     .await?;
 
 for track in &outputs.tracks {
-    match track.info.kind {
+    match track.info().kind {
         TrackKind::Text => {
             println!(
                 "subtitle {:?} ({:?})",
-                track.info.language,
-                track.info.subtitle_type
+                track.info().language,
+                track.info().subtitle_type
             );
             // subscribe and decode Init/Segment payloads for this track
         }
@@ -185,12 +185,12 @@ let outputs = Player::new("https://example.com/manifest.mpd", None)?
     .await?;
 
 for track in &outputs.tracks {
-    match track.info.kind {
+    match track.info().kind {
         TrackKind::TrickPlay => {
             // low-frame-rate video segments for fast scrubbing
         }
         TrackKind::Image => {
-            println!("thumbnail tiles {:?}", track.info.thumbnail_tile);
+            println!("thumbnail tiles {:?}", track.info().thumbnail_tile);
         }
         _ => {}
     }
@@ -296,9 +296,9 @@ outputs.join.await.unwrap()?;
 # }
 ```
 
-[`PlayerTrackOutputs`](#playertrackoutputs) also exposes `pause`, `resume`, `seek`, `stop`,
-`playback_state`, and `subscribe_playback_state` as convenience wrappers around the same
-controller. Clone handles (`outputs.playback.clone()`) share one session.
+[`PlayerTrackOutputs`](#playertrackoutputs) also exposes `pause`, `resume`, `seek`,
+`set_track_selection`, `stop`, `playback_state`, and `subscribe_playback_state` as convenience
+wrappers around the same controller. Clone handles (`outputs.playback.clone()`) share one session.
 
 ## Public API
 
@@ -445,6 +445,7 @@ Events emitted on a single adaptation-set stream. **Fragment** events carry medi
 | `BitrateChanged { from_quality_index, to_quality_index, from_bitrate_bps, to_bitrate_bps }` | Observability | The active representation changed on the ladder |
 | `PlaybackStarted` | Lifecycle | First media segment delivered for this adaptation set |
 | `PlaybackEnded` | Lifecycle | Playback finished (VOD end, stop, or bounded window); precedes `End` |
+| `TrackChanged { info }` | Lifecycle | Mid-playback adaptation-set remap (language/role switch); a fresh `Init` follows |
 | `Error(PlayerEventError)` | Lifecycle | Pipeline failed; the full [`PlayerError`](#playererror) is still returned by `join` |
 | `MediaEvent(MediaEvent)` | Timed event | MPD `EventStream` or in-band `emsg` (including SCTE-35 ad markers) |
 | `End` | Fragment | No more fragments for this adaptation set (VOD / bounded window) |
@@ -489,8 +490,8 @@ One DASH adaptation set exposed as a `tokio::sync::broadcast` channel.
 
 | Field / method | Description |
 |----------------|-------------|
-| `mime_type` | `AdaptationSet@mimeType` when present (e.g. `video/mp4`, `text/vtt`) |
-| `info` | Selected-track language, roles, codecs, accessibility, subtitle format, ID, and media kind |
+| `mime_type()` | `AdaptationSet@mimeType` when present (e.g. `video/mp4`, `text/vtt`); updates after mid-playback switches |
+| `info()` | Selected-track language, roles, codecs, accessibility, subtitle format, ID, and media kind; updates after mid-playback switches |
 | `subscribe()` | Create a new event receiver |
 | `receiver_count()` | Number of active subscribers |
 | `buffer_feedback()` | Report playback buffer occupancy for ABR |
@@ -579,7 +580,7 @@ Returned by [`Player::start_tracks`](#player):
 | `tracks` | One [`PlayerTrackOutput`](#playertrackoutput) per adaptation set |
 | `playback` | [`PlaybackController`](#playbackcontroller) for this session |
 | `join` | Background task running the stream controller loop |
-| `pause` / `resume` / `seek` / `stop` | Playback control (delegates to `playback`) |
+| `pause` / `resume` / `seek` / `set_track_selection` / `stop` | Playback control (delegates to `playback`) |
 | `playback_state` / `subscribe_playback_state` | Current or watched [`PlaybackState`](#playbackstate) |
 | `presentation_time` / `subscribe_presentation_time` | Current or watched session presentation time |
 | `buffer_feedback(idx)` | [`BufferFeedback`](#bufferfeedback) for a track index |
@@ -613,6 +614,7 @@ the same session.
 | `pause()` | Suspend segment delivery until `resume` |
 | `resume()` | Resume delivery after `pause` |
 | `seek(presentation_time)` | Seek to a presentation time ([`Duration`](https://doc.rust-lang.org/std/time/struct.Duration.html) from the start of the presentation) |
+| `set_track_selection(selection)` | Change audio/text preferences mid-playback without restarting (track slot count is fixed at start) |
 | `presentation_time()` | Current session presentation time; `None` before the first segment is delivered |
 | `subscribe_presentation_time()` | Watch presentation time updates (delivery frontier or pending seek target) |
 | `stop()` | Stop playback; no further segments are delivered |
@@ -657,8 +659,8 @@ Per-track handle returned in `PlayerTrackOutputs.tracks`:
 | Field / method | Description |
 |----------------|-------------|
 | `track_index` | Adaptation-set index |
-| `mime_type` | MIME type of the adaptation set |
-| `info` | Selected-track language, roles, codecs, accessibility, ID, and media kind |
+| `mime_type()` | MIME type of the adaptation set (updates after mid-playback switches) |
+| `info()` | Selected-track language, roles, codecs, accessibility, ID, and media kind |
 | `into_receiver()` | Take ownership of the broadcast receiver |
 | `buffer_feedback()` | Report playback buffer occupancy for ABR |
 | `metrics()` | [`TrackMetrics`](#metrics) collector for this track |

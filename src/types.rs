@@ -1,3 +1,4 @@
+use std::sync::{Arc, Mutex};
 use std::time::Duration;
 
 use bytes::Bytes;
@@ -11,6 +12,12 @@ use super::metrics::TrackMetrics;
 use super::playback_control::PlaybackController;
 use super::stream_controller::PlaybackLoopState;
 use super::track_selection::TrackInfo;
+
+#[derive(Debug)]
+struct TrackMeta {
+    mime_type: Option<String>,
+    info: TrackInfo,
+}
 
 /// Playback failure delivered on a track event stream.
 ///
@@ -112,6 +119,15 @@ pub enum PlayerEvent {
     PlaybackStarted,
     /// Playback finished for this adaptation set (VOD end, stop, or bounded window).
     PlaybackEnded,
+    /// The selected adaptation set for this track slot changed mid-playback.
+    ///
+    /// Emitted after [`crate::PlaybackController::set_track_selection`] remaps a
+    /// track to a different language, role, or other preferred adaptation set.
+    /// A fresh [`Self::Init`] follows before segments from the new set.
+    TrackChanged {
+        /// Updated language, roles, codecs, and other track metadata.
+        info: TrackInfo,
+    },
     /// The playback pipeline failed; see the background task join result for the full error.
     Error(PlayerEventError),
     /// MPD `EventStream` or in-band `emsg` timed event (including SCTE-35 ad markers).
@@ -151,10 +167,7 @@ impl PlayerEvent {
 /// One DASH adaptation set (audio, video, or text) exposed as a broadcast stream.
 #[derive(Clone)]
 pub struct PlayerTrack {
-    /// `AdaptationSet@mimeType` when present (e.g. `video/mp4`, `audio/mp4`).
-    pub mime_type: Option<String>,
-    /// Language, roles, codecs, accessibility, and other selected-track metadata.
-    pub info: TrackInfo,
+    meta: Arc<Mutex<TrackMeta>>,
     pub(crate) tx: broadcast::Sender<PlayerEvent>,
     pub(crate) buffer_feedback: BufferFeedback,
     pub(crate) buffer_rx: watch::Receiver<f64>,
@@ -162,6 +175,52 @@ pub struct PlayerTrack {
 }
 
 impl PlayerTrack {
+    pub(crate) fn new(
+        info: TrackInfo,
+        tx: broadcast::Sender<PlayerEvent>,
+        buffer_feedback: BufferFeedback,
+        buffer_rx: watch::Receiver<f64>,
+        metrics: TrackMetrics,
+    ) -> Self {
+        Self {
+            meta: Arc::new(Mutex::new(TrackMeta {
+                mime_type: info.mime_type.clone(),
+                info,
+            })),
+            tx,
+            buffer_feedback,
+            buffer_rx,
+            metrics,
+        }
+    }
+
+    /// `AdaptationSet@mimeType` when present (e.g. `video/mp4`, `audio/mp4`).
+    pub fn mime_type(&self) -> Option<String> {
+        self.meta
+            .lock()
+            .unwrap_or_else(|e| e.into_inner())
+            .mime_type
+            .clone()
+    }
+
+    /// Language, roles, codecs, accessibility, and other selected-track metadata.
+    ///
+    /// Updated after mid-playback track switching; see also
+    /// [`PlayerEvent::TrackChanged`].
+    pub fn info(&self) -> TrackInfo {
+        self.meta
+            .lock()
+            .unwrap_or_else(|e| e.into_inner())
+            .info
+            .clone()
+    }
+
+    pub(crate) fn replace_track_info(&self, info: TrackInfo) {
+        let mut meta = self.meta.lock().unwrap_or_else(|e| e.into_inner());
+        meta.mime_type = info.mime_type.clone();
+        meta.info = info;
+    }
+
     pub fn subscribe(&self) -> broadcast::Receiver<PlayerEvent> {
         self.tx.subscribe()
     }

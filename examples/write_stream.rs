@@ -59,7 +59,7 @@ fn usage() -> String {
 
 fn is_fmp4_track(track: &PlayerTrackOutput) -> bool {
     matches!(
-        track.info.mime_type.as_deref(),
+        track.info().mime_type.as_deref(),
         Some("video/mp4") | Some("audio/mp4")
     )
 }

@@ -202,6 +202,93 @@ async fn presentation_time_tracks_delivery_and_seek() {
 }
 
 #[tokio::test]
+async fn set_track_selection_switches_audio_language() {
+    let server = FixtureServer::spawn("vod_multi_audio").await;
+    let selection = dashplayrs::TrackSelection::default().with_audio(
+        dashplayrs::TrackPreference::default()
+            .language("en")
+            .max_tracks(1),
+    );
+    let player = dashplayrs::Player::new(server.manifest_url.as_str(), None)
+        .expect("player")
+        .with_track_selection(selection);
+    let outputs = player.start_tracks().await.expect("start");
+    assert_eq!(outputs.track_count(), 2);
+
+    let audio_idx = outputs
+        .tracks
+        .iter()
+        .position(|t| t.info().kind == dashplayrs::TrackKind::Audio)
+        .expect("audio track");
+    let mut rx = outputs.subscribe(audio_idx).expect("audio rx");
+
+    assert_eq!(
+        outputs.tracks[audio_idx].info().language.as_deref(),
+        Some("en")
+    );
+    assert!(matches!(
+        recv_matching(&mut rx, TIMEOUT, |ev| matches!(ev, PlayerEvent::Init(_))).await,
+        Some(PlayerEvent::Init(_))
+    ));
+    assert_eq!(
+        segment_payloads(&[recv_matching(&mut rx, TIMEOUT, |ev| matches!(
+            ev,
+            PlayerEvent::Segment { .. }
+        ))
+        .await
+        .expect("en segment")]),
+        vec![b"dashplay-audio-en-1".to_vec()]
+    );
+
+    let switched = dashplayrs::TrackSelection::default().with_audio(
+        dashplayrs::TrackPreference::default()
+            .language("fr")
+            .max_tracks(1),
+    );
+    outputs.set_track_selection(switched).expect("switch audio");
+
+    let mut saw_track_changed = false;
+    let mut fr_init = false;
+    let mut fr_segments = Vec::new();
+    let deadline = tokio::time::Instant::now() + TIMEOUT;
+    while tokio::time::Instant::now() < deadline {
+        match recv_event(&mut rx, Duration::from_millis(500)).await {
+            Some(PlayerEvent::TrackChanged { info }) => {
+                assert_eq!(info.language.as_deref(), Some("fr"));
+                saw_track_changed = true;
+            }
+            Some(PlayerEvent::Init(data)) => {
+                assert_eq!(&data[..], b"dashplay-audio-fr-init");
+                fr_init = true;
+            }
+            Some(PlayerEvent::Segment { data, .. }) => fr_segments.push(data.to_vec()),
+            Some(PlayerEvent::End) => break,
+            _ => {}
+        }
+        if fr_init && !fr_segments.is_empty() && saw_track_changed {
+            break;
+        }
+    }
+
+    assert!(saw_track_changed, "expected TrackChanged for French audio");
+    assert!(fr_init, "expected French init after switch");
+    assert!(
+        fr_segments
+            .iter()
+            .any(|s| s.as_slice() == b"dashplay-audio-fr-1"
+                || s.as_slice() == b"dashplay-audio-fr-2"),
+        "expected French media after switch, got {fr_segments:?}"
+    );
+    assert_eq!(
+        outputs.tracks[audio_idx].info().language.as_deref(),
+        Some("fr")
+    );
+
+    outputs.stop().expect("stop");
+    outputs.join.await.unwrap().expect("join");
+}
+
+#[tokio::test]
 async fn control_errors_when_stopped() {
     let server = FixtureServer::spawn("vod_single").await;
     let player = dashplayrs::Player::new(server.manifest_url.as_str(), None).expect("player");

@@ -137,10 +137,10 @@ async fn run_playback(
     for (index, track) in outputs.tracks.iter().enumerate() {
         let info = TrackInfoJs {
             index,
-            mime_type: track.mime_type.clone(),
-            codecs: track.info.codecs.clone(),
-            kind: kind_label(track.info.kind),
-            language: track.info.language.clone(),
+            mime_type: track.mime_type(),
+            codecs: track.info().codecs.clone(),
+            kind: kind_label(track.info().kind),
+            language: track.info().language.clone(),
         };
 
         if let Some(callback) = on_track {

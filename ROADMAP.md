@@ -228,8 +228,8 @@ without changing playback behaviour.
 - [ ] **Parallel segment prefetch.** Concurrent segment downloads per track.
 - [ ] **ABR inputs.** Playback rate and dropped-frame signals per `ARCHITECTURE.md`.
 - [ ] **User quality constraints.** Max/min bitrate cap, fixed quality rung, data-saver mode.
-- [ ] **Mid-playback track switching.** Change audio language or subtitles without
-  restarting (`TrackSelection` is fixed at `MediaPlayer::start`).
+- [x] **Mid-playback track switching.** Change audio language or subtitles without
+  restarting (`PlaybackController::set_track_selection`).
 - [ ] **Runtime adaptation-set switching.** `urn:mpeg:dash:adaptation-set-switching:2016`
   seamless cross-AS switch.
 - [ ] **Playback rate / fast-forward.** `@maxPlayoutRate` and `@codingDependency` on main

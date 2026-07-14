@@ -21,7 +21,7 @@ use super::manifest_lifecycle::ManifestSession;
 use super::playback_control::{PlaybackController, PlaybackState};
 use super::schedule::{AdaptationStreamContext, BufferTarget, run_adaptation_stream};
 use super::segment_blacklist::SegmentBlacklist;
-use super::track_selection::TrackSelection;
+use super::track_selection::{SelectedAdaptationSet, TrackSelection};
 use super::track_session::TrackSessionState;
 use super::types::PlayerEvent;
 
@@ -47,7 +47,7 @@ impl PlaybackLoopState {
             manifest_uri,
             drm,
             playback,
-            track_selection,
+            mut track_selection,
             abr_factory,
         } = self;
 
@@ -79,6 +79,10 @@ impl PlaybackLoopState {
                 refresh_manifest(&mut manifest_session, &client, &manifest_uri).await?;
                 let tick = manifest_tick(&manifest_session, &client).await?;
                 broadcast_manifest_loaded(&tracks, tick.mpd);
+
+                if let Some(selection) = playback.take_track_selection() {
+                    track_selection = selection;
+                }
 
                 if let Some(seek) = playback.take_seek_target() {
                     seek_target_override = Some(seek);
@@ -124,6 +128,8 @@ impl PlaybackLoopState {
                             track_selection: &track_selection,
                             track_sessions: &track_sessions,
                         })?;
+
+                    apply_track_selection_updates(&tracks, &adaptation_sets);
 
                     let mut streams = Vec::new();
                     for (track_idx, selected) in adaptation_sets.into_iter().enumerate() {
@@ -263,5 +269,24 @@ fn on_period_change(
 fn reset_track_sessions(track_sessions: &Arc<Vec<Arc<TrackSessionState>>>) {
     for session in track_sessions.iter() {
         session.reset();
+    }
+}
+
+fn apply_track_selection_updates(
+    tracks: &[super::types::PlayerTrack],
+    adaptation_sets: &[SelectedAdaptationSet<'_>],
+) {
+    for (track_idx, selected) in adaptation_sets.iter().enumerate() {
+        if track_idx >= tracks.len() {
+            break;
+        }
+        let previous = tracks[track_idx].info();
+        if previous == selected.info {
+            continue;
+        }
+        tracks[track_idx].replace_track_info(selected.info.clone());
+        let _ = tracks[track_idx].tx.send(PlayerEvent::TrackChanged {
+            info: selected.info.clone(),
+        });
     }
 }

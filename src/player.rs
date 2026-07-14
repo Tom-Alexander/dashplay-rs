@@ -134,12 +134,11 @@ impl Player {
         for (i, t) in tracks.iter().enumerate() {
             outs.push(PlayerTrackOutput {
                 track_index: i,
-                mime_type: t.mime_type.clone(),
-                info: t.info.clone(),
                 rx: t.tx.subscribe(),
                 tx: t.tx.clone(),
                 buffer_feedback: t.buffer_feedback(),
                 metrics: t.metrics(),
+                track: t.clone(),
             });
         }
 
@@ -228,6 +227,16 @@ impl PlayerTrackOutputs {
         self.playback.seek(presentation_time)
     }
 
+    /// Change adaptation-set preferences without restarting playback.
+    ///
+    /// See [`PlaybackController::set_track_selection`].
+    pub fn set_track_selection(
+        &self,
+        selection: TrackSelection,
+    ) -> Result<(), PlaybackControlError> {
+        self.playback.set_track_selection(selection)
+    }
+
     /// Stop playback. No further segments are delivered.
     pub fn stop(&self) -> Result<(), PlaybackControlError> {
         self.playback.stop()
@@ -270,16 +279,28 @@ impl PlayerTrackOutputs {
 
 pub struct PlayerTrackOutput {
     pub track_index: usize,
-    pub mime_type: Option<String>,
-    /// Language, roles, codecs, accessibility, and other selected-track metadata.
-    pub info: TrackInfo,
     rx: broadcast::Receiver<PlayerEvent>,
     tx: broadcast::Sender<PlayerEvent>,
     buffer_feedback: BufferFeedback,
     metrics: TrackMetrics,
+    track: PlayerTrack,
 }
 
 impl PlayerTrackOutput {
+    /// `AdaptationSet@mimeType` when present (e.g. `video/mp4`, `audio/mp4`).
+    ///
+    /// Reflects mid-playback switches; prefer this over any value captured at start.
+    pub fn mime_type(&self) -> Option<String> {
+        self.track.mime_type()
+    }
+
+    /// Language, roles, codecs, accessibility, and other selected-track metadata.
+    ///
+    /// Updated after mid-playback track switching.
+    pub fn info(&self) -> TrackInfo {
+        self.track.info()
+    }
+
     pub fn into_receiver(self) -> broadcast::Receiver<PlayerEvent> {
         self.rx
     }

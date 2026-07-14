@@ -136,14 +136,13 @@ impl MediaPlayer {
             let (tx, _rx) = broadcast::channel(32);
             let (buffer_tx, buffer_rx) = watch::channel(0.0);
             let metrics = super::metrics::TrackMetrics::new();
-            tracks.push(super::types::PlayerTrack {
-                mime_type: selected.info.mime_type.clone(),
-                info: selected.info,
-                tx: tx.clone(),
-                buffer_feedback: super::types::BufferFeedback::new(buffer_tx, metrics.clone(), tx),
+            tracks.push(super::types::PlayerTrack::new(
+                selected.info,
+                tx.clone(),
+                super::types::BufferFeedback::new(buffer_tx, metrics.clone(), tx),
                 buffer_rx,
                 metrics,
-            });
+            ));
         }
 
         let playback = PlaybackController::new();

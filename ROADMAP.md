@@ -194,7 +194,7 @@ without changing playback behaviour.
 - [x] **Whole-file `SegmentBase`.** Single-segment and `@presentationDuration` progressive
   paths without `@indexRange`.
 - [x] **`@indexRangeExact`.** Distinct semantics from `@indexRange`.
-- [ ] **Sidecar `@indexRangeExact`.** Apply exact-range semantics to
+- [x] **Sidecar `@indexRangeExact`.** Apply exact-range semantics to
   `SegmentTemplate@index` sidecar index fetches.
 - [ ] **Addressing-mode validation.** Enforce mutual exclusivity of `SegmentTemplate` /
   `SegmentList` / `SegmentBase` at the same hierarchy level.

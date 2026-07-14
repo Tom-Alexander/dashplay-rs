@@ -159,6 +159,36 @@ async fn vod_template_sidecar_index_playback() {
 }
 
 #[tokio::test]
+async fn vod_template_sidecar_index_range_exact_playback() {
+    let server = FixtureServer::spawn("vod_template_index_range_exact").await;
+    let events = play_single_track(&server.manifest_url, TIMEOUT)
+        .await
+        .expect("playback");
+
+    assert_eq!(init_payload(&events).as_deref(), Some(b"INIT!!!".as_ref()));
+    assert_eq!(
+        segment_payloads(&events),
+        vec![b"SEGMENT-1!!".to_vec(), b"SEGMENT-2!!".to_vec()]
+    );
+    assert!(has_end(&events));
+}
+
+#[tokio::test]
+async fn vod_template_sidecar_index_range_inexact_playback() {
+    let server = FixtureServer::spawn("vod_template_index_range_inexact").await;
+    let events = play_single_track(&server.manifest_url, TIMEOUT)
+        .await
+        .expect("playback");
+
+    assert_eq!(init_payload(&events).as_deref(), Some(b"INIT!!!".as_ref()));
+    assert_eq!(
+        segment_payloads(&events),
+        vec![b"SEGMENT-1!!".to_vec(), b"SEGMENT-2!!".to_vec()]
+    );
+    assert!(has_end(&events));
+}
+
+#[tokio::test]
 async fn vod_template_representation_index_playback() {
     let server = FixtureServer::spawn("vod_template_representation_index").await;
     let events = play_single_track(&server.manifest_url, TIMEOUT)

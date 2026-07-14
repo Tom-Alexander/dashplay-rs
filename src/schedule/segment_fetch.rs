@@ -393,11 +393,15 @@ async fn sidx_segments_for_rep_template<'a>(
         } else {
             let bases =
                 manifest::segment_bases_for_representation(segment_base_ctx, adaptation_set, rep)?;
-            let vars = manifest::template_vars_for_representation(rep, adaptation_set);
-            let index_target = manifest::segment_template_index_target(&merged_st, &vars)?;
-            let index_bytes =
-                fetch_segment_target(client, &bases, &index_target, blacklist).await?;
-            let segs = manifest::parse_sidx_index_from_template(&merged_st, &index_bytes)?;
+            let segs = fetch_and_parse_segment_template_index(
+                client,
+                &bases,
+                &merged_st,
+                rep,
+                adaptation_set,
+                blacklist,
+            )
+            .await?;
             e.insert(segs);
         }
     }
@@ -435,8 +439,14 @@ async fn media_range_for_per_segment_index(
         ..base_vars
     };
     let index_target = manifest::segment_template_index_target(&merged_st, &vars)?;
-    let index_bytes =
-        fetch_segment_target(env.client, &bases, &index_target, env.blacklist).await?;
+    let index_bytes = fetch_complete_template_index_bytes(
+        env.client,
+        &bases,
+        &merged_st,
+        &index_target,
+        env.blacklist,
+    )
+    .await?;
     let media_range = manifest::media_range_from_per_segment_index(&merged_st, &index_bytes)?;
     per_rep.insert(seg.number, media_range);
     Ok(Some(media_range))
@@ -524,4 +534,66 @@ pub(super) async fn fetch_and_parse_segment_base_index(
         sb,
         &index_bytes,
     )?)
+}
+
+/// Fetch `SegmentTemplate@index` sidecar bytes (honouring `@indexRangeExact`) and parse the timeline.
+///
+/// When `@indexRangeExact` is false/absent, the Index Segment may extend past `@indexRange` in the
+/// sidecar document; additional Range requests are issued until the index is complete.
+pub(super) async fn fetch_and_parse_segment_template_index(
+    client: &SharedHttpClient,
+    bases: &[url::Url],
+    st: &dash_mpd::SegmentTemplate,
+    rep: &Representation,
+    adaptation_set: &AdaptationSet,
+    blacklist: &SegmentBlacklist,
+) -> Result<Vec<manifest::TimelineSegment>, PlayerError> {
+    let vars = manifest::template_vars_for_representation(rep, adaptation_set);
+    let index_target = manifest::segment_template_index_target(st, &vars)?;
+    let index_bytes =
+        fetch_complete_template_index_bytes(client, bases, st, &index_target, blacklist).await?;
+    Ok(manifest::parse_sidx_index_from_template(st, &index_bytes)?)
+}
+
+/// Fetch sidecar index bytes, extending past `@indexRange` when `@indexRangeExact` allows it.
+async fn fetch_complete_template_index_bytes(
+    client: &SharedHttpClient,
+    bases: &[url::Url],
+    st: &dash_mpd::SegmentTemplate,
+    index_target: &manifest::SegmentFetchTarget,
+    blacklist: &SegmentBlacklist,
+) -> Result<Vec<u8>, PlayerError> {
+    let Some(mut br) = index_target.range else {
+        return fetch_segment_target(client, bases, index_target, blacklist).await;
+    };
+    let mut index_bytes = fetch_bytes_with_base_failover_and_range(
+        client,
+        bases,
+        &index_target.path,
+        Some(br),
+        blacklist,
+    )
+    .await?;
+    loop {
+        match manifest::parse_sidx_index_from_template(st, &index_bytes) {
+            Ok(_) => return Ok(index_bytes),
+            Err(ManifestError::IncompleteSidxIndex { need_end }) if need_end > br.end => {
+                let extend = manifest::ByteRange {
+                    start: br.end.saturating_add(1),
+                    end: need_end,
+                };
+                let more = fetch_bytes_with_base_failover_and_range(
+                    client,
+                    bases,
+                    &index_target.path,
+                    Some(extend),
+                    blacklist,
+                )
+                .await?;
+                index_bytes.extend_from_slice(&more);
+                br.end = need_end;
+            }
+            Err(e) => return Err(PlayerError::from(e)),
+        }
+    }
 }

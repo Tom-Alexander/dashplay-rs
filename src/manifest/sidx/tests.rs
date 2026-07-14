@@ -330,7 +330,92 @@ fn hierarchical_sidx_outside_fetched_index_errors() {
         ..Default::default()
     };
     let err = parse_sidx_index_from_template(&st, &sidx).unwrap_err();
-    assert!(matches!(err, ManifestError::HierarchicalSidxNotSupported));
+    match err {
+        ManifestError::IncompleteSidxIndex { need_end } => {
+            assert_eq!(need_end, sidx.len() as u64 + 64 - 1);
+        }
+        other => panic!("expected IncompleteSidxIndex, got {other:?}"),
+    }
+}
+
+#[test]
+fn template_index_range_exact_true_rejects_non_sidx_prefix() {
+    let mut free = 8u32.to_be_bytes().to_vec();
+    free.extend_from_slice(b"free");
+    let st = SegmentTemplate {
+        timescale: Some(1000),
+        index: Some("index.mp4".into()),
+        indexRange: Some(format!("0-{}", free.len() - 1)),
+        indexRangeExact: Some(true),
+        startNumber: Some(1),
+        ..Default::default()
+    };
+    let err = parse_sidx_index_from_template(&st, &free).unwrap_err();
+    assert!(matches!(err, ManifestError::SidxParse(_)));
+}
+
+#[test]
+fn template_index_range_exact_false_scans_prefix() {
+    let seg1_len = 11u32;
+    let sidx = minimal_sidx_bytes(&[(false, seg1_len, 1000)], 1000, 0, 0);
+    let mut free = (8u32 + 4).to_be_bytes().to_vec();
+    free.extend_from_slice(b"free");
+    free.extend_from_slice(&[0, 0, 0, 0]);
+    let mut index = free;
+    index.extend_from_slice(&sidx);
+    let st = SegmentTemplate {
+        timescale: Some(1000),
+        index: Some("index.mp4".into()),
+        indexRange: Some(format!("0-{}", index.len() - 1)),
+        indexRangeExact: Some(false),
+        startNumber: Some(1),
+        ..Default::default()
+    };
+    let segs = parse_sidx_index_from_template(&st, &index).unwrap();
+    assert_eq!(
+        segs[0].media_range,
+        Some(ByteRange {
+            start: 0,
+            end: u64::from(seg1_len) - 1,
+        })
+    );
+}
+
+#[test]
+fn template_index_range_exact_false_incomplete_sidx_requests_extension() {
+    let sidx = minimal_sidx_bytes(&[(false, 11, 1000)], 1000, 0, 0);
+    let partial = &sidx[..8]; // header only
+    let st = SegmentTemplate {
+        timescale: Some(1000),
+        index: Some("index.mp4".into()),
+        indexRange: Some("100-107".into()),
+        indexRangeExact: Some(false),
+        startNumber: Some(1),
+        ..Default::default()
+    };
+    let err = parse_sidx_index_from_template(&st, partial).unwrap_err();
+    match err {
+        ManifestError::IncompleteSidxIndex { need_end } => {
+            assert_eq!(need_end, 100 + sidx.len() as u64 - 1);
+        }
+        other => panic!("expected IncompleteSidxIndex, got {other:?}"),
+    }
+}
+
+#[test]
+fn template_index_range_exact_true_rejects_oversized_sidx() {
+    let sidx = minimal_sidx_bytes(&[(false, 11, 1000)], 1000, 0, 0);
+    let partial = &sidx[..8];
+    let st = SegmentTemplate {
+        timescale: Some(1000),
+        index: Some("index.mp4".into()),
+        indexRange: Some("0-7".into()),
+        indexRangeExact: Some(true),
+        startNumber: Some(1),
+        ..Default::default()
+    };
+    let err = parse_sidx_index_from_template(&st, partial).unwrap_err();
+    assert!(matches!(err, ManifestError::SidxParse(_)));
 }
 
 /// Build a version-0 `sidx` box.

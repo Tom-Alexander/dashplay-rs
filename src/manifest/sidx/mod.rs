@@ -282,6 +282,12 @@ fn parse_sidx_from_index_bytes(
     Ok((sidx, offset_in_buf))
 }
 
+/// Parse `sidx` index bytes from a `SegmentTemplate@index` sidecar (`@indexRange`).
+///
+/// `index_bytes` must be contiguous sidecar content starting at `@indexRange` start (HTTP Range
+/// body). When `@indexRangeExact` is false/absent, the Index Segment may extend past
+/// `@indexRange` — callers should loop on [`ManifestError::IncompleteSidxIndex`]. Media byte
+/// ranges use separate-index semantics (`first_offset` relative to the media file origin).
 pub(crate) fn parse_sidx_index_from_template(
     st: &SegmentTemplate,
     index_bytes: &[u8],
@@ -293,13 +299,20 @@ pub(crate) fn parse_sidx_index_from_template(
         .indexRange
         .as_deref()
         .ok_or(ManifestError::MissingSegmentTemplateIndexRange)?;
-    let (sidx, sidx_offset) = parse_sidx_from_index_bytes(index_bytes, index_range)?;
+    let br = parse_byte_range(index_range)?;
+    let exact = index_range_is_exact(st.indexRangeExact);
+    let file_base = br.start;
+
+    let sidx_off = find_sidx_offset(index_bytes, exact, file_base)?;
+    ensure_index_segment_complete(index_bytes, sidx_off, file_base)?;
+
+    let sidx = SidxBox::parse(&index_bytes[sidx_off..])?;
     let timescale = st.timescale.unwrap_or(u64::from(sidx.timescale));
     let presentation_time_offset = st.presentationTimeOffset.unwrap_or(0);
     let start_number = st.startNumber.unwrap_or(1);
     timeline_segments_from_index_blob(
         index_bytes,
-        sidx_offset,
+        sidx_off,
         timescale,
         presentation_time_offset,
         start_number,

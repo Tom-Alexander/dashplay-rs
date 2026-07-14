@@ -29,8 +29,9 @@ use super::segment_emit::{
     emit_segment, latest_buffer_s, partial_chunk_meta, record_quality_switch_and_throughput,
 };
 use super::segment_fetch::{
-    RepFetchEnv, fetch_and_parse_segment_base_index, fetch_cmaf_media_with_rep_fallback,
-    fetch_init_with_rep_fallback, fetch_media_with_rep_fallback, fetch_segment_target,
+    RepFetchEnv, fetch_and_parse_segment_base_index, fetch_and_parse_segment_template_index,
+    fetch_cmaf_media_with_rep_fallback, fetch_init_with_rep_fallback,
+    fetch_media_with_rep_fallback,
 };
 use super::segment_plan::{SegmentPlanContext, plan_init, plan_segment};
 
@@ -157,11 +158,15 @@ pub(crate) async fn run_adaptation_stream(ctx: AdaptationStreamContext) -> Resul
                 &adaptation_set,
                 rep,
             )?;
-            let vars = manifest::template_vars_for_representation(rep, &adaptation_set);
-            let index_target = manifest::segment_template_index_target(&merged_st, &vars)?;
-            let index_bytes =
-                fetch_segment_target(&client, &bases, &index_target, &blacklist).await?;
-            manifest::parse_sidx_index_from_template(&merged_st, &index_bytes)?
+            fetch_and_parse_segment_template_index(
+                &client,
+                &bases,
+                &merged_st,
+                rep,
+                &adaptation_set,
+                &blacklist,
+            )
+            .await?
         }
         _ => manifest::timeline_segments_for_addressing(
             &addressing,

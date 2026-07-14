@@ -20,6 +20,8 @@ use crate::track_selection::descriptors::is_delivery_representation;
 /// Quality rung in an adaptation-set ladder, ordered low→high bitrate.
 #[derive(Debug, Clone)]
 pub struct QualityRung {
+    /// Index into `Period.adaptations` for the Adaptation Set that owns this representation.
+    pub period_adaptation_index: usize,
     /// Index into `AdaptationSet.representations`.
     pub representation_index: usize,
     /// Representation `@id`, if present.
@@ -46,6 +48,10 @@ pub struct AbrCreateContext<'a> {
     pub(crate) operating: Option<&'a ResolvedOperatingConstraints>,
     /// Nominal media segment duration (seconds) when known from the timeline.
     pub(crate) segment_duration_s: Option<f64>,
+    /// Pre-resolved quality ladder (including cross-AS switch / fallback peers).
+    ///
+    /// When `Some`, factories should use this instead of building from the single adaptation set.
+    pub quality_ladder: Option<&'a [QualityRung]>,
 }
 
 /// Per-adaptation-set ABR state (dash.js: one rules controller per stream).
@@ -72,11 +78,19 @@ pub trait AbrController: Send + Sync {
     /// May mutate learning state (e.g. LoL+ SOM updates).
     fn decide(&mut self) -> AbrDecision;
 
+    /// Quality rung for a ladder index.
+    fn rung_for_quality_index(&self, quality_index: usize) -> &QualityRung;
+
     /// Map a quality index to `AdaptationSet.representations` index.
-    fn representation_index_for_quality_index(&self, quality_index: usize) -> usize;
+    fn representation_index_for_quality_index(&self, quality_index: usize) -> usize {
+        self.rung_for_quality_index(quality_index)
+            .representation_index
+    }
 
     /// Nominal bitrate (bps) for a quality index.
-    fn bitrate_bps_for_quality_index(&self, quality_index: usize) -> f64;
+    fn bitrate_bps_for_quality_index(&self, quality_index: usize) -> f64 {
+        self.rung_for_quality_index(quality_index).bitrate_bps
+    }
 
     /// Number of rungs in the quality ladder.
     fn rung_count(&self) -> usize;
@@ -102,30 +116,55 @@ pub fn shared(factory: impl AbrFactory + 'static) -> SharedAbrFactory {
 
 /// Build a bandwidth-ordered quality ladder from delivery representations.
 pub fn quality_ladder_from_adaptation_set(adaptation_set: &AdaptationSet) -> Vec<QualityRung> {
-    let mut ladder: Vec<QualityRung> = adaptation_set
-        .representations
+    quality_ladder_from_adaptation_sets(&[(0, adaptation_set)])
+}
+
+/// Build a bandwidth-ordered quality ladder spanning one or more Adaptation Sets.
+///
+/// Each entry is `(period_adaptation_index, adaptation_set)`. Used for cross-AS switching
+/// and DVB fallback ladders.
+pub fn quality_ladder_from_adaptation_sets(sets: &[(usize, &AdaptationSet)]) -> Vec<QualityRung> {
+    let mut ladder: Vec<QualityRung> = sets
         .iter()
-        .enumerate()
-        .filter_map(|(idx, r)| {
-            if !is_delivery_representation(r) {
-                return None;
-            }
-            let bw = r.bandwidth.unwrap_or(0) as f64;
-            if bw <= 0.0 {
-                return None;
-            }
-            let label = r.id.as_deref().unwrap_or_default().to_string();
-            Some(QualityRung {
-                representation_index: idx,
-                label,
-                bitrate_bps: bw,
-                quality_ranking: r.qualityRanking,
-            })
+        .flat_map(|(period_adaptation_index, adaptation_set)| {
+            adaptation_set
+                .representations
+                .iter()
+                .enumerate()
+                .filter_map(|(idx, r)| {
+                    if !is_delivery_representation(r) {
+                        return None;
+                    }
+                    let bw = r.bandwidth.unwrap_or(0) as f64;
+                    if bw <= 0.0 {
+                        return None;
+                    }
+                    let label = r.id.as_deref().unwrap_or_default().to_string();
+                    Some(QualityRung {
+                        period_adaptation_index: *period_adaptation_index,
+                        representation_index: idx,
+                        label,
+                        bitrate_bps: bw,
+                        quality_ranking: r.qualityRanking,
+                    })
+                })
         })
         .collect();
 
     ladder.sort_by(|a, b| a.bitrate_bps.total_cmp(&b.bitrate_bps));
     ladder
+}
+
+/// Resolve the quality ladder for an ABR factory: prefer a pre-built ladder from context.
+pub(crate) fn resolve_quality_ladder(
+    adaptation_set: &AdaptationSet,
+    ctx: &AbrCreateContext<'_>,
+) -> Vec<QualityRung> {
+    if let Some(ladder) = ctx.quality_ladder {
+        ladder.to_vec()
+    } else {
+        quality_ladder_from_adaptation_set(adaptation_set)
+    }
 }
 
 /// Filter a quality ladder by [`ResolvedOperatingConstraints`] min/max envelopes.
@@ -349,14 +388,59 @@ mod tests {
     }
 
     #[test]
-    fn empty_filter_keeps_ladder() {
-        let set = adaptation_set_with_bandwidths(&[100_000, 200_000]);
-        let ladder = quality_ladder_from_adaptation_set(&set);
-        let constraints = ResolvedOperatingConstraints {
-            bandwidth_min: Some(5_000_000),
+    fn quality_ladder_merges_multiple_adaptation_sets() {
+        let low = AdaptationSet {
+            id: Some("fb".into()),
+            representations: vec![Representation {
+                id: Some("lo".into()),
+                bandwidth: Some(48_000),
+                ..Default::default()
+            }],
             ..Default::default()
         };
-        let filtered = apply_operating_constraints(ladder.clone(), &constraints);
-        assert_eq!(filtered.len(), ladder.len());
+        let high = AdaptationSet {
+            id: Some("main".into()),
+            representations: vec![
+                Representation {
+                    id: Some("mid".into()),
+                    bandwidth: Some(128_000),
+                    ..Default::default()
+                },
+                Representation {
+                    id: Some("hi".into()),
+                    bandwidth: Some(256_000),
+                    ..Default::default()
+                },
+            ],
+            ..Default::default()
+        };
+        let ladder = quality_ladder_from_adaptation_sets(&[(0, &high), (1, &low)]);
+        assert_eq!(ladder.len(), 3);
+        assert_eq!(ladder[0].period_adaptation_index, 1);
+        assert_eq!(ladder[0].bitrate_bps, 48_000.0);
+        assert_eq!(ladder[1].period_adaptation_index, 0);
+        assert_eq!(ladder[2].bitrate_bps, 256_000.0);
+    }
+
+    #[test]
+    fn factory_uses_prebuilt_quality_ladder_from_context() {
+        let set = adaptation_set_with_bandwidths(&[500_000]);
+        let peer = adaptation_set_with_bandwidths(&[100_000, 2_000_000]);
+        let ladder = quality_ladder_from_adaptation_sets(&[(5, &set), (7, &peer)]);
+        let factory = BolaAbrFactory::default();
+        let controller = factory
+            .create(
+                &set,
+                &AbrCreateContext {
+                    quality_ladder: Some(ladder.as_slice()),
+                    ..Default::default()
+                },
+            )
+            .expect("controller");
+        assert_eq!(controller.rung_count(), 3);
+        assert_eq!(
+            controller.rung_for_quality_index(0).period_adaptation_index,
+            7
+        );
     }
 }

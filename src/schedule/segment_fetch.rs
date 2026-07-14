@@ -29,26 +29,70 @@ pub(super) struct RepFetchEnv<'a> {
     pub(super) client: &'a SharedHttpClient,
     pub(super) segment_base_ctx: &'a manifest::SegmentBaseContext,
     pub(super) period: &'a Period,
-    pub(super) adaptation_set: &'a AdaptationSet,
+    /// Primary and switch/fallback peers keyed by period adaptation index.
+    pub(super) adaptation_sets: &'a HashMap<usize, AdaptationSet>,
+    pub(super) primary_period_adaptation_index: usize,
+    /// `@bitstreamSwitching` (or equivalent) per period adaptation index.
+    pub(super) bitstream_switching: &'a HashMap<usize, bool>,
     pub(super) blacklist: &'a SegmentBlacklist,
     pub(super) drm: &'a Arc<AsyncMutex<DrmSessionCoordinator>>,
-    pub(super) period_adaptation_index: usize,
     pub(super) tx: &'a broadcast::Sender<PlayerEvent>,
-    /// When true, reuse a previously fetched init across representation switches.
-    pub(super) bitstream_switching: bool,
+}
+
+impl RepFetchEnv<'_> {
+    pub(super) fn adaptation_set_for(&self, period_adaptation_index: usize) -> &AdaptationSet {
+        self.adaptation_sets
+            .get(&period_adaptation_index)
+            .or_else(|| {
+                self.adaptation_sets
+                    .get(&self.primary_period_adaptation_index)
+            })
+            .expect("primary adaptation set present")
+    }
+
+    pub(super) fn resolve_quality(
+        &self,
+        abr: &dyn AbrController,
+        quality_index: usize,
+    ) -> (usize, &AdaptationSet, usize) {
+        let rung = abr.rung_for_quality_index(quality_index);
+        let period_adaptation_index = rung.period_adaptation_index;
+        let adaptation_set = self.adaptation_set_for(period_adaptation_index);
+        (
+            period_adaptation_index,
+            adaptation_set,
+            rung.representation_index,
+        )
+    }
+
+    fn bitstream_switching_for(&self, period_adaptation_index: usize) -> bool {
+        self.bitstream_switching
+            .get(&period_adaptation_index)
+            .copied()
+            .unwrap_or(false)
+    }
 }
 
 pub(super) async fn fetch_init_with_rep_fallback(
     env: &RepFetchEnv<'_>,
     abr: &dyn AbrController,
     start_quality_index: usize,
-    encrypted_init_by_rep: &mut HashMap<String, Bytes>,
+    encrypted_init_by_rep: &mut HashMap<(usize, String), Bytes>,
 ) -> Result<(Bytes, String), PlayerError> {
     let mut last_err = PlayerError::from(SegmentError::ExhaustedRepresentations);
     for quality_index in quality_indices_for_fallback(start_quality_index) {
-        let rep_idx = abr.representation_index_for_quality_index(quality_index);
-        let rep = &env.adaptation_set.representations[rep_idx];
-        match ensure_init_for_rep(env, rep, encrypted_init_by_rep).await {
+        let (period_adaptation_index, adaptation_set, rep_idx) =
+            env.resolve_quality(abr, quality_index);
+        let rep = &adaptation_set.representations[rep_idx];
+        match ensure_init_for_rep(
+            env,
+            period_adaptation_index,
+            adaptation_set,
+            rep,
+            encrypted_init_by_rep,
+        )
+        .await
+        {
             Ok(init_bytes) => {
                 let rep_id = rep.id.as_deref().unwrap_or_default().to_string();
                 return Ok((init_bytes, rep_id));
@@ -63,20 +107,26 @@ pub(super) async fn fetch_media_with_rep_fallback(
     env: &RepFetchEnv<'_>,
     abr: &dyn AbrController,
     plan: &SegmentPlan,
-    encrypted_init_by_rep: &mut HashMap<String, Bytes>,
+    encrypted_init_by_rep: &mut HashMap<(usize, String), Bytes>,
     sidx_segments_by_rep: &mut HashMap<String, Vec<manifest::TimelineSegment>>,
     per_segment_index_ranges_by_rep: &mut HashMap<String, HashMap<u64, manifest::ByteRange>>,
 ) -> Result<(Vec<u8>, usize, manifest::TimelineSegment), PlayerError> {
     let mut last_err = PlayerError::from(SegmentError::ExhaustedRepresentations);
     for quality_index in quality_indices_for_fallback(plan.quality_index) {
-        let rep_idx = abr.representation_index_for_quality_index(quality_index);
-        let rep = &env.adaptation_set.representations[rep_idx];
-        let bases = manifest::segment_bases_for_representation(
-            env.segment_base_ctx,
-            env.adaptation_set,
+        let (period_adaptation_index, adaptation_set, rep_idx) =
+            env.resolve_quality(abr, quality_index);
+        let rep = &adaptation_set.representations[rep_idx];
+        let bases =
+            manifest::segment_bases_for_representation(env.segment_base_ctx, adaptation_set, rep)?;
+        match ensure_init_for_rep(
+            env,
+            period_adaptation_index,
+            adaptation_set,
             rep,
-        )?;
-        match ensure_init_for_rep(env, rep, encrypted_init_by_rep).await {
+            encrypted_init_by_rep,
+        )
+        .await
+        {
             Ok(_) => {}
             Err(e) => {
                 last_err = e;
@@ -85,7 +135,7 @@ pub(super) async fn fetch_media_with_rep_fallback(
         }
 
         let rep_addressing =
-            manifest::segment_addressing_for_representation(env.period, env.adaptation_set, rep)?;
+            manifest::segment_addressing_for_representation(env.period, adaptation_set, rep)?;
         let mut seg_for_fetch = plan.segment.clone();
         if let Some(media_range) = plan.media_range {
             seg_for_fetch.media_range = Some(media_range);
@@ -98,7 +148,7 @@ pub(super) async fn fetch_media_with_rep_fallback(
                     env.client,
                     env.segment_base_ctx,
                     env.period,
-                    env.adaptation_set,
+                    adaptation_set,
                     rep,
                     env.blacklist,
                     sidx_segments_by_rep,
@@ -115,7 +165,7 @@ pub(super) async fn fetch_media_with_rep_fallback(
                     env.client,
                     env.segment_base_ctx,
                     env.period,
-                    env.adaptation_set,
+                    adaptation_set,
                     rep,
                     env.blacklist,
                     sidx_segments_by_rep,
@@ -130,6 +180,7 @@ pub(super) async fn fetch_media_with_rep_fallback(
             {
                 if let Some(media_range) = media_range_for_per_segment_index(
                     env,
+                    adaptation_set,
                     rep,
                     &seg_for_fetch,
                     per_segment_index_ranges_by_rep,
@@ -141,7 +192,7 @@ pub(super) async fn fetch_media_with_rep_fallback(
             }
             _ => {}
         }
-        let base_vars = manifest::template_vars_for_representation(rep, env.adaptation_set);
+        let base_vars = manifest::template_vars_for_representation(rep, adaptation_set);
         let init_path = manifest::resolved_initialization_path(&rep_addressing, &base_vars);
         let template_vars = manifest::TemplateVars {
             number: Some(seg_for_fetch.number),
@@ -168,18 +219,24 @@ pub(super) async fn fetch_cmaf_media_with_rep_fallback(
     env: &RepFetchEnv<'_>,
     abr: &dyn AbrController,
     plan: &SegmentPlan,
-    encrypted_init_by_rep: &mut HashMap<String, Bytes>,
+    encrypted_init_by_rep: &mut HashMap<(usize, String), Bytes>,
 ) -> Result<(Vec<Bytes>, usize, manifest::TimelineSegment), PlayerError> {
     let mut last_err = PlayerError::from(SegmentError::ExhaustedRepresentations);
     for quality_index in quality_indices_for_fallback(plan.quality_index) {
-        let rep_idx = abr.representation_index_for_quality_index(quality_index);
-        let rep = &env.adaptation_set.representations[rep_idx];
-        let bases = manifest::segment_bases_for_representation(
-            env.segment_base_ctx,
-            env.adaptation_set,
+        let (period_adaptation_index, adaptation_set, rep_idx) =
+            env.resolve_quality(abr, quality_index);
+        let rep = &adaptation_set.representations[rep_idx];
+        let bases =
+            manifest::segment_bases_for_representation(env.segment_base_ctx, adaptation_set, rep)?;
+        match ensure_init_for_rep(
+            env,
+            period_adaptation_index,
+            adaptation_set,
             rep,
-        )?;
-        match ensure_init_for_rep(env, rep, encrypted_init_by_rep).await {
+            encrypted_init_by_rep,
+        )
+        .await
+        {
             Ok(_) => {}
             Err(e) => {
                 last_err = e;
@@ -188,9 +245,9 @@ pub(super) async fn fetch_cmaf_media_with_rep_fallback(
         }
 
         let rep_addressing =
-            manifest::segment_addressing_for_representation(env.period, env.adaptation_set, rep)?;
+            manifest::segment_addressing_for_representation(env.period, adaptation_set, rep)?;
         let seg_for_fetch = plan.segment.clone();
-        let base_vars = manifest::template_vars_for_representation(rep, env.adaptation_set);
+        let base_vars = manifest::template_vars_for_representation(rep, adaptation_set);
         let init_path = manifest::resolved_initialization_path(&rep_addressing, &base_vars);
         let template_vars = manifest::TemplateVars {
             number: Some(seg_for_fetch.number),
@@ -225,41 +282,48 @@ pub(super) async fn fetch_cmaf_media_with_rep_fallback(
 
 async fn ensure_init_for_rep(
     env: &RepFetchEnv<'_>,
+    period_adaptation_index: usize,
+    adaptation_set: &AdaptationSet,
     rep: &Representation,
-    encrypted_init_by_rep: &mut HashMap<String, Bytes>,
+    encrypted_init_by_rep: &mut HashMap<(usize, String), Bytes>,
 ) -> Result<Bytes, PlayerError> {
     let rep_id = rep.id.as_deref().unwrap_or_default();
-    if let Some(init) = encrypted_init_by_rep.get(rep_id) {
+    let cache_key = (period_adaptation_index, rep_id.to_string());
+    if let Some(init) = encrypted_init_by_rep.get(&cache_key) {
         return Ok(init.clone());
     }
 
     // ISO/IEC 23009-1: with bitstream switching, Media Segments from different
     // Representations may be concatenated without re-initializing the decoder.
-    if env.bitstream_switching
-        && let Some(shared) = encrypted_init_by_rep.values().next().cloned()
+    // Sharing is scoped to the owning Adaptation Set only.
+    if env.bitstream_switching_for(period_adaptation_index)
+        && let Some(shared) = encrypted_init_by_rep
+            .iter()
+            .find(|((aset_idx, _), _)| *aset_idx == period_adaptation_index)
+            .map(|(_, v)| v.clone())
     {
-        encrypted_init_by_rep.insert(rep_id.to_string(), shared.clone());
+        encrypted_init_by_rep.insert(cache_key.clone(), shared.clone());
         return Ok(shared);
     }
 
     let bases =
-        manifest::segment_bases_for_representation(env.segment_base_ctx, env.adaptation_set, rep)?;
+        manifest::segment_bases_for_representation(env.segment_base_ctx, adaptation_set, rep)?;
     let rep_addressing =
-        manifest::segment_addressing_for_representation(env.period, env.adaptation_set, rep)?;
-    let template_vars = manifest::template_vars_for_representation(rep, env.adaptation_set);
+        manifest::segment_addressing_for_representation(env.period, adaptation_set, rep)?;
+    let template_vars = manifest::template_vars_for_representation(rep, adaptation_set);
     let Some(init_target) = init_target_for_addressing(&rep_addressing, &template_vars)? else {
-        encrypted_init_by_rep.insert(rep_id.to_string(), Bytes::new());
+        encrypted_init_by_rep.insert(cache_key, Bytes::new());
         return Ok(Bytes::new());
     };
     let bytes = fetch_segment_target(env.client, &bases, &init_target, env.blacklist).await?;
     let init_bytes = Bytes::from(bytes);
-    encrypted_init_by_rep.insert(rep_id.to_string(), init_bytes.clone());
+    encrypted_init_by_rep.insert(cache_key, init_bytes.clone());
 
     #[cfg(feature = "drm")]
     {
         let mut guard = env.drm.lock().await;
         guard
-            .ensure_from_fragments(env.period_adaptation_index, rep_id, &init_bytes, None)
+            .ensure_from_fragments(period_adaptation_index, rep_id, &init_bytes, None)
             .await?;
     }
 
@@ -267,7 +331,7 @@ async fn ensure_init_for_rep(
     let out = {
         let license = {
             let guard = env.drm.lock().await;
-            guard.license_for_rep(env.period_adaptation_index, rep_id)
+            guard.license_for_rep(period_adaptation_index, rep_id)
         };
         if let Some(ref lic) = license {
             match lic.decrypt(&init_bytes, Option::<&Bytes>::None) {
@@ -276,13 +340,13 @@ async fn ensure_init_for_rep(
                     let mut guard = env.drm.lock().await;
                     guard
                         .recover_from_decrypt_failure(
-                            env.period_adaptation_index,
+                            period_adaptation_index,
                             rep_id,
                             &init_bytes,
                             &[],
                         )
                         .await?;
-                    let refreshed = guard.license_for_rep(env.period_adaptation_index, rep_id);
+                    let refreshed = guard.license_for_rep(period_adaptation_index, rep_id);
                     drop(guard);
                     refreshed
                         .ok_or(DrmError::License(e))?
@@ -413,12 +477,12 @@ async fn sidx_segments_for_rep_template<'a>(
 
 async fn media_range_for_per_segment_index(
     env: &RepFetchEnv<'_>,
+    adaptation_set: &AdaptationSet,
     rep: &Representation,
     seg: &manifest::TimelineSegment,
     cache: &mut HashMap<String, HashMap<u64, manifest::ByteRange>>,
 ) -> Result<Option<manifest::ByteRange>, PlayerError> {
-    let merged_st =
-        manifest::segment_template_for_representation(env.period, env.adaptation_set, rep)?;
+    let merged_st = manifest::segment_template_for_representation(env.period, adaptation_set, rep)?;
     if !manifest::segment_template_uses_per_segment_index(&merged_st) {
         return Ok(None);
     }
@@ -430,8 +494,8 @@ async fn media_range_for_per_segment_index(
     }
 
     let bases =
-        manifest::segment_bases_for_representation(env.segment_base_ctx, env.adaptation_set, rep)?;
-    let base_vars = manifest::template_vars_for_representation(rep, env.adaptation_set);
+        manifest::segment_bases_for_representation(env.segment_base_ctx, adaptation_set, rep)?;
+    let base_vars = manifest::template_vars_for_representation(rep, adaptation_set);
     let vars = manifest::TemplateVars {
         number: Some(seg.number),
         time: Some(seg.time),

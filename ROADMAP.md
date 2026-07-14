@@ -206,7 +206,7 @@ without changing playback behaviour.
 - [x] **`SubRepresentation`.** Sub-track selection and template inheritance.
 - [x] **`EssentialProperty` breadth.** Accept common codec/compatibility schemes instead of
   excluding adaptation sets with unknown essential properties.
-- [~] **`SupplementalProperty` playback semantics.** Execute adaptation-set switching and
+- [x] **`SupplementalProperty` playback semantics.** Execute adaptation-set switching and
   other supplemental signalling beyond metadata collection.
 - [ ] **`AdaptationSet/Switching` and `RandomAccess`.** Seamless AS switch and explicit
   random-access hints beyond SAP-aligned seek.
@@ -235,8 +235,8 @@ without changing playback behaviour.
 - [ ] **User quality constraints.** Max/min bitrate cap, fixed quality rung, data-saver mode.
 - [x] **Mid-playback track switching.** Change audio language or subtitles without
   restarting (`PlaybackController::set_track_selection`).
-- [ ] **Runtime adaptation-set switching.** `urn:mpeg:dash:adaptation-set-switching:2016`
-  seamless cross-AS switch.
+- [x] **Runtime adaptation-set switching.** `urn:mpeg:dash:adaptation-set-switching:2016`
+  seamless cross-AS switch (plus DVB `fallback_adaptation_set`).
 - [ ] **Playback rate / fast-forward.** `@maxPlayoutRate` and `@codingDependency` on main
   video.
 - [ ] **Automatic stall detection.** Detect rebuffer without requiring consumer

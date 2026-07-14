@@ -80,9 +80,11 @@ pub(crate) struct AdaptationStreamContext {
     pub template_end_numbers: Option<manifest::SegmentTemplateEndNumbers>,
     pub period_idx: usize,
     pub adaptation_set: AdaptationSet,
+    /// Switch / DVB-fallback peer adaptation sets keyed by period adaptation index.
+    pub switch_peers: HashMap<usize, AdaptationSet>,
     /// Index into the session's selected `PlayerTrack` list.
     pub track_idx: usize,
-    /// Index into `Period.adaptations` for DRM session lookup.
+    /// Index into `Period.adaptations` for the primary selected adaptation set.
     pub period_adaptation_index: usize,
     pub tx: broadcast::Sender<PlayerEvent>,
     pub session: Arc<TrackSessionState>,
@@ -114,6 +116,7 @@ pub(crate) async fn run_adaptation_stream(ctx: AdaptationStreamContext) -> Resul
         template_end_numbers,
         period_idx,
         adaptation_set,
+        switch_peers,
         track_idx,
         period_adaptation_index,
         tx,
@@ -133,6 +136,27 @@ pub(crate) async fn run_adaptation_stream(ctx: AdaptationStreamContext) -> Resul
     playback.set_state(PlaybackState::Buffering);
 
     let addressing = manifest::segment_addressing_for_timeline(&period, &adaptation_set)?;
+
+    let mut adaptation_sets = switch_peers;
+    adaptation_sets.insert(period_adaptation_index, adaptation_set.clone());
+
+    let mut bitstream_switching = HashMap::new();
+    for (idx, aset) in &adaptation_sets {
+        let aset_addressing = manifest::segment_addressing_for_timeline(&period, aset)
+            .unwrap_or_else(|_| addressing.clone());
+        bitstream_switching.insert(
+            *idx,
+            manifest::bitstream_switching_enabled(&period, aset, &aset_addressing),
+        );
+    }
+
+    let quality_ladder = {
+        let ladder_sets: Vec<(usize, &AdaptationSet)> = adaptation_sets
+            .iter()
+            .map(|(idx, aset)| (*idx, aset))
+            .collect();
+        crate::abr::quality_ladder_from_adaptation_sets(&ladder_sets)
+    };
 
     let template_end_number = template_end_numbers.as_ref().and_then(|supplements| {
         manifest::end_number_for_timeline(
@@ -249,6 +273,7 @@ pub(crate) async fn run_adaptation_stream(ctx: AdaptationStreamContext) -> Resul
         &crate::abr::AbrCreateContext {
             operating: operating_constraints.as_ref(),
             segment_duration_s: nominal_segment_duration_s(&segments),
+            quality_ladder: Some(quality_ladder.as_slice()),
         },
     ) else {
         return Ok(());
@@ -260,21 +285,18 @@ pub(crate) async fn run_adaptation_stream(ctx: AdaptationStreamContext) -> Resul
 
     let init_taken = session.try_take_init();
 
-    // Cache init segments by Representation ID (ABR switches may require different init/boxes/KIDs).
-    // With bitstream switching, one cached init is shared across representations.
-    let bitstream_switching =
-        manifest::bitstream_switching_enabled(&period, &adaptation_set, &addressing);
-    let mut encrypted_init_by_rep: HashMap<String, Bytes> = HashMap::new();
+    // Cache init segments by (Adaptation Set index, Representation ID).
+    let mut encrypted_init_by_rep: HashMap<(usize, String), Bytes> = HashMap::new();
     let fetch_env = RepFetchEnv {
         client: &client,
         segment_base_ctx: &segment_base_ctx,
         period: &period,
-        adaptation_set: &adaptation_set,
+        adaptation_sets: &adaptation_sets,
+        primary_period_adaptation_index: period_adaptation_index,
+        bitstream_switching: &bitstream_switching,
         blacklist: &blacklist,
         drm: &drm,
-        period_adaptation_index,
         tx: &tx,
-        bitstream_switching,
     };
     if init_taken {
         let init_plan = plan_init(abr.as_mut(), latest_buffer_s(&buffer_rx));
@@ -339,11 +361,12 @@ pub(crate) async fn run_adaptation_stream(ctx: AdaptationStreamContext) -> Resul
             local_idx,
             &SegmentPlanContext {
                 segment_start_index,
-                adaptation_set: &adaptation_set,
+                primary_period_adaptation_index: period_adaptation_index,
+                adaptation_sets: &adaptation_sets,
+                bitstream_switching: &bitstream_switching,
                 addressing: &addressing,
                 timeline_ctx: &timeline_ctx,
                 cached_inits: &encrypted_init_by_rep,
-                bitstream_switching,
             },
         );
 
@@ -376,11 +399,12 @@ pub(crate) async fn run_adaptation_stream(ctx: AdaptationStreamContext) -> Resul
             )
             .await?;
 
-            let rep_idx = abr.representation_index_for_quality_index(used_quality_index);
-            let rep = &adaptation_set.representations[rep_idx];
+            let (rep_period_idx, rep_aset, rep_idx) =
+                fetch_env.resolve_quality(abr.as_ref(), used_quality_index);
+            let rep = &rep_aset.representations[rep_idx];
             let rep_id = rep.id.as_deref().unwrap_or_default();
             let init_for_decrypt = encrypted_init_by_rep
-                .get(rep_id)
+                .get(&(rep_period_idx, rep_id.to_string()))
                 .ok_or(SegmentError::ExhaustedRepresentations)?;
 
             let fragment_count = fragments.len();
@@ -398,7 +422,7 @@ pub(crate) async fn run_adaptation_stream(ctx: AdaptationStreamContext) -> Resul
                     let mut guard = drm.lock().await;
                     guard
                         .ensure_from_fragments(
-                            period_adaptation_index,
+                            rep_period_idx,
                             rep_id,
                             init_for_decrypt,
                             Some(fragment.as_ref()),
@@ -408,7 +432,7 @@ pub(crate) async fn run_adaptation_stream(ctx: AdaptationStreamContext) -> Resul
 
                 let data = decrypt_media_fragment(
                     &drm,
-                    period_adaptation_index,
+                    rep_period_idx,
                     rep_id,
                     init_for_decrypt,
                     fragment,
@@ -424,7 +448,7 @@ pub(crate) async fn run_adaptation_stream(ctx: AdaptationStreamContext) -> Resul
                     &tx,
                     &metrics,
                     &period,
-                    &adaptation_set,
+                    rep_aset,
                     rep,
                     &seg_for_fetch,
                     data,
@@ -471,28 +495,24 @@ pub(crate) async fn run_adaptation_stream(ctx: AdaptationStreamContext) -> Resul
         )
         .await?;
 
-        let rep_idx = abr.representation_index_for_quality_index(used_quality_index);
-        let rep = &adaptation_set.representations[rep_idx];
+        let (rep_period_idx, rep_aset, rep_idx) =
+            fetch_env.resolve_quality(abr.as_ref(), used_quality_index);
+        let rep = &rep_aset.representations[rep_idx];
         let rep_id = rep.id.as_deref().unwrap_or_default();
         let init_for_decrypt = encrypted_init_by_rep
-            .get(rep_id)
+            .get(&(rep_period_idx, rep_id.to_string()))
             .ok_or(SegmentError::ExhaustedRepresentations)?;
 
         {
             let mut guard = drm.lock().await;
             guard
-                .ensure_from_fragments(
-                    period_adaptation_index,
-                    rep_id,
-                    init_for_decrypt,
-                    Some(&bytes),
-                )
+                .ensure_from_fragments(rep_period_idx, rep_id, init_for_decrypt, Some(&bytes))
                 .await?;
         }
 
         let data = decrypt_media_fragment(
             &drm,
-            period_adaptation_index,
+            rep_period_idx,
             rep_id,
             init_for_decrypt,
             Bytes::from(bytes),
@@ -510,7 +530,7 @@ pub(crate) async fn run_adaptation_stream(ctx: AdaptationStreamContext) -> Resul
             &tx,
             &metrics,
             &period,
-            &adaptation_set,
+            rep_aset,
             rep,
             &seg_for_fetch,
             data,

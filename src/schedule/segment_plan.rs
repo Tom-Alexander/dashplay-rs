@@ -24,12 +24,16 @@ pub(crate) struct InitPlan {
 /// Inputs shared across segment plans for one adaptation-set stream.
 pub(crate) struct SegmentPlanContext<'a> {
     pub segment_start_index: usize,
-    pub adaptation_set: &'a AdaptationSet,
+    /// Period adaptation index of the primary (selected) adaptation set.
+    pub primary_period_adaptation_index: usize,
+    /// Primary and switch/fallback peers keyed by period adaptation index.
+    pub adaptation_sets: &'a HashMap<usize, AdaptationSet>,
+    /// `@bitstreamSwitching` (or equivalent) per period adaptation index.
+    pub bitstream_switching: &'a HashMap<usize, bool>,
     pub addressing: &'a SegmentAddressing,
     pub timeline_ctx: &'a TimelineBuildContext,
-    pub cached_inits: &'a HashMap<String, Bytes>,
-    /// When true, any cached init may be shared across representations (no re-fetch).
-    pub bitstream_switching: bool,
+    /// Cached init segments keyed by `(period_adaptation_index, representation_id)`.
+    pub cached_inits: &'a HashMap<(usize, String), Bytes>,
 }
 
 /// Download plan for one media segment, produced synchronously before fetch/decrypt/emit.
@@ -46,6 +50,9 @@ pub(crate) struct SegmentPlan {
     /// `AdaptationSet.representations` index for the selected rung.
     #[allow(dead_code)]
     pub representation_index: usize,
+    /// Period adaptation index that owns the selected representation.
+    #[allow(dead_code)]
+    pub period_adaptation_index: usize,
     /// Init segment for the selected representation is not yet cached.
     #[allow(dead_code)]
     pub init_needed: bool,
@@ -73,13 +80,34 @@ pub(crate) fn plan_segment(
 ) -> SegmentPlan {
     abr.update_buffer(buffer_s);
     let quality_index = abr.decide().quality_index;
-    let representation_index = abr.representation_index_for_quality_index(quality_index);
-    let rep = &ctx.adaptation_set.representations[representation_index];
+    let rung = abr.rung_for_quality_index(quality_index);
+    let period_adaptation_index = rung.period_adaptation_index;
+    let representation_index = rung.representation_index;
+    let adaptation_set = ctx
+        .adaptation_sets
+        .get(&period_adaptation_index)
+        .or_else(|| {
+            ctx.adaptation_sets
+                .get(&ctx.primary_period_adaptation_index)
+        })
+        .expect("primary adaptation set present");
+    let rep = &adaptation_set.representations[representation_index];
     let rep_id = rep.id.as_deref().unwrap_or_default();
-    let init_needed = if ctx.bitstream_switching && !ctx.cached_inits.is_empty() {
+    let cache_key = (period_adaptation_index, rep_id.to_string());
+    let bitstream = ctx
+        .bitstream_switching
+        .get(&period_adaptation_index)
+        .copied()
+        .unwrap_or(false);
+    let init_needed = if bitstream
+        && ctx
+            .cached_inits
+            .keys()
+            .any(|(aset_idx, _)| *aset_idx == period_adaptation_index)
+    {
         false
     } else {
-        !ctx.cached_inits.contains_key(rep_id)
+        !ctx.cached_inits.contains_key(&cache_key)
     };
 
     let set_availability = SegmentAvailability::from_addressing(ctx.addressing);
@@ -93,6 +121,7 @@ pub(crate) fn plan_segment(
         segment: segment.clone(),
         quality_index,
         representation_index,
+        period_adaptation_index,
         init_needed,
         chunked,
     }
@@ -104,7 +133,7 @@ mod tests {
 
     use dash_mpd::{AdaptationSet, Representation};
 
-    use crate::abr::{AbrController, AbrDecision, AbrFactory, BolaAbrFactory};
+    use crate::abr::{AbrController, AbrDecision, AbrFactory, BolaAbrFactory, QualityRung};
     use crate::manifest::{PeriodWindow, SegmentAddressing, TimelineBuildContext, TimelineSegment};
 
     use super::*;
@@ -151,9 +180,19 @@ mod tests {
         }
     }
 
+    fn single_set_map(aset: AdaptationSet) -> HashMap<usize, AdaptationSet> {
+        let mut map = HashMap::new();
+        map.insert(0, aset);
+        map
+    }
+
+    fn no_bitstream() -> HashMap<usize, bool> {
+        HashMap::new()
+    }
+
     struct FixedAbr {
         quality_index: usize,
-        rep_index: usize,
+        rung: QualityRung,
     }
 
     impl AbrController for FixedAbr {
@@ -170,20 +209,29 @@ mod tests {
         fn decide(&mut self) -> AbrDecision {
             AbrDecision {
                 quality_index: self.quality_index,
-                bitrate_bps: 1_000_000.0,
+                bitrate_bps: self.rung.bitrate_bps,
             }
         }
 
-        fn representation_index_for_quality_index(&self, _quality_index: usize) -> usize {
-            self.rep_index
-        }
-
-        fn bitrate_bps_for_quality_index(&self, _quality_index: usize) -> f64 {
-            1_000_000.0
+        fn rung_for_quality_index(&self, _quality_index: usize) -> &QualityRung {
+            &self.rung
         }
 
         fn rung_count(&self) -> usize {
             1
+        }
+    }
+
+    fn fixed_abr(quality_index: usize, rep_index: usize) -> FixedAbr {
+        FixedAbr {
+            quality_index,
+            rung: QualityRung {
+                period_adaptation_index: 0,
+                representation_index: rep_index,
+                label: String::new(),
+                bitrate_bps: 1_000_000.0,
+                quality_ranking: None,
+            },
         }
     }
 
@@ -201,20 +249,20 @@ mod tests {
     #[test]
     fn plan_segment_marks_init_needed_when_rep_not_cached() {
         let set = adaptation_set_with_id("v1");
-        let mut abr = Box::new(FixedAbr {
-            quality_index: 0,
-            rep_index: 0,
-        }) as Box<dyn AbrController>;
+        let sets = single_set_map(set);
+        let bitstream = no_bitstream();
+        let mut abr = Box::new(fixed_abr(0, 0)) as Box<dyn AbrController>;
         let cached = HashMap::new();
         let timeline = timeline_ctx(false);
         let addressing = SegmentAddressing::Template(Default::default());
         let ctx = SegmentPlanContext {
             segment_start_index: 10,
-            adaptation_set: &set,
+            primary_period_adaptation_index: 0,
+            adaptation_sets: &sets,
+            bitstream_switching: &bitstream,
             addressing: &addressing,
             timeline_ctx: &timeline,
             cached_inits: &cached,
-            bitstream_switching: false,
         };
         let plan = plan_segment(abr.as_mut(), 5.0, &segment(1), 2, &ctx);
         assert_eq!(plan.list_index, 12);
@@ -228,21 +276,21 @@ mod tests {
     #[test]
     fn plan_segment_init_not_needed_when_cached() {
         let set = adaptation_set_with_id("v1");
+        let sets = single_set_map(set);
+        let bitstream = no_bitstream();
         let mut cached = HashMap::new();
-        cached.insert("v1".to_string(), Bytes::new());
-        let mut abr = Box::new(FixedAbr {
-            quality_index: 0,
-            rep_index: 0,
-        }) as Box<dyn AbrController>;
+        cached.insert((0, "v1".to_string()), Bytes::new());
+        let mut abr = Box::new(fixed_abr(0, 0)) as Box<dyn AbrController>;
         let timeline = timeline_ctx(false);
         let addressing = SegmentAddressing::Template(Default::default());
         let ctx = SegmentPlanContext {
             segment_start_index: 0,
-            adaptation_set: &set,
+            primary_period_adaptation_index: 0,
+            adaptation_sets: &sets,
+            bitstream_switching: &bitstream,
             addressing: &addressing,
             timeline_ctx: &timeline,
             cached_inits: &cached,
-            bitstream_switching: false,
         };
         let plan = plan_segment(abr.as_mut(), 5.0, &segment(1), 0, &ctx);
         assert!(!plan.init_needed);
@@ -265,21 +313,22 @@ mod tests {
             ],
             ..Default::default()
         };
+        let sets = single_set_map(set);
+        let mut bitstream = HashMap::new();
+        bitstream.insert(0, true);
         let mut cached = HashMap::new();
-        cached.insert("v1".to_string(), Bytes::from_static(b"init"));
-        let mut abr = Box::new(FixedAbr {
-            quality_index: 1,
-            rep_index: 1,
-        }) as Box<dyn AbrController>;
+        cached.insert((0, "v1".to_string()), Bytes::from_static(b"init"));
+        let mut abr = Box::new(fixed_abr(1, 1)) as Box<dyn AbrController>;
         let timeline = timeline_ctx(false);
         let addressing = SegmentAddressing::Template(Default::default());
         let ctx = SegmentPlanContext {
             segment_start_index: 0,
-            adaptation_set: &set,
+            primary_period_adaptation_index: 0,
+            adaptation_sets: &sets,
+            bitstream_switching: &bitstream,
             addressing: &addressing,
             timeline_ctx: &timeline,
             cached_inits: &cached,
-            bitstream_switching: true,
         };
         let plan = plan_segment(abr.as_mut(), 5.0, &segment(1), 0, &ctx);
         assert!(!plan.init_needed);

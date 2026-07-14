@@ -6,6 +6,7 @@ mod kind;
 mod preselection;
 mod select;
 mod sub_representation;
+pub(crate) mod switching;
 
 #[cfg(test)]
 #[path = "tests.rs"]

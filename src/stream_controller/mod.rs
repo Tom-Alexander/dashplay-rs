@@ -11,6 +11,7 @@ use futures::future::join_all;
 use tokio::sync::Mutex as AsyncMutex;
 
 use crate::platform::sleep;
+use dash_mpd::AdaptationSet;
 
 use super::drm::DrmSessionCoordinator;
 
@@ -144,6 +145,12 @@ impl PlaybackLoopState {
                         }
                         let adaptation_set = selected.adaptation_set.clone();
                         let period_adaptation_index = selected.info.period_adaptation_index;
+                        let switch_peers: std::collections::HashMap<usize, AdaptationSet> =
+                            selected
+                                .switch_peers
+                                .iter()
+                                .map(|(idx, aset)| (*idx, (*aset).clone()))
+                                .collect();
                         let timeline_ctx = build_timeline_context(TimelineContextInputs {
                             mpd: tick.mpd,
                             wall_now: tick.wall_now,
@@ -196,6 +203,7 @@ impl PlaybackLoopState {
                                 template_end_numbers,
                                 period_idx,
                                 adaptation_set,
+                                switch_peers,
                                 track_idx,
                                 period_adaptation_index,
                                 tx,

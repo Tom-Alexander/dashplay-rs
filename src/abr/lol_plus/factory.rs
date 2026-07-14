@@ -5,7 +5,7 @@ use dash_mpd::AdaptationSet;
 use super::algorithm::{LolPlus, QualityLevel};
 use crate::abr::{
     AbrController, AbrCreateContext, AbrDecision, AbrFactory, QualityRung,
-    apply_operating_constraints, preferred_quality_index, quality_ladder_from_adaptation_set,
+    apply_operating_constraints, preferred_quality_index, resolve_quality_ladder,
 };
 
 /// Default segment duration used when the timeline does not provide one (seconds).
@@ -68,7 +68,7 @@ impl LolPlusAbrController {
         factory: &LolPlusAbrFactory,
         ctx: &AbrCreateContext<'_>,
     ) -> Option<Self> {
-        let mut rungs = quality_ladder_from_adaptation_set(adaptation_set);
+        let mut rungs = resolve_quality_ladder(adaptation_set, ctx);
         let preferred = if let Some(ops) = ctx.operating {
             rungs = apply_operating_constraints(rungs, ops);
             preferred_quality_index(&rungs, ops)
@@ -146,12 +146,8 @@ impl AbrController for LolPlusAbrController {
         }
     }
 
-    fn representation_index_for_quality_index(&self, quality_index: usize) -> usize {
-        self.rungs[quality_index].representation_index
-    }
-
-    fn bitrate_bps_for_quality_index(&self, quality_index: usize) -> f64 {
-        self.rungs[quality_index].bitrate_bps
+    fn rung_for_quality_index(&self, quality_index: usize) -> &QualityRung {
+        &self.rungs[quality_index]
     }
 
     fn rung_count(&self) -> usize {

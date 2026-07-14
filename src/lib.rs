@@ -73,7 +73,7 @@ mod types;
 pub use abr::{
     AbrController, AbrCreateContext, AbrDecision, AbrFactory, BolaAbrFactory, LolPlusAbrFactory,
     QualityRung, SharedAbrFactory, quality_ladder_from_adaptation_set,
-    shared as shared_abr_factory,
+    quality_ladder_from_adaptation_sets, shared as shared_abr_factory,
 };
 pub use dash_mpd::SubtitleType;
 #[cfg(feature = "drm")]

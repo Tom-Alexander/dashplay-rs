@@ -10,10 +10,13 @@ use super::info::TrackInfo;
 use super::kind::{TrackDescriptor, TrackKind, TrackPreference, TrackSelection};
 use super::preselection::{ResolvedPreselection, resolve_preselections};
 use super::sub_representation::{resolve_sub_tracks, sub_representation_codec_values};
+use super::switching::{collapse_selected_into_switch_groups, is_dvb_fallback_adaptation_set};
 
 pub(crate) struct SelectedAdaptationSet<'a> {
     pub adaptation_set: &'a AdaptationSet,
     pub info: TrackInfo,
+    /// Peer adaptation sets in the same switch / DVB-fallback group (excluding the primary).
+    pub switch_peers: Vec<(usize, &'a AdaptationSet)>,
 }
 
 pub(crate) fn track_kind(adaptation_set: &AdaptationSet) -> Option<TrackKind> {
@@ -183,7 +186,71 @@ fn track_info(
         accessibility,
         essential_properties,
         supplemental_properties,
+        switchable_adaptation_indices: Vec::new(),
+        switchable_adaptation_set_ids: Vec::new(),
     }
+}
+
+fn with_switch_peers(mut info: TrackInfo, peers: &[(usize, &AdaptationSet)]) -> TrackInfo {
+    info.switchable_adaptation_indices = peers.iter().map(|(idx, _)| *idx).collect();
+    info.switchable_adaptation_set_ids = peers
+        .iter()
+        .filter_map(|(_, aset)| aset.id.clone())
+        .collect();
+    // Surface peer codecs on the primary track for preference / discovery.
+    for (_, peer) in peers {
+        for codec in codec_values(peer) {
+            if !info
+                .codecs
+                .iter()
+                .any(|existing| existing.eq_ignore_ascii_case(&codec))
+            {
+                info.codecs.push(codec);
+            }
+        }
+    }
+    info
+}
+
+type CollapsedCandidate<'a> = (
+    usize,
+    &'a AdaptationSet,
+    TrackInfo,
+    Vec<(usize, &'a AdaptationSet)>,
+);
+
+/// Collapse switch/fallback groups within an already-ranked candidate list (best first).
+fn collapse_kind_candidates<'a>(
+    period: &'a Period,
+    candidates: Vec<(usize, &'a AdaptationSet, TrackInfo)>,
+) -> Vec<CollapsedCandidate<'a>> {
+    if candidates.is_empty() {
+        return Vec::new();
+    }
+    let indices: Vec<usize> = candidates.iter().map(|(idx, _, _)| *idx).collect();
+    let collapsed = collapse_selected_into_switch_groups(period, &indices);
+    let mut by_index = std::collections::HashMap::new();
+    for (idx, aset, info) in candidates {
+        by_index.entry(idx).or_insert((aset, info));
+    }
+
+    collapsed
+        .into_iter()
+        .filter_map(|(primary_idx, peer_idxs)| {
+            let (adaptation_set, info) = by_index.remove(&primary_idx)?;
+            let peers: Vec<(usize, &'a AdaptationSet)> = peer_idxs
+                .into_iter()
+                .filter_map(|peer_idx| {
+                    period
+                        .adaptations
+                        .get(peer_idx)
+                        .map(|aset| (peer_idx, aset))
+                })
+                .collect();
+            let info = with_switch_peers(info, &peers);
+            Some((primary_idx, adaptation_set, info, peers))
+        })
+        .collect()
 }
 
 fn language_matches(language: &str, range: &str) -> bool {
@@ -433,6 +500,10 @@ pub(crate) fn select_adaptation_sets<'a>(
             if super::preselection::is_partial_preselection_adaptation_set(adaptation_set) {
                 continue;
             }
+            // DVB fallback sets are delivered only as peers of their primary.
+            if is_dvb_fallback_adaptation_set(adaptation_set) {
+                continue;
+            }
             if !is_playback_adaptation_set(adaptation_set) {
                 continue;
             }
@@ -451,29 +522,40 @@ pub(crate) fn select_adaptation_sets<'a>(
         }
     }
 
-    let audio = select_kind_with_preselections(
+    let audio = collapse_kind_candidates(
         period,
-        TrackKind::Audio,
-        &selection.audio,
-        audio,
-        &preselections,
+        select_kind_with_preselections(
+            period,
+            TrackKind::Audio,
+            &selection.audio,
+            audio,
+            &preselections,
+        ),
     );
-    let video = select_kind_with_preselections(
+    let video = collapse_kind_candidates(
         period,
-        TrackKind::Video,
-        &selection.video,
-        video,
-        &preselections,
+        select_kind_with_preselections(
+            period,
+            TrackKind::Video,
+            &selection.video,
+            video,
+            &preselections,
+        ),
     );
-    let text = select_kind_with_preselections(
+    let text = collapse_kind_candidates(
         period,
-        TrackKind::Text,
-        &selection.text,
-        text,
-        &preselections,
+        select_kind_with_preselections(
+            period,
+            TrackKind::Text,
+            &selection.text,
+            text,
+            &preselections,
+        ),
     );
     select_kind(&mut trick_play, &selection.trick_play);
     select_kind(&mut image, &selection.image);
+    let trick_play = collapse_kind_candidates(period, trick_play);
+    let image = collapse_kind_candidates(period, image);
 
     let mut selected: Vec<_> = audio
         .into_iter()
@@ -482,12 +564,15 @@ pub(crate) fn select_adaptation_sets<'a>(
         .chain(trick_play)
         .chain(image)
         .collect();
-    selected.sort_by_key(|(document_index, _, _)| *document_index);
+    selected.sort_by_key(|(document_index, _, _, _)| *document_index);
     selected
         .into_iter()
-        .map(|(_, adaptation_set, info)| SelectedAdaptationSet {
-            adaptation_set,
-            info,
-        })
+        .map(
+            |(_, adaptation_set, info, switch_peers)| SelectedAdaptationSet {
+                adaptation_set,
+                info,
+                switch_peers,
+            },
+        )
         .collect()
 }

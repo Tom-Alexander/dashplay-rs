@@ -446,3 +446,85 @@ fn partial_preselection_adaptation_set_is_not_selected_alone() {
         vec![Some("main")]
     );
 }
+
+#[test]
+fn adaptation_set_switching_collapses_to_one_track_with_peers() {
+    let period = period(
+        r#"<MPD><Period>
+                <AdaptationSet id="264" mimeType="video/mp4" contentType="video" codecs="avc1.42E01E">
+                  <SupplementalProperty schemeIdUri="urn:mpeg:dash:adaptation-set-switching:2016" value="265"/>
+                  <Representation id="avc" bandwidth="500000"/>
+                </AdaptationSet>
+                <AdaptationSet id="265" mimeType="video/mp4" contentType="video" codecs="hev1.1.6.L93.B0">
+                  <SupplementalProperty schemeIdUri="urn:mpeg:dash:adaptation-set-switching:2016" value="264"/>
+                  <Representation id="hevc" bandwidth="800000"/>
+                </AdaptationSet>
+            </Period></MPD>"#,
+    );
+
+    let selected = select_adaptation_sets(
+        &period,
+        &TrackSelection::default().with_video(TrackPreference::default().max_tracks(2)),
+    );
+    assert_eq!(selected.len(), 1);
+    assert_eq!(selected[0].info.id.as_deref(), Some("264"));
+    assert_eq!(selected[0].info.switchable_adaptation_indices, vec![1]);
+    assert_eq!(
+        selected[0].info.switchable_adaptation_set_ids,
+        vec!["265".to_string()]
+    );
+    assert_eq!(selected[0].switch_peers.len(), 1);
+    assert!(
+        selected[0]
+            .info
+            .codecs
+            .iter()
+            .any(|c| c.starts_with("hev1"))
+    );
+}
+
+#[test]
+fn max_tracks_one_still_attaches_switchable_peer() {
+    let period = period(
+        r#"<MPD><Period>
+                <AdaptationSet id="1" mimeType="video/mp4" contentType="video" codecs="avc1">
+                  <SupplementalProperty schemeIdUri="urn:mpeg:dash:adaptation-set-switching:2016" value="2"/>
+                  <Representation id="a" bandwidth="100000"/>
+                </AdaptationSet>
+                <AdaptationSet id="2" mimeType="video/mp4" contentType="video" codecs="hev1">
+                  <SupplementalProperty schemeIdUri="urn:mpeg:dash:adaptation-set-switching:2016" value="1"/>
+                  <Representation id="b" bandwidth="200000"/>
+                </AdaptationSet>
+            </Period></MPD>"#,
+    );
+
+    let selected = select_adaptation_sets(
+        &period,
+        &TrackSelection::default().with_video(TrackPreference::default().max_tracks(1)),
+    );
+    assert_eq!(selected.len(), 1);
+    assert_eq!(selected[0].switch_peers.len(), 1);
+}
+
+#[test]
+fn dvb_fallback_is_peer_not_standalone_track() {
+    let period = period(
+        r#"<MPD><Period>
+                <AdaptationSet id="main" mimeType="audio/mp4" contentType="audio" lang="en">
+                  <Role schemeIdUri="urn:mpeg:dash:role:2011" value="main"/>
+                  <Representation id="hi" bandwidth="128000"/>
+                </AdaptationSet>
+                <AdaptationSet id="fb" mimeType="audio/mp4" contentType="audio" lang="en">
+                  <Role schemeIdUri="urn:mpeg:dash:role:2011" value="main"/>
+                  <SupplementalProperty schemeIdUri="urn:dvb:dash:fallback_adaptation_set:2014" value="main"/>
+                  <Representation id="lo" bandwidth="48000"/>
+                </AdaptationSet>
+            </Period></MPD>"#,
+    );
+
+    let selected = select_adaptation_sets(&period, &TrackSelection::default());
+    assert_eq!(selected.len(), 1);
+    assert_eq!(selected[0].info.id.as_deref(), Some("main"));
+    assert_eq!(selected[0].info.switchable_adaptation_indices, vec![1]);
+    assert_eq!(selected[0].switch_peers.len(), 1);
+}

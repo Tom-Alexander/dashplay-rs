@@ -34,4 +34,9 @@ pub struct TrackInfo {
     pub essential_properties: Vec<TrackDescriptor>,
     /// `SupplementalProperty` descriptors aggregated from the adaptation set and its children.
     pub supplemental_properties: Vec<TrackDescriptor>,
+    /// Period adaptation indices that may be switched to (adaptation-set switching / DVB
+    /// fallback), excluding this track's own index.
+    pub switchable_adaptation_indices: Vec<usize>,
+    /// `AdaptationSet@id` values corresponding to [`Self::switchable_adaptation_indices`].
+    pub switchable_adaptation_set_ids: Vec<String>,
 }

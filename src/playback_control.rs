@@ -8,11 +8,11 @@ use std::time::Duration;
 
 use thiserror::Error;
 use tokio::sync::watch;
-use tokio::time::Instant as TokioInstant;
 
 use super::clock::latency_control::{
     LatencyControlUpdate, LatencyPolicy, LiveClock, evaluate as evaluate_latency,
 };
+use super::platform::Instant;
 use super::track_selection::TrackSelection;
 
 /// Buffer level (seconds) at or above which playback is considered healthy for stall detection.
@@ -81,7 +81,7 @@ struct Inner {
     /// Consumption position (media clock); published via `playhead_tx`.
     media_clock: Mutex<Option<Duration>>,
     /// Wall sample used to advance [`Self::media_clock`] while [`PlaybackState::Playing`].
-    media_clock_wall: Mutex<Option<TokioInstant>>,
+    media_clock_wall: Mutex<Option<Instant>>,
     /// `MPD@minBufferTime` used for stall recovery thresholds.
     min_buffer_s: Mutex<f64>,
     /// Whether estimated buffer has been healthy since the last stall.
@@ -534,7 +534,7 @@ impl PlaybackController {
             1.0
         };
 
-        let now = TokioInstant::now();
+        let now = Instant::now();
         let mut clock_guard = self
             .inner
             .media_clock

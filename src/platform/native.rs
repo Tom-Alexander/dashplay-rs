@@ -4,6 +4,7 @@ use std::sync::Arc;
 use std::time::Duration;
 
 use bytes::Bytes;
+use chrono::{DateTime, Utc};
 use url::Url;
 
 #[cfg(not(feature = "drm"))]
@@ -12,6 +13,11 @@ use crate::PlayerError;
 use crate::drm::DrmError;
 
 pub use std::time::Instant;
+
+/// Current UTC wall clock.
+pub fn utc_now() -> DateTime<Utc> {
+    Utc::now()
+}
 
 pub type BoxedFuture<'a, T> = Pin<Box<dyn Future<Output = T> + Send + 'a>>;
 

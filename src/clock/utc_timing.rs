@@ -2,9 +2,11 @@
 //!
 //! Implements the normative `schemeIdUri` values under `urn:mpeg:dash:utc:*` used for
 //! `UTCTiming@schemeIdUri` / `@value`, in manifest order (first is highest preference).
-//! Unsupported or failing sources are skipped; if none succeed, falls back to `Utc::now()`.
+//! Unsupported or failing sources are skipped; if none succeed, falls back to the platform clock.
 
+#[cfg(not(target_arch = "wasm32"))]
 use std::net::UdpSocket;
+#[cfg(not(target_arch = "wasm32"))]
 use std::time::Duration;
 
 use chrono::{DateTime, NaiveDateTime, TimeZone, Utc};
@@ -14,6 +16,7 @@ use quick_xml::events::Event;
 use url::Url;
 
 use crate::http::{HttpRequest, SharedHttpClient};
+use crate::platform;
 
 const NTP_UNIX_OFFSET: i64 = 2_208_988_800;
 
@@ -29,7 +32,7 @@ pub(crate) async fn wall_clock_utc(
             return t;
         }
     }
-    Utc::now()
+    platform::utc_now()
 }
 
 fn utc_timing_chain(mpd: &MPD) -> Vec<&UTCTiming> {
@@ -127,8 +130,17 @@ async fn resolve_utc_timing(
             http_ntp_body(client, &url).await
         }
         UtcScheme::Ntp | UtcScheme::NtpServer | UtcScheme::Sntp => {
-            let (host, port) = parse_host_port(value, 123)?;
-            (tokio::task::spawn_blocking(move || sntp_query(&host, port)).await).unwrap_or_default()
+            #[cfg(target_arch = "wasm32")]
+            {
+                let _ = value;
+                None
+            }
+            #[cfg(not(target_arch = "wasm32"))]
+            {
+                let (host, port) = parse_host_port(value, 123)?;
+                (tokio::task::spawn_blocking(move || sntp_query(&host, port)).await)
+                    .unwrap_or_default()
+            }
         }
         UtcScheme::WebSocket => None,
     }
@@ -147,6 +159,7 @@ fn resolve_http_url(manifest_uri: Option<&Url>, value: &str) -> Option<String> {
         .map(|u| u.to_string())
 }
 
+#[cfg(not(target_arch = "wasm32"))]
 fn parse_host_port(s: &str, default_port: u16) -> Option<(String, u16)> {
     let s = s.trim();
     if let Some((host, port_s)) = s.rsplit_once(':') {
@@ -282,6 +295,7 @@ fn parse_http_date(s: &str) -> Option<DateTime<Utc>> {
         .ok()
 }
 
+#[cfg(not(target_arch = "wasm32"))]
 fn sntp_query(host: &str, port: u16) -> Option<DateTime<Utc>> {
     let socket = UdpSocket::bind("0.0.0.0:0").ok()?;
     socket.set_read_timeout(Some(Duration::from_secs(3))).ok()?;

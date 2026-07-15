@@ -127,6 +127,13 @@ pub enum PlayerError {
     Drm(#[from] DrmError),
 }
 
+#[cfg(not(feature = "drm"))]
+impl From<drm::DrmError> for PlayerError {
+    fn from(value: drm::DrmError) -> Self {
+        match value {}
+    }
+}
+
 impl From<dash_mpd::DashMpdError> for PlayerError {
     fn from(value: dash_mpd::DashMpdError) -> Self {
         Self::Manifest(ManifestError::Parse(value))

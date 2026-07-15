@@ -4,6 +4,7 @@ use std::sync::Arc;
 use std::time::Duration;
 
 use bytes::Bytes;
+use chrono::{DateTime, Utc};
 use url::Url;
 
 #[cfg(not(feature = "drm"))]
@@ -12,6 +13,15 @@ use crate::PlayerError;
 use crate::drm::DrmError;
 
 pub use web_time::Instant;
+
+/// Current UTC wall clock (`std::time::SystemTime` panics on this target).
+pub fn utc_now() -> DateTime<Utc> {
+    let duration = web_time::SystemTime::now()
+        .duration_since(web_time::SystemTime::UNIX_EPOCH)
+        .unwrap_or_default();
+    DateTime::<Utc>::from_timestamp(duration.as_secs() as i64, duration.subsec_nanos())
+        .unwrap_or(DateTime::<Utc>::UNIX_EPOCH)
+}
 
 pub type BoxedFuture<'a, T> = Pin<Box<dyn Future<Output = T> + 'a>>;
 
@@ -39,15 +49,14 @@ pub async fn sleep(duration: Duration) {
     gloo_timers::future::TimeoutFuture::new(millis).await;
 }
 
-/// Fill `buf` with random bytes (Web Crypto when available).
+/// Fill `buf` with random bytes (deterministic mixer seeded from monotonic time).
 pub fn fill_random(buf: &mut [u8]) {
     use std::collections::hash_map::DefaultHasher;
     use std::hash::{Hash, Hasher};
-    use std::time::{SystemTime, UNIX_EPOCH};
 
-    // web-sys Crypto is optional in wasm/dashplay-wasm; keep a portable fallback here.
-    let mut seed = SystemTime::now()
-        .duration_since(UNIX_EPOCH)
+    // Prefer `web_time` over `std::time::SystemTime`, which panics on wasm32-unknown-unknown.
+    let mut seed = web_time::SystemTime::now()
+        .duration_since(web_time::SystemTime::UNIX_EPOCH)
         .map(|d| d.as_nanos() as u64)
         .unwrap_or(0);
     for (i, byte) in buf.iter_mut().enumerate() {

@@ -26,4 +26,4 @@ pub use playback_error::DrmError;
 pub use widevine::{License, LicenseError, WidevineLicenseManager, WidevineSessionKey};
 
 #[cfg(not(feature = "drm"))]
-pub use stub::{DrmSessionCoordinator, WidevineLicenseFetcher};
+pub use stub::{DrmError, DrmSessionCoordinator, WidevineLicenseFetcher};

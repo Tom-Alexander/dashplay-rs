@@ -1,9 +1,15 @@
 //! No-op DRM coordinator used when the `drm` feature is disabled.
 
+use thiserror::Error;
 use url::Url;
 
-use crate::drm::DrmError;
 use crate::http::SharedHttpClient;
+
+/// Placeholder error type when the `drm` feature is disabled.
+///
+/// Uninhabited: stub DRM APIs never fail.
+#[derive(Debug, Error)]
+pub enum DrmError {}
 
 /// Async license fetch hook (unused without the `drm` feature).
 pub type WidevineLicenseFetcher = crate::platform::LicenseFetcher;

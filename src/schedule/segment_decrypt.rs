@@ -5,8 +5,7 @@ use std::sync::Arc;
 use bytes::Bytes;
 use tokio::sync::Mutex as AsyncMutex;
 
-use crate::drm::DrmError;
-use crate::drm::DrmSessionCoordinator;
+use crate::drm::{DrmError, DrmSessionCoordinator};
 
 #[cfg(feature = "drm")]
 use crate::drm::License;

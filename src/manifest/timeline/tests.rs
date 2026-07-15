@@ -391,6 +391,42 @@ fn dynamic_segment_timeline_filtered_to_time_shift_buffer() {
 }
 
 #[test]
+fn dynamic_segment_timeline_caps_window_at_media_presentation_duration() {
+    let st = SegmentTemplate {
+        timescale: Some(1000),
+        presentationTimeOffset: Some(0),
+        startNumber: Some(1),
+        SegmentTimeline: Some(SegmentTimeline {
+            segments: vec![S {
+                t: Some(0),
+                d: 4000,
+                r: Some(9),
+                ..Default::default()
+            }],
+        }),
+        ..Default::default()
+    };
+    let ctx = TimelineBuildContext {
+        is_dynamic: true,
+        period_window: PeriodWindow {
+            idx: 0,
+            start: Duration::ZERO,
+            end: Some(Duration::from_secs(16)),
+        },
+        period_duration: None,
+        media_presentation_duration: Some(Duration::from_secs(16)),
+        max_segment_duration: None,
+        time_shift_buffer_depth: Some(Duration::from_secs(20)),
+        since_availability_start: Some(Duration::from_secs(20)),
+        resync_hints: None,
+    };
+    let segs = timeline_segments(&st, &ctx, None).unwrap();
+    assert_eq!(segs.len(), 4);
+    assert_eq!(segs.first().map(|s| s.presentation_time_s), Some(0.0));
+    assert_eq!(segs.last().map(|s| s.presentation_time_s), Some(12.0));
+}
+
+#[test]
 fn segment_timeline_k_sequence_subnumbers_and_shared_time() {
     let st = SegmentTemplate {
         timescale: Some(1000),
@@ -957,6 +993,68 @@ fn dynamic_duration_template_limits_window_to_time_shift_buffer() {
     let segs = timeline_segments(&st, &ctx, None).unwrap();
     assert_eq!(segs.first().map(|s| s.number), Some(2));
     assert_eq!(segs.last().map(|s| s.number), Some(6));
+}
+
+#[test]
+fn dynamic_duration_template_caps_at_media_presentation_duration() {
+    let st = SegmentTemplate {
+        timescale: Some(1000),
+        duration: Some(4000.0),
+        presentationTimeOffset: Some(0),
+        startNumber: Some(1),
+        ..Default::default()
+    };
+    let ctx = TimelineBuildContext {
+        is_dynamic: true,
+        period_window: PeriodWindow {
+            idx: 0,
+            start: Duration::ZERO,
+            end: Some(Duration::from_secs(16)),
+        },
+        period_duration: None,
+        media_presentation_duration: Some(Duration::from_secs(16)),
+        max_segment_duration: None,
+        time_shift_buffer_depth: Some(Duration::from_secs(20)),
+        // Live edge past the known presentation end.
+        since_availability_start: Some(Duration::from_secs(20)),
+        resync_hints: None,
+    };
+
+    let segs = timeline_segments(&st, &ctx, None).unwrap();
+    assert_eq!(segs.first().map(|s| s.number), Some(1));
+    assert_eq!(segs.last().map(|s| s.number), Some(4));
+    assert!((segs.last().unwrap().presentation_time_s - 12.0).abs() < 1e-9);
+    assert!((segs.last().unwrap().duration_s - 4.0).abs() < 1e-9);
+}
+
+#[test]
+fn dynamic_duration_template_bounds_last_segment_to_presentation_end() {
+    let st = SegmentTemplate {
+        timescale: Some(1000),
+        duration: Some(4000.0),
+        presentationTimeOffset: Some(0),
+        startNumber: Some(1),
+        ..Default::default()
+    };
+    let ctx = TimelineBuildContext {
+        is_dynamic: true,
+        period_window: PeriodWindow {
+            idx: 0,
+            start: Duration::ZERO,
+            end: Some(Duration::from_secs(10)),
+        },
+        period_duration: None,
+        media_presentation_duration: Some(Duration::from_secs(10)),
+        max_segment_duration: None,
+        time_shift_buffer_depth: Some(Duration::from_secs(20)),
+        since_availability_start: Some(Duration::from_secs(20)),
+        resync_hints: None,
+    };
+
+    let segs = timeline_segments(&st, &ctx, None).unwrap();
+    assert_eq!(segs.len(), 3);
+    assert_eq!(segs.last().unwrap().number, 3);
+    assert!((segs.last().unwrap().duration_s - 2.0).abs() < 1e-9);
 }
 
 #[test]

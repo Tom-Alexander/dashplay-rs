@@ -395,7 +395,8 @@ fn negative_r_repeat_end(
 }
 
 /// For dynamic MPDs with `SegmentTimeline`, keep segments in the time-shift buffer (same idea as
-/// `segments_from_duration_template`): MPD media time in `[now - TSBD, now]`.
+/// `segments_from_duration_template`): MPD media time in `[now - TSBD, now]`, capped at the
+/// known presentation / Period end when `@mediaPresentationDuration` (or Period end) is set.
 fn filter_explicit_timeline_for_dynamic_window(
     segments: Vec<TimelineSegment>,
     ctx: &TimelineBuildContext,
@@ -411,13 +412,17 @@ fn filter_explicit_timeline_for_dynamic_window(
         .filter(|x| x.is_finite() && *x > 0.0)
         .unwrap_or(120.0);
     let window_start_s = (now_s - tsbd_s).max(period_start_s);
-    let window_end_s = now_s;
+    let period_end_s = ctx.period_end_secs();
 
     Ok(segments
         .into_iter()
         .filter(|s| {
             let abs_s = period_start_s + s.presentation_time_s;
-            abs_s <= window_end_s + 1e-6 && abs_s >= window_start_s - 1e-6
+            if abs_s < window_start_s - 1e-6 || abs_s > now_s + 1e-6 {
+                return false;
+            }
+            // Known presentation / Period end: exclude segments that start at or after it.
+            period_end_s.is_none_or(|end| abs_s + 1e-9 < end)
         })
         .collect())
 }
@@ -447,8 +452,21 @@ fn segments_from_duration_template(
             return Err(ManifestError::MissingAvailabilityStartForDynamicTemplate);
         };
         let period_start_s = ctx.period_window.start.as_secs_f64();
-        let t_in_period = (since_ast.as_secs_f64() - period_start_s).max(0.0);
+        // Cap the live edge at the known presentation / Period end (dynamic + static duration).
+        let mut t_in_period = (since_ast.as_secs_f64() - period_start_s).max(0.0);
+        if let Some(period_length_s) = ctx.period_length_secs() {
+            t_in_period = t_in_period.min(period_length_s);
+        }
         let mut end_n = start_number + (t_in_period / duration_s).floor() as u64;
+        // Segments start at presentation times < period end; the last open interval may
+        // begin at `floor((period_length - epsilon) / duration) * duration`.
+        if let Some(period_length_s) = ctx.period_length_secs() {
+            if period_length_s > 0.0 {
+                let max_start_s = (period_length_s - 1e-9).max(0.0);
+                let max_n = start_number + (max_start_s / duration_s).floor() as u64;
+                end_n = end_n.min(max_n);
+            }
+        }
         if let Some(en) = end_number {
             end_n = end_n.min(en);
         }
@@ -483,6 +501,10 @@ fn segments_from_duration_template(
                 media_range: None,
             });
         }
+        if let Some(period_length_s) = ctx.period_length_secs() {
+            bound_last_static_duration_segment(&mut segments, period_length_s, timescale);
+        }
+        validate_timeline_segments(&segments, ctx)?;
         Ok(segments)
     } else {
         let count = static_duration_segment_count(start_number, duration_s, end_number, ctx)?;

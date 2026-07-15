@@ -27,7 +27,10 @@ use super::track_selection::{SelectedAdaptationSet, TrackSelection};
 use super::track_session::TrackSessionState;
 use super::types::PlayerEvent;
 
-use manifest_loop::{broadcast_manifest_loaded, manifest_tick, periods_to_play, refresh_manifest};
+use manifest_loop::{
+    broadcast_manifest_loaded, manifest_tick, periods_to_play, refresh_manifest,
+    should_end_after_tick,
+};
 use mpd_events::MpdEventDedup;
 use period_context::{
     PeriodContextInputs, TimelineContextInputs, build_period_context, build_timeline_context,
@@ -252,7 +255,12 @@ impl PlaybackLoopState {
                     continue;
                 }
 
-                if tick.min_update_period.is_zero() {
+                if should_end_after_tick(
+                    tick.mpd,
+                    tick.is_dynamic,
+                    tick.wall_now,
+                    tick.min_update_period,
+                )? {
                     send_playback_ended(&tracks);
                     playback.set_state(PlaybackState::Ended);
                     break;

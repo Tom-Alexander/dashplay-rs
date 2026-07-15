@@ -75,6 +75,44 @@ pub(crate) fn periods_to_play(
     }
 }
 
+/// Whether a dynamic presentation with known `@mediaPresentationDuration` has finished
+/// (wall clock at or past AST + duration). Static MPDs always report finished once played.
+pub(crate) fn dynamic_presentation_has_ended(
+    mpd: &MPD,
+    is_dynamic: bool,
+    wall_now: DateTime<Utc>,
+) -> Result<bool, PlayerError> {
+    if !is_dynamic {
+        return Ok(true);
+    }
+    let Some(duration) = mpd.mediaPresentationDuration.filter(|d| !d.is_zero()) else {
+        return Ok(false);
+    };
+    let Some(since_ast) = manifest::since_availability_start_at(mpd, wall_now)? else {
+        return Ok(false);
+    };
+    Ok(since_ast >= duration)
+}
+
+/// End playback after this tick when there is nothing left to fetch/update.
+pub(crate) fn should_end_after_tick(
+    mpd: &MPD,
+    is_dynamic: bool,
+    wall_now: DateTime<Utc>,
+    min_update_period: Duration,
+) -> Result<bool, PlayerError> {
+    if min_update_period.is_zero() {
+        // No `minimumUpdatePeriod`: static VOD, or dynamic live-to-VoD transition
+        // (`mediaPresentationDuration` set, MUP removed — DASH-IF live2vod).
+        if !is_dynamic {
+            return Ok(true);
+        }
+        return Ok(mpd.mediaPresentationDuration.is_some());
+    }
+    // Dynamic with MUP still present: stop once the known presentation duration elapses.
+    dynamic_presentation_has_ended(mpd, is_dynamic, wall_now)
+}
+
 pub(crate) fn broadcast_manifest_loaded(tracks: &[PlayerTrack], mpd: &MPD, mpd_xml: &str) {
     let is_dynamic = manifest::is_dynamic_mpd(mpd);
     let metadata = manifest::ManifestMetadata::from_mpd(mpd, Some(mpd_xml));

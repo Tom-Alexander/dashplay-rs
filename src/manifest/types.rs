@@ -38,6 +38,20 @@ impl TimelineBuildContext {
                 return Some(d.as_secs_f64());
             }
         }
+        // `MPD@mediaPresentationDuration` is MPD-timeline absolute; convert to Period extent.
+        self.media_presentation_duration
+            .filter(|d| *d > self.period_window.start)
+            .map(|d| d.saturating_sub(self.period_window.start).as_secs_f64())
+    }
+
+    /// Absolute MPD-timeline end of this Period when known (seconds from AST / Period@start zero).
+    pub(crate) fn period_end_secs(self) -> Option<f64> {
+        if let Some(end) = self.period_window.end {
+            return Some(end.as_secs_f64());
+        }
+        if let Some(d) = self.period_duration {
+            return Some(self.period_window.start.saturating_add(d).as_secs_f64());
+        }
         self.media_presentation_duration
             .filter(|d| !d.is_zero())
             .map(|d| d.as_secs_f64())

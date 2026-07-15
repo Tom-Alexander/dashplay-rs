@@ -76,3 +76,40 @@ fn current_period_window_selects_by_availability_time() {
     let in_second = Utc.with_ymd_and_hms(2020, 5, 1, 12, 0, 12).unwrap();
     assert_eq!(current_period_window_at(&mpd, in_second).unwrap().idx, 1);
 }
+
+#[test]
+fn period_windows_apply_media_presentation_duration_to_last_period() {
+    let mpd = MPD {
+        mediaPresentationDuration: Some(Duration::from_secs(16)),
+        periods: vec![Period {
+            id: Some("p0".into()),
+            ..Default::default()
+        }],
+        ..Default::default()
+    };
+
+    let windows = period_windows(&mpd).unwrap();
+    assert_eq!(windows.len(), 1);
+    assert_eq!(windows[0].start, Duration::ZERO);
+    assert_eq!(windows[0].end, Some(Duration::from_secs(16)));
+}
+
+#[test]
+fn current_period_window_past_presentation_end_keeps_last_period_extent() {
+    let ast = Utc.with_ymd_and_hms(2020, 5, 1, 12, 0, 0).unwrap();
+    let mpd = MPD {
+        mpdtype: Some("dynamic".into()),
+        availabilityStartTime: Some(ast),
+        mediaPresentationDuration: Some(Duration::from_secs(16)),
+        periods: vec![Period {
+            id: Some("p0".into()),
+            ..Default::default()
+        }],
+        ..Default::default()
+    };
+
+    let after_end = Utc.with_ymd_and_hms(2020, 5, 1, 12, 0, 20).unwrap();
+    let window = current_period_window_at(&mpd, after_end).unwrap();
+    assert_eq!(window.idx, 0);
+    assert_eq!(window.end, Some(Duration::from_secs(16)));
+}

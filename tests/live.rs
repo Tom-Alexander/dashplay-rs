@@ -3,8 +3,8 @@ mod common;
 use common::{
     AdvancingLiveServer, FixtureServer, InbandProducerReferenceLiveServer, LatencyLiveServer,
     PartialLiveServer, ProducerReferenceLiveServer, assert_no_duplicate_segments, has_end,
-    init_payload, init_payloads, partial_segment_payloads, play_single_track_live,
-    playback_rate_suggestions, segment_numbers, segment_payloads,
+    init_payload, init_payloads, partial_segment_payloads, play_single_track,
+    play_single_track_live, playback_rate_suggestions, segment_numbers, segment_payloads,
 };
 
 const LIVE_TIMEOUT: std::time::Duration = std::time::Duration::from_millis(800);
@@ -36,6 +36,40 @@ async fn live_duration_template_emits_init_and_segments_without_end() {
     assert!(
         !has_end(&events),
         "live stream should not emit End while active"
+    );
+}
+
+#[tokio::test]
+async fn dynamic_mpd_with_static_duration_caps_segments_and_ends() {
+    // DASH-IF live2vod: `@type=dynamic` + `@mediaPresentationDuration`, no MUP —
+    // presentation is finished; client plays through the known duration then ends.
+    let server = FixtureServer::spawn("live_static_duration").await;
+    let events = play_single_track(&server.manifest_url, REFRESH_TIMEOUT)
+        .await
+        .expect("playback");
+
+    assert_eq!(
+        init_payload(&events).as_deref(),
+        Some(b"dashplay-init-v1".as_ref())
+    );
+    let numbers = segment_numbers(&events);
+    assert_eq!(
+        numbers,
+        vec![1, 2, 3, 4],
+        "expected segments capped at mediaPresentationDuration, got {numbers:?}"
+    );
+    assert_eq!(
+        segment_payloads(&events),
+        [
+            b"dashplay-ended-seg-1".as_ref(),
+            b"dashplay-ended-seg-2".as_ref(),
+            b"dashplay-ended-seg-3".as_ref(),
+            b"dashplay-ended-seg-4".as_ref(),
+        ]
+    );
+    assert!(
+        has_end(&events),
+        "dynamic MPD with static duration should emit End after presentation"
     );
 }
 

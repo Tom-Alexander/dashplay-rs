@@ -54,6 +54,14 @@ pub(crate) fn period_windows(mpd: &MPD) -> Result<Vec<PeriodWindow>, ManifestErr
         windows.push(PeriodWindow { idx, start, end });
     }
 
+    // ISO/IEC 23009-1 Annex A.3.2 / DASH-IF live2vod: `@mediaPresentationDuration`
+    // takes precedence for the last Period extent (dynamic and static).
+    if let Some(mpd_end) = mpd.mediaPresentationDuration.filter(|d| !d.is_zero()) {
+        if let Some(last) = windows.last_mut() {
+            last.end = Some(mpd_end.max(last.start));
+        }
+    }
+
     Ok(windows)
 }
 
@@ -72,22 +80,15 @@ pub(crate) fn current_period_window_at(
         return Ok(windows[0]);
     };
 
-    for w in windows {
+    for w in &windows {
         let in_range = since_ast >= w.start && w.end.is_none_or(|e| since_ast < e);
         if in_range {
-            return Ok(w);
+            return Ok(*w);
         }
     }
 
-    Ok(PeriodWindow {
-        idx: mpd.periods.len().saturating_sub(1),
-        start: mpd
-            .periods
-            .last()
-            .and_then(|p| p.start)
-            .unwrap_or(Duration::ZERO),
-        end: None,
-    })
+    // Past the last Period (e.g. dynamic presentation whose duration has elapsed).
+    Ok(windows[windows.len() - 1])
 }
 
 #[cfg(test)]

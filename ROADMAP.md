@@ -251,7 +251,7 @@ without changing playback behaviour.
 - [~] **Pause semantics.** Buffer drain signalling; optional in-flight download cancellation.
 - [x] **Playhead API.** Track and expose current presentation time.
 - [~] **Live DVR seek.** Expand seek bounds and window handling beyond resolved timeline.
-- [ ] **Dynamic MPD static-duration semantics.** `@type="dynamic"` with static presentation
+- [x] **Dynamic MPD static-duration semantics.** `@type="dynamic"` with static presentation
   duration behaviour.
 - [ ] **Multi-period overlap / sync buffer.** Handling beyond init re-emission.
 - [x] **LL-DASH target latency control.** Adjust consumption rate to chase

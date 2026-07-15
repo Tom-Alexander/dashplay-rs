@@ -3,7 +3,7 @@ use std::time::Duration;
 use chrono::{TimeZone, Utc};
 use dash_mpd::{MPD, Period};
 
-use super::{current_period_window_at, period_windows};
+use super::{current_period_window_at, period_windows, presentation_gap_before};
 
 #[test]
 fn period_windows_chain_period_starts() {
@@ -28,6 +28,54 @@ fn period_windows_chain_period_starts() {
     assert_eq!(windows[0].end, Some(Duration::from_secs(10)));
     assert_eq!(windows[1].start, Duration::from_secs(10));
     assert_eq!(windows[1].end, Some(Duration::from_secs(15)));
+    assert_eq!(
+        presentation_gap_before(windows[0].end, windows[1].start),
+        None
+    );
+}
+
+#[test]
+fn period_windows_preserve_explicit_timeline_gap() {
+    let mpd = MPD {
+        mediaPresentationDuration: Some(Duration::from_secs(20)),
+        periods: vec![
+            Period {
+                duration: Some(Duration::from_secs(8)),
+                ..Default::default()
+            },
+            Period {
+                start: Some(Duration::from_secs(12)),
+                duration: Some(Duration::from_secs(8)),
+                ..Default::default()
+            },
+        ],
+        ..Default::default()
+    };
+
+    let windows = period_windows(&mpd).unwrap();
+    assert_eq!(windows[0].end, Some(Duration::from_secs(8)));
+    assert_eq!(windows[1].start, Duration::from_secs(12));
+    assert_eq!(
+        presentation_gap_before(windows[0].end, windows[1].start),
+        Some(Duration::from_secs(4))
+    );
+    assert_eq!(
+        super::gap_before_period(&mpd, 1),
+        Some(Duration::from_secs(4))
+    );
+    assert_eq!(super::gap_before_period(&mpd, 0), None);
+}
+
+#[test]
+fn presentation_gap_before_ignores_overlap() {
+    assert_eq!(
+        presentation_gap_before(Some(Duration::from_secs(10)), Duration::from_secs(8)),
+        None
+    );
+    assert_eq!(
+        presentation_gap_before(Some(Duration::from_secs(8)), Duration::from_secs(8)),
+        None
+    );
 }
 
 #[test]

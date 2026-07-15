@@ -28,6 +28,34 @@ pub(crate) fn since_availability_start_at(
     Ok(Some(since_ast))
 }
 
+/// Presentation-timeline hole between consecutive Period windows, if any.
+///
+/// Returns `Some(gap)` when `next_start > prev_end`. Abutting (`==`) or overlapping
+/// (`next_start < prev_end`) Periods yield `None`. Missing `prev_end` yields `None`.
+pub(crate) fn presentation_gap_before(
+    prev_end: Option<Duration>,
+    next_start: Duration,
+) -> Option<Duration> {
+    let prev_end = prev_end?;
+    if next_start > prev_end {
+        Some(next_start - prev_end)
+    } else {
+        None
+    }
+}
+
+/// Gap on the Media Presentation timeline immediately before `period_idx`, if the prior
+/// Period window ends strictly before this Period's start.
+pub(crate) fn gap_before_period(mpd: &MPD, period_idx: usize) -> Option<Duration> {
+    if period_idx == 0 {
+        return None;
+    }
+    let windows = period_windows(mpd).ok()?;
+    let prev = windows.iter().find(|w| w.idx + 1 == period_idx)?;
+    let current = windows.iter().find(|w| w.idx == period_idx)?;
+    presentation_gap_before(prev.end, current.start)
+}
+
 pub(crate) fn period_windows(mpd: &MPD) -> Result<Vec<PeriodWindow>, ManifestError> {
     if mpd.periods.is_empty() {
         return Err(ManifestError::NoPeriod);

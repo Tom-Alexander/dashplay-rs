@@ -228,7 +228,8 @@ without changing playback behaviour.
   `@maxFrameRate` against representations and ABR.
 - [~] **Period `EventStream` scope.** Collect AdaptationSet- and Representation-level MPD
   `EventStream` events, not only Period-level.
-- [~] **Period gaps.** Surface explicit gap / discontinuity signalling between periods.
+- [x] **Period gaps.** Surface explicit gap / discontinuity signalling between periods
+  (`PeriodChanged.gap_before` when `PeriodStart` follows a prior Period end with a hole).
 
 ## P7 — Scheduling, ABR, and playback semantics (unsupported backlog)
 

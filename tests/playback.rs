@@ -5,8 +5,9 @@ use common::{
     segment_payloads, trim_payload,
 };
 use dashplayrs::{PeriodTransitionKind, PlayerEvent};
+use std::time::Duration;
 
-const TIMEOUT: std::time::Duration = std::time::Duration::from_secs(10);
+const TIMEOUT: Duration = Duration::from_secs(10);
 
 #[tokio::test]
 async fn vod_single_track_emits_init_segments_and_end() {
@@ -462,18 +463,92 @@ async fn vod_multi_period_emits_inits_and_segments_in_order() {
             PlayerEvent::PeriodChanged {
                 period_index,
                 transition,
+                gap_before,
                 ..
-            } => Some((*period_index, *transition)),
+            } => Some((*period_index, *transition, *gap_before)),
             _ => None,
         })
         .collect();
     assert_eq!(
         period_events,
         vec![
-            (0, PeriodTransitionKind::Discontinuous),
-            (1, PeriodTransitionKind::Discontinuous),
+            (0, PeriodTransitionKind::Discontinuous, None),
+            (1, PeriodTransitionKind::Discontinuous, None),
         ]
     );
+}
+
+#[tokio::test]
+async fn vod_period_gap_signals_presentation_hole() {
+    let server = FixtureServer::spawn("vod_period_gap").await;
+    let events = play_single_track(&server.manifest_url, TIMEOUT)
+        .await
+        .expect("playback");
+
+    let inits = init_payloads(&events);
+    assert_eq!(
+        inits.len(),
+        2,
+        "gap periods remain discontinuous, got {inits:?}"
+    );
+    assert_eq!(
+        segment_payloads(&events),
+        vec![
+            b"dashplay-period1-seg-1".to_vec(),
+            b"dashplay-period1-seg-2".to_vec(),
+            b"dashplay-period2-seg-1".to_vec(),
+            b"dashplay-period2-seg-2".to_vec(),
+        ]
+    );
+    assert!(has_end(&events));
+
+    let period_events: Vec<_> = events
+        .iter()
+        .filter_map(|ev| match ev {
+            PlayerEvent::PeriodChanged {
+                period_index,
+                start,
+                end,
+                transition,
+                gap_before,
+            } => Some((*period_index, *start, *end, *transition, *gap_before)),
+            _ => None,
+        })
+        .collect();
+    assert_eq!(
+        period_events,
+        vec![
+            (
+                0,
+                Duration::ZERO,
+                Some(Duration::from_secs(8)),
+                PeriodTransitionKind::Discontinuous,
+                None,
+            ),
+            (
+                1,
+                Duration::from_secs(12),
+                Some(Duration::from_secs(20)),
+                PeriodTransitionKind::Discontinuous,
+                Some(Duration::from_secs(4)),
+            ),
+        ]
+    );
+
+    let p2_seg_times: Vec<_> = events
+        .iter()
+        .filter_map(|ev| match ev {
+            PlayerEvent::Segment {
+                presentation_time,
+                data,
+                ..
+            } if trim_payload(data.as_ref()) == b"dashplay-period2-seg-1" => {
+                Some(*presentation_time)
+            }
+            _ => None,
+        })
+        .collect();
+    assert_eq!(p2_seg_times, vec![Duration::from_secs(12)]);
 }
 
 #[tokio::test]

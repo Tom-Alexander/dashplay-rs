@@ -159,6 +159,11 @@ pub enum PlayerEvent {
     /// `start` / `end` are presentation-timeline clip windows for this Period. Consumers
     /// that map into MSE can use them as append-window bounds. Sample-level clipping is
     /// not performed by the library.
+    ///
+    /// When the previous Period's end is strictly before this Period's start, `gap_before`
+    /// is the hole on the Media Presentation timeline (ISO/IEC 23009-1 Period sequencing).
+    /// Abutting or overlapping Periods yield `None`. Sample-timeline jumps under
+    /// [`PeriodTransitionKind::Connected`] without a Period-window hole also yield `None`.
     PeriodChanged {
         /// Zero-based Period index in the MPD.
         period_index: usize,
@@ -168,6 +173,8 @@ pub enum PlayerEvent {
         end: Option<Duration>,
         /// Continuity / connectivity relationship to the previous Period.
         transition: PeriodTransitionKind,
+        /// Presentation-timeline gap before this Period (`prev.end` → `start`), if any.
+        gap_before: Option<Duration>,
     },
     /// The playback pipeline failed; see the background task join result for the full error.
     Error(PlayerEventError),

@@ -129,7 +129,8 @@ impl PlaybackLoopState {
                     let entering_new_period = last_period_idx != Some(current_window.idx);
 
                     if entering_new_period {
-                        emit_period_changed(&tracks, current_window, transition);
+                        let gap_before = manifest::gap_before_period(tick.mpd, current_window.idx);
+                        emit_period_changed(&tracks, current_window, transition, gap_before);
                         on_period_change(
                             &mut last_period_idx,
                             current_window.idx,
@@ -363,6 +364,7 @@ fn emit_period_changed(
     tracks: &[super::types::PlayerTrack],
     window: manifest::PeriodWindow,
     transition: PeriodTransitionKind,
+    gap_before: Option<std::time::Duration>,
 ) {
     for t in tracks {
         let _ = t.tx.send(PlayerEvent::PeriodChanged {
@@ -370,6 +372,7 @@ fn emit_period_changed(
             start: window.start,
             end: window.end,
             transition,
+            gap_before,
         });
     }
 }

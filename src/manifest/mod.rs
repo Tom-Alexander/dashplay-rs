@@ -48,7 +48,8 @@ pub(crate) use fetch::{
     segment_template_index_target,
 };
 pub(crate) use period::{
-    current_period_window_at, is_dynamic_mpd, mpd, period_windows, since_availability_start_at,
+    current_period_window_at, gap_before_period, is_dynamic_mpd, mpd, period_windows,
+    since_availability_start_at,
 };
 pub(crate) use period_connectivity::{PeriodLink, adaptation_set_period_link, period_link};
 pub(crate) use sidx::{parse_sidx_index_for_segment_base, parse_sidx_index_from_template};

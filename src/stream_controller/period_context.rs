@@ -166,7 +166,6 @@ pub(crate) fn build_timeline_context(inputs: TimelineContextInputs<'_>) -> Timel
         period_window: current_window,
         period_duration: period.duration,
         media_presentation_duration: mpd.mediaPresentationDuration,
-        max_segment_duration: mpd.maxSegmentDuration,
         time_shift_buffer_depth: mpd.timeShiftBufferDepth,
         since_availability_start: since_ast,
         resync_hints,

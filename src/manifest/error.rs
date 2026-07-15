@@ -73,8 +73,6 @@ pub enum ManifestError {
     MissingPeriodExtentForStaticTemplate,
     #[error("SegmentTemplate@endNumber is less than @startNumber")]
     InvalidSegmentTemplateEndNumber,
-    #[error("segment duration exceeds MPD@maxSegmentDuration")]
-    SegmentDurationExceedsMaxSegmentDuration,
     #[error(
         "SegmentTimeline S@r<0 needs a following S@t, Period end, or (for dynamic MPD) availabilityStartTime"
     )]

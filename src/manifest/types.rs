@@ -18,8 +18,6 @@ pub(crate) struct TimelineBuildContext {
     /// `Period@duration` when present.
     pub period_duration: Option<Duration>,
     pub media_presentation_duration: Option<Duration>,
-    /// `MPD@maxSegmentDuration` — reject expanded segments longer than this bound.
-    pub max_segment_duration: Option<Duration>,
     pub time_shift_buffer_depth: Option<Duration>,
     pub since_availability_start: Option<Duration>,
     pub resync_hints: Option<crate::clock::resync::ResyncHints>,

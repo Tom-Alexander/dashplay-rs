@@ -196,7 +196,6 @@ mod tests {
             },
             period_duration: None,
             media_presentation_duration: None,
-            max_segment_duration: None,
             time_shift_buffer_depth: None,
             since_availability_start: None,
             resync_hints: None,

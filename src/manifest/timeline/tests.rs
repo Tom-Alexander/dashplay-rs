@@ -25,7 +25,6 @@ fn static_ctx(period_end: Option<Duration>) -> TimelineBuildContext {
         },
         period_duration: None,
         media_presentation_duration: None,
-        max_segment_duration: None,
         time_shift_buffer_depth: None,
         since_availability_start: None,
         resync_hints: None,
@@ -377,7 +376,6 @@ fn dynamic_segment_timeline_filtered_to_time_shift_buffer() {
         },
         period_duration: None,
         media_presentation_duration: None,
-        max_segment_duration: None,
         time_shift_buffer_depth: Some(Duration::from_secs(2)),
         since_availability_start: Some(Duration::from_secs(5)),
         resync_hints: None,
@@ -415,7 +413,6 @@ fn dynamic_segment_timeline_caps_window_at_media_presentation_duration() {
         },
         period_duration: None,
         media_presentation_duration: Some(Duration::from_secs(16)),
-        max_segment_duration: None,
         time_shift_buffer_depth: Some(Duration::from_secs(20)),
         since_availability_start: Some(Duration::from_secs(20)),
         resync_hints: None,
@@ -527,7 +524,6 @@ fn static_duration_template_bounds_last_segment_to_period_extent() {
         },
         period_duration: None,
         media_presentation_duration: Some(Duration::from_secs(10)),
-        max_segment_duration: None,
         time_shift_buffer_depth: None,
         since_availability_start: None,
         resync_hints: None,
@@ -540,70 +536,34 @@ fn static_duration_template_bounds_last_segment_to_period_extent() {
 }
 
 #[test]
-fn segment_timeline_rejects_d_exceeding_mpd_max_segment_duration() {
+fn ll_duration_template_expands_ntsc_fractional_segment_duration() {
+    // Live/LL packs often use 2.002s (90000 timescale) while advertising maxSegmentDuration="PT2S".
+    // That mismatch is an MPD authoring issue; timeline expansion must still succeed.
     let st = SegmentTemplate {
-        timescale: Some(1000),
+        timescale: Some(90000),
+        duration: Some(180180.0),
         presentationTimeOffset: Some(0),
         startNumber: Some(1),
-        SegmentTimeline: Some(SegmentTimeline {
-            segments: vec![S {
-                t: Some(0),
-                d: 5000,
-                r: Some(0),
-                ..Default::default()
-            }],
-        }),
+        availabilityTimeOffset: Some(7.0),
+        availabilityTimeComplete: Some(false),
         ..Default::default()
     };
     let ctx = TimelineBuildContext {
-        is_dynamic: false,
+        is_dynamic: true,
         period_window: PeriodWindow {
             idx: 0,
             start: Duration::ZERO,
-            end: Some(Duration::from_secs(10)),
+            end: None,
         },
         period_duration: None,
         media_presentation_duration: None,
-        max_segment_duration: Some(Duration::from_secs(4)),
-        time_shift_buffer_depth: None,
-        since_availability_start: None,
+        time_shift_buffer_depth: Some(Duration::from_secs(60)),
+        since_availability_start: Some(Duration::from_secs(1000)),
         resync_hints: None,
     };
-    let err = timeline_segments(&st, &ctx, None).unwrap_err();
-    assert!(matches!(
-        err,
-        ManifestError::SegmentDurationExceedsMaxSegmentDuration
-    ));
-}
-
-#[test]
-fn static_duration_template_rejects_nominal_duration_above_mpd_max() {
-    let st = SegmentTemplate {
-        timescale: Some(1000),
-        duration: Some(5000.0),
-        presentationTimeOffset: Some(0),
-        startNumber: Some(1),
-        ..Default::default()
-    };
-    let ctx = TimelineBuildContext {
-        is_dynamic: false,
-        period_window: PeriodWindow {
-            idx: 0,
-            start: Duration::ZERO,
-            end: Some(Duration::from_secs(10)),
-        },
-        period_duration: None,
-        media_presentation_duration: Some(Duration::from_secs(10)),
-        max_segment_duration: Some(Duration::from_secs(4)),
-        time_shift_buffer_depth: None,
-        since_availability_start: None,
-        resync_hints: None,
-    };
-    let err = timeline_segments(&st, &ctx, None).unwrap_err();
-    assert!(matches!(
-        err,
-        ManifestError::SegmentDurationExceedsMaxSegmentDuration
-    ));
+    let segs = timeline_segments(&st, &ctx, None).expect("fractional LL segment duration");
+    assert!(!segs.is_empty());
+    assert!((segs[0].duration_s - 2.002).abs() < 1e-9);
 }
 
 #[test]
@@ -889,7 +849,6 @@ fn static_duration_template_emits_expected_segment_count() {
         },
         period_duration: None,
         media_presentation_duration: Some(Duration::from_secs(8)),
-        max_segment_duration: None,
         time_shift_buffer_depth: None,
         since_availability_start: None,
         resync_hints: None,
@@ -919,7 +878,6 @@ fn static_duration_template_bounds_by_end_number_without_period_extent() {
         },
         period_duration: None,
         media_presentation_duration: None,
-        max_segment_duration: None,
         time_shift_buffer_depth: None,
         since_availability_start: None,
         resync_hints: None,
@@ -955,7 +913,6 @@ fn static_duration_template_prefers_end_number_over_period_extent() {
         },
         period_duration: None,
         media_presentation_duration: Some(Duration::from_secs(8)),
-        max_segment_duration: None,
         time_shift_buffer_depth: None,
         since_availability_start: None,
         resync_hints: None,
@@ -984,7 +941,6 @@ fn dynamic_duration_template_limits_window_to_time_shift_buffer() {
         },
         period_duration: None,
         media_presentation_duration: None,
-        max_segment_duration: None,
         time_shift_buffer_depth: Some(Duration::from_secs(8)),
         since_availability_start: Some(Duration::from_secs(20)),
         resync_hints: None,
@@ -1013,7 +969,6 @@ fn dynamic_duration_template_caps_at_media_presentation_duration() {
         },
         period_duration: None,
         media_presentation_duration: Some(Duration::from_secs(16)),
-        max_segment_duration: None,
         time_shift_buffer_depth: Some(Duration::from_secs(20)),
         // Live edge past the known presentation end.
         since_availability_start: Some(Duration::from_secs(20)),
@@ -1045,7 +1000,6 @@ fn dynamic_duration_template_bounds_last_segment_to_presentation_end() {
         },
         period_duration: None,
         media_presentation_duration: Some(Duration::from_secs(10)),
-        max_segment_duration: None,
         time_shift_buffer_depth: Some(Duration::from_secs(20)),
         since_availability_start: Some(Duration::from_secs(20)),
         resync_hints: None,
@@ -1089,7 +1043,6 @@ fn segment_list_explicit_urls_builds_timeline() {
         },
         period_duration: None,
         media_presentation_duration: Some(Duration::from_secs(8)),
-        max_segment_duration: None,
         time_shift_buffer_depth: None,
         since_availability_start: None,
         resync_hints: None,
@@ -1137,7 +1090,6 @@ fn segment_list_media_range_builds_byte_ranges() {
         },
         period_duration: None,
         media_presentation_duration: Some(Duration::from_secs(8)),
-        max_segment_duration: None,
         time_shift_buffer_depth: None,
         since_availability_start: None,
         resync_hints: None,
@@ -1197,7 +1149,6 @@ fn segment_list_timeline_copies_media_range() {
         },
         period_duration: None,
         media_presentation_duration: Some(Duration::from_secs(8)),
-        max_segment_duration: None,
         time_shift_buffer_depth: None,
         since_availability_start: None,
         resync_hints: None,
@@ -1236,7 +1187,6 @@ fn segment_list_invalid_media_range_errors() {
         },
         period_duration: None,
         media_presentation_duration: Some(Duration::from_secs(4)),
-        max_segment_duration: None,
         time_shift_buffer_depth: None,
         since_availability_start: None,
         resync_hints: None,
@@ -1268,7 +1218,6 @@ fn timeline_segments_for_per_segment_index_uses_explicit_timeline() {
         },
         period_duration: None,
         media_presentation_duration: None,
-        max_segment_duration: None,
         time_shift_buffer_depth: None,
         since_availability_start: None,
         resync_hints: None,

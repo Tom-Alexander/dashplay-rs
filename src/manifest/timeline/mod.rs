@@ -10,19 +10,6 @@ fn segment_url_media_range(su: &SegmentURL) -> Result<Option<ByteRange>, Manifes
     su.mediaRange.as_deref().map(parse_byte_range).transpose()
 }
 
-fn validate_segment_duration_s(
-    duration_s: f64,
-    ctx: &TimelineBuildContext,
-) -> Result<(), ManifestError> {
-    let Some(max) = ctx.max_segment_duration else {
-        return Ok(());
-    };
-    if duration_s > max.as_secs_f64() + 1e-9 {
-        return Err(ManifestError::SegmentDurationExceedsMaxSegmentDuration);
-    }
-    Ok(())
-}
-
 /// ISO/IEC 23009-1 §5.3.9.5.3 — the last `@duration` segment in a Period may be shorter.
 fn bound_last_static_duration_segment(
     segments: &mut [TimelineSegment],
@@ -37,16 +24,6 @@ fn bound_last_static_duration_segment(
         last.duration_s = remaining_s;
         last.duration = (remaining_s * timescale as f64).round().max(1.0) as u64;
     }
-}
-
-fn validate_timeline_segments(
-    segments: &[TimelineSegment],
-    ctx: &TimelineBuildContext,
-) -> Result<(), ManifestError> {
-    for seg in segments {
-        validate_segment_duration_s(seg.duration_s, ctx)?;
-    }
-    Ok(())
 }
 
 fn static_duration_segment_count(
@@ -110,9 +87,7 @@ fn timeline_segments_from_segment_base(
         let duration_ticks = (duration_s * timescale as f64).round().max(1.0) as u64;
         (duration_ticks, duration_s)
     };
-    validate_segment_duration_s(duration_s, ctx)?;
-
-    let segments = vec![TimelineSegment {
+    Ok(vec![TimelineSegment {
         number: 1,
         time: 0,
         duration: duration_ticks,
@@ -122,9 +97,7 @@ fn timeline_segments_from_segment_base(
         resync_start_chunk: None,
         media_url: None,
         media_range: None,
-    }];
-    validate_timeline_segments(&segments, ctx)?;
-    Ok(segments)
+    }])
 }
 
 pub(crate) fn timeline_segments_from_list(
@@ -215,7 +188,6 @@ pub(crate) fn timeline_segments(
     if ctx.is_dynamic && st.SegmentTimeline.is_some() {
         filter_explicit_timeline_for_dynamic_window(segments, ctx)
     } else {
-        validate_timeline_segments(&segments, ctx)?;
         Ok(segments)
     }
 }
@@ -445,7 +417,6 @@ fn segments_from_duration_template(
     let start_number = st.startNumber.unwrap_or(1);
     let duration_s = d / timescale as f64;
     let duration_ticks = d.round().max(1.0) as u64;
-    validate_segment_duration_s(duration_s, ctx)?;
 
     if ctx.is_dynamic {
         let Some(since_ast) = ctx.since_availability_start else {
@@ -504,7 +475,6 @@ fn segments_from_duration_template(
         if let Some(period_length_s) = ctx.period_length_secs() {
             bound_last_static_duration_segment(&mut segments, period_length_s, timescale);
         }
-        validate_timeline_segments(&segments, ctx)?;
         Ok(segments)
     } else {
         let count = static_duration_segment_count(start_number, duration_s, end_number, ctx)?;
@@ -529,7 +499,6 @@ fn segments_from_duration_template(
         if let Some(period_length_s) = ctx.period_length_secs() {
             bound_last_static_duration_segment(&mut segments, period_length_s, timescale);
         }
-        validate_timeline_segments(&segments, ctx)?;
         Ok(segments)
     }
 }

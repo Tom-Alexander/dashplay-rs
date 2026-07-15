@@ -8,6 +8,7 @@ use tokio::sync::watch;
 use tokio::task::JoinHandle;
 
 use super::PlayerError;
+use super::manifest::ManifestMetadata;
 use super::metrics::TrackMetrics;
 use super::playback_control::PlaybackController;
 use super::stream_controller::PlaybackLoopState;
@@ -97,6 +98,8 @@ pub enum PlayerEvent {
         is_dynamic: bool,
         /// `MPD@mediaPresentationDuration` when present.
         media_presentation_duration: Option<Duration>,
+        /// Descriptive MPD metadata (`ProgramInformation`, `Metrics`, period labels, …).
+        metadata: ManifestMetadata,
     },
     /// Consumer-reported buffer occupancy changed for this track.
     BufferUpdated {
@@ -268,6 +271,10 @@ pub struct PlayerOutputs {
     pub tracks: Vec<PlayerTrack>,
     /// Seek, pause, resume, stop, and lifecycle state for this session.
     pub playback: PlaybackController,
+    /// Descriptive metadata from the initially loaded MPD.
+    ///
+    /// Live refreshes update the same information via [`PlayerEvent::ManifestLoaded`].
+    pub manifest_metadata: ManifestMetadata,
     pub(crate) loop_state: PlaybackLoopState,
 }
 
@@ -290,6 +297,7 @@ impl PlayerOutputs {
         let Self {
             tracks,
             playback: _,
+            manifest_metadata: _,
             loop_state,
         } = self;
         loop_state.run(tracks).await
@@ -316,6 +324,7 @@ mod tests {
             !PlayerEvent::ManifestLoaded {
                 is_dynamic: false,
                 media_presentation_duration: None,
+                metadata: Default::default(),
             }
             .is_terminal()
         );

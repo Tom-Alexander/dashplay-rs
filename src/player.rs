@@ -80,6 +80,7 @@ impl Player {
             tracks,
             loop_state,
             playback: _playback,
+            manifest_metadata: _,
         } = self.media_player.start().await?;
 
         let (out_tx, out_rx) = mpsc::channel::<Result<Bytes, PlayerError>>(256);

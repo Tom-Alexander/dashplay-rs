@@ -9,6 +9,7 @@ mod end_numbers;
 pub mod error;
 mod fetch;
 mod inheritance;
+mod metadata;
 mod period;
 mod sidx;
 mod switch_access;
@@ -17,6 +18,11 @@ mod timeline;
 mod types;
 
 pub use error::ManifestError;
+pub(crate) use metadata::content_label_from_dash;
+pub use metadata::{
+    AssetIdentifier, ContentLabel, ManifestMetadata, MetricsRange, MpdReportingMetrics,
+    PeriodMetadata, ProgramInformation, ReportingDescriptor, Scte214ContentId,
+};
 
 pub(crate) use addressing::{
     SegmentAddressing, end_number_for_timeline, resolved_initialization_path,

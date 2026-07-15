@@ -99,9 +99,12 @@ let outputs = Player::new("https://example.com/manifest.mpd", None)?
 ```
 
 Selected tracks expose `TrackInfo` metadata including language, roles, codecs, accessibility
-descriptors, and (for text tracks) `subtitle_type` ([`SubtitleType`](#subtitles-and-captions)).
-Preferences rank candidates; unmatched tracks are fallback candidates. Use `max_tracks(0)` to
-disable a media kind.
+descriptors, labels, ratings, and (for text tracks) `subtitle_type`
+([`SubtitleType`](#subtitles-and-captions)). Document-level MPD metadata
+(`ProgramInformation`, DASH `Metrics` reporting descriptors, period
+`AssetIdentifier` / labels) is available on [`PlayerOutputs::manifest_metadata`](#playeroutputs)
+and on each [`PlayerEvent::ManifestLoaded`](#playerevent). Preferences rank candidates; unmatched
+tracks are fallback candidates. Use `max_tracks(0)` to disable a media kind.
 
 ### Subtitles and captions
 
@@ -326,6 +329,7 @@ wrappers around the same controller. Clone handles (`outputs.playback.clone()`) 
 | [`ThroughputSample`](#metrics) / [`BufferSample`](#metrics) / [`BitrateSwitch`](#metrics) / [`RebufferEvent`](#metrics) | Individual metric samples |
 | `TrackSelection` / `TrackPreference` | Ordered adaptation-set preferences and per-kind limits (audio, video, text) |
 | `TrackInfo` / `TrackKind` | Metadata and media kind (`Audio`, `Video`, `Text`, `TrickPlay`, `Image`) for a selected track |
+| [`ManifestMetadata`](#track-selection) | MPD `ProgramInformation`, reporting `Metrics`, period asset ids / labels |
 | `SubtitleType` | Detected subtitle/caption format for text tracks |
 | `TrackDescriptor` | Accessibility descriptor scheme/value matcher and metadata |
 | [`WidevineLicenseFetcher`](#widevinelicensefetcher) | Custom async Widevine license HTTP handler |
@@ -439,7 +443,7 @@ Events emitted on a single adaptation-set stream. **Fragment** events carry medi
 |---------|------|-------------------|
 | `Init(Bytes)` | Fragment | Initialization segment when declared (`ftyp` + `moov`, TTML header, fMP4 text init, etc.) |
 | `Segment { number, time, presentation_time, sub_number, data }` | Fragment | Media segment; `presentation_time` is seconds from the start of the presentation |
-| `ManifestLoaded { is_dynamic, media_presentation_duration }` | Lifecycle | An MPD was fetched and parsed (initial load or live refresh) |
+| `ManifestLoaded { is_dynamic, media_presentation_duration, metadata }` | Lifecycle | An MPD was fetched and parsed (initial load or live refresh) |
 | `BufferUpdated { buffer_s }` | Observability | Consumer-reported buffer occupancy changed (emitted by [`BufferFeedback::report`](#bufferfeedback)) |
 | `PlayheadUpdated { presentation_time }` | Observability | Session presentation time changed (delivery frontier or seek target) |
 | `BitrateChanged { from_quality_index, to_quality_index, from_bitrate_bps, to_bitrate_bps }` | Observability | The active representation changed on the ladder |
@@ -598,6 +602,7 @@ Returned by [`MediaPlayer::start`](#mediaplayer):
 |----------------|-------------|
 | `tracks` | One [`PlayerTrack`](#playertrack) per selected adaptation set |
 | `playback` | [`PlaybackController`](#playbackcontroller) for this session |
+| `manifest_metadata` | [`ManifestMetadata`](#track-selection) from the initially loaded MPD |
 | `run()` | Run the stream controller on the current async task (no spawn) |
 | `spawn()` | Spawn the stream controller as a separate Tokio task |
 

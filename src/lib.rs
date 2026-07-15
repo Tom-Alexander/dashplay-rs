@@ -91,7 +91,10 @@ pub use http::{
     HttpClient, HttpError, HttpFuture, HttpMethod, HttpRequest, HttpResponse, HttpStreamResponse,
     SharedHttpClient, shared,
 };
-pub use manifest::ManifestError;
+pub use manifest::{
+    AssetIdentifier, ContentLabel, ManifestError, ManifestMetadata, MetricsRange,
+    MpdReportingMetrics, PeriodMetadata, ProgramInformation, ReportingDescriptor, Scte214ContentId,
+};
 pub use media_events::{MediaEvent, MediaEventSource, Scte35Cue};
 pub use media_player::{MediaPlayer, WidevineLicenseFetcher};
 pub use metrics::{

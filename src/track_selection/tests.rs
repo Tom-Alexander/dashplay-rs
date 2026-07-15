@@ -303,6 +303,40 @@ fn representation_metadata_is_used_when_adaptation_metadata_is_absent() {
 }
 
 #[test]
+fn adaptation_and_representation_labels_and_ratings_are_surfaced() {
+    let period = period(
+        r#"<MPD><Period>
+                <AdaptationSet id="video" contentType="video" mimeType="video/mp4">
+                  <Rating schemeIdUri="urn:mpeg:dash:rating:2011" value="PG"/>
+                  <Label id="v" lang="en">Main</Label>
+                  <ContentComponent id="0" contentType="video">
+                    <Rating schemeIdUri="urn:org:example:rating" value="TV-14"/>
+                  </ContentComponent>
+                  <Representation id="r0" bandwidth="1000000">
+                    <Label lang="en">720p</Label>
+                  </Representation>
+                </AdaptationSet>
+            </Period></MPD>"#,
+    );
+
+    let selected = select_adaptation_sets(&period, &TrackSelection::default());
+    assert_eq!(selected.len(), 1);
+    let info = &selected[0].info;
+    assert_eq!(info.labels.len(), 1);
+    assert_eq!(info.labels[0].content, "Main");
+    assert_eq!(
+        info.ratings,
+        vec![
+            TrackDescriptor::new("urn:mpeg:dash:rating:2011", "PG"),
+            TrackDescriptor::new("urn:org:example:rating", "TV-14"),
+        ]
+    );
+    assert_eq!(info.representation_labels.len(), 1);
+    assert_eq!(info.representation_labels[0].0, 0);
+    assert_eq!(info.representation_labels[0].1[0].content, "720p");
+}
+
+#[test]
 fn sub_representation_codecs_participate_in_preference_ranking() {
     let period = period(
         r#"<MPD xmlns="urn:mpeg:dash:schema:mpd:2011"><Period>

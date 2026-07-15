@@ -2,6 +2,7 @@
 
 use super::kind::{TrackDescriptor, TrackKind};
 use super::sub_representation::SubTrackInfo;
+use crate::manifest::ContentLabel;
 
 /// Public metadata for one selected adaptation-set track.
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -34,6 +35,12 @@ pub struct TrackInfo {
     pub essential_properties: Vec<TrackDescriptor>,
     /// `SupplementalProperty` descriptors aggregated from the adaptation set and its children.
     pub supplemental_properties: Vec<TrackDescriptor>,
+    /// `AdaptationSet/Label` entries (plus `GroupLabel` when present).
+    pub labels: Vec<ContentLabel>,
+    /// `Rating` descriptors from the adaptation set and its content components.
+    pub ratings: Vec<TrackDescriptor>,
+    /// `Representation/Label` entries keyed by representation index within the adaptation set.
+    pub representation_labels: Vec<(usize, Vec<ContentLabel>)>,
     /// Period adaptation indices that may be switched to (adaptation-set switching / DVB
     /// fallback), excluding this track's own index.
     pub switchable_adaptation_indices: Vec<usize>,

@@ -748,6 +748,7 @@ async fn richer_lifecycle_events_are_emitted() {
             PlayerEvent::ManifestLoaded {
                 is_dynamic: false,
                 media_presentation_duration: Some(_),
+                ..
             }
         ),
         "expected static VOD manifest metadata"

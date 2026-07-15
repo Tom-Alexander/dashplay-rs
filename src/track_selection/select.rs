@@ -11,6 +11,7 @@ use super::kind::{TrackDescriptor, TrackKind, TrackPreference, TrackSelection};
 use super::preselection::{ResolvedPreselection, resolve_preselections};
 use super::sub_representation::{resolve_sub_tracks, sub_representation_codec_values};
 use super::switching::{collapse_selected_into_switch_groups, is_dvb_fallback_adaptation_set};
+use crate::manifest::content_label_from_dash;
 
 pub(crate) struct SelectedAdaptationSet<'a> {
     pub adaptation_set: &'a AdaptationSet,
@@ -186,9 +187,54 @@ fn track_info(
         accessibility,
         essential_properties,
         supplemental_properties,
+        labels: adaptation_labels(adaptation_set),
+        ratings: adaptation_ratings(adaptation_set),
+        representation_labels: representation_labels(adaptation_set),
         switchable_adaptation_indices: Vec::new(),
         switchable_adaptation_set_ids: Vec::new(),
     }
+}
+
+fn adaptation_labels(adaptation_set: &AdaptationSet) -> Vec<crate::manifest::ContentLabel> {
+    adaptation_set
+        .Label
+        .iter()
+        .chain(adaptation_set.GroupLabel.iter())
+        .map(content_label_from_dash)
+        .collect()
+}
+
+fn adaptation_ratings(adaptation_set: &AdaptationSet) -> Vec<TrackDescriptor> {
+    adaptation_set
+        .Rating
+        .iter()
+        .chain(
+            adaptation_set
+                .ContentComponent
+                .iter()
+                .flat_map(|component| component.Rating.iter()),
+        )
+        .map(|rating| TrackDescriptor {
+            scheme_id_uri: rating.schemeIdUri.clone(),
+            value: rating.value.clone(),
+        })
+        .collect()
+}
+
+fn representation_labels(
+    adaptation_set: &AdaptationSet,
+) -> Vec<(usize, Vec<crate::manifest::ContentLabel>)> {
+    adaptation_set
+        .representations
+        .iter()
+        .enumerate()
+        .filter_map(|(idx, rep)| {
+            if rep.Label.is_empty() {
+                return None;
+            }
+            Some((idx, rep.Label.iter().map(content_label_from_dash).collect()))
+        })
+        .collect()
 }
 
 fn with_switch_peers(mut info: TrackInfo, peers: &[(usize, &AdaptationSet)]) -> TrackInfo {
@@ -336,6 +382,7 @@ fn select_kind(
     }
 }
 
+#[allow(clippy::large_enum_variant)] // TrackInfo carries MPD metadata; boxing is not worth it here.
 enum KindCandidate<'a> {
     Standalone {
         document_index: usize,

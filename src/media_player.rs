@@ -179,6 +179,8 @@ impl MediaPlayer {
         let playback = PlaybackController::new();
         playback.mark_started();
 
+        let manifest_metadata = manifest::ManifestMetadata::from_mpd(mpd, self.mpd_xml.as_deref());
+
         let loop_state = PlaybackLoopState {
             client: self.client,
             manifest_uri: self.manifest_uri,
@@ -192,6 +194,7 @@ impl MediaPlayer {
         Ok(PlayerOutputs {
             tracks,
             playback,
+            manifest_metadata,
             loop_state,
         })
     }

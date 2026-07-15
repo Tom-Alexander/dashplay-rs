@@ -75,12 +75,14 @@ pub(crate) fn periods_to_play(
     }
 }
 
-pub(crate) fn broadcast_manifest_loaded(tracks: &[PlayerTrack], mpd: &MPD) {
+pub(crate) fn broadcast_manifest_loaded(tracks: &[PlayerTrack], mpd: &MPD, mpd_xml: &str) {
     let is_dynamic = manifest::is_dynamic_mpd(mpd);
+    let metadata = manifest::ManifestMetadata::from_mpd(mpd, Some(mpd_xml));
     for t in tracks {
         let _ = t.tx.send(PlayerEvent::ManifestLoaded {
             is_dynamic,
             media_presentation_duration: mpd.mediaPresentationDuration,
+            metadata: metadata.clone(),
         });
     }
 }

@@ -31,7 +31,7 @@ Status legend: `[ ]` not started · `[~]` partial · `[x]` done · `[—]` out o
 | Demux / decode | `[—]` | Out of scope (bytes only) |
 | Metrics / rich events | `[~]` | Per-track [`TrackMetrics`]; fragment + [`MediaEvent`] events |
 | Pluggable networking / ABR | `[x]` | HTTP client trait + `ReqwestClient`; ABR trait + `BolaAbrFactory` / `LolPlusAbrFactory` |
-| MPD model / remote documents | `[~]` | Metadata elements remaining; Period xlink + Preselection done |
+| MPD model / remote documents | `[x]` | Period xlink, Preselection, and MPD metadata elements exposed |
 | Buffer-target scheduling | `[x]` | Throttles prefetch at 25 s; honours `MPD@minBufferTime` for rebuffer |
 | Bitstream / AS switching | `[ ]` | Init always re-emitted; no cross-AS switch |
 | Containers beyond fMP4/CMAF | `[~]` | mp2t byte delivery; WebM and additional image MIME types remain |
@@ -216,7 +216,7 @@ without changing playback behaviour.
   other supplemental signalling beyond metadata collection.
 - [x] **`AdaptationSet/Switching` and `RandomAccess`.** Seamless AS switch and explicit
   random-access hints beyond SAP-aligned seek.
-- [ ] **MPD metadata elements.** `ProgramInformation`, `Metrics` (DASH reporting
+- [x] **MPD metadata elements.** `ProgramInformation`, `Metrics` (DASH reporting
   descriptors), `AssetIdentifier`, `Rating`, `Period/Label`, `Representation/Label`.
 - [x] **`MPD@minBufferTime` and `@maxSegmentDuration`.** Use for startup delay, buffer
   targets, scheduling validation.

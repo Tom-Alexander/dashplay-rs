@@ -83,7 +83,7 @@ impl PlaybackLoopState {
                 refresh_manifest(&mut manifest_session, &client, &manifest_uri, cmcd.as_ref())
                     .await?;
                 let tick = manifest_tick(&manifest_session, &client).await?;
-                broadcast_manifest_loaded(&tracks, tick.mpd);
+                broadcast_manifest_loaded(&tracks, tick.mpd, tick.xml);
 
                 if let Some(selection) = playback.take_track_selection() {
                     track_selection = selection;

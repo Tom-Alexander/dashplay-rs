@@ -42,6 +42,9 @@ pub fn validate_iop(mpd_xml: &str) -> Result<(), Vec<IopViolation>> {
             validate_adaptation_set(aset, dashif, &mut violations);
             for rep in children(aset, "Representation") {
                 validate_representation(rep, dashif, &mut violations);
+                for acc in children(rep, "AudioChannelConfiguration") {
+                    validate_audio_channel_configuration(acc, &mut violations);
+                }
             }
             for st in children(aset, "SegmentTemplate") {
                 validate_segment_template(st, &mut violations);
@@ -54,6 +57,9 @@ pub fn validate_iop(mpd_xml: &str) -> Result<(), Vec<IopViolation>> {
             }
             for cp in children(aset, "ContentProtection") {
                 validate_content_protection(cp, &mut violations);
+            }
+            for acc in children(aset, "AudioChannelConfiguration") {
+                validate_audio_channel_configuration(acc, &mut violations);
             }
         }
         for st in children(period, "SegmentTemplate") {
@@ -285,6 +291,8 @@ fn validate_adaptation_set(aset: Node<'_, '_>, dashif: bool, out: &mut Vec<IopVi
             ));
         }
     }
+
+    validate_hbbtv_adaptation_set(aset, dashif, out);
 }
 
 fn validate_representation(rep: Node<'_, '_>, dashif: bool, out: &mut Vec<IopViolation>) {
@@ -307,6 +315,8 @@ fn validate_representation(rep: Node<'_, '_>, dashif: bool, out: &mut Vec<IopVio
             "At most one of SegmentBase, SegmentTemplate and SegmentList shall be defined in Representation.",
         ));
     }
+
+    validate_hbbtv_representation(rep, out);
 
     if !dashif {
         return;
@@ -406,6 +416,92 @@ fn validate_content_protection(cp: Node<'_, '_>, out: &mut Vec<IopViolation>) {
         out.push(violation(
             "R12.2",
             "The ContentProtection descriptors shall always be present in the AdaptationSet element.",
+        ));
+    }
+}
+
+fn validate_audio_channel_configuration(acc: Node<'_, '_>, out: &mut Vec<IopViolation>) {
+    let Some(mpd) = ancestor_mpd(acc) else {
+        return;
+    };
+    let scheme = attr(acc, "schemeIdUri").unwrap_or("");
+
+    // R15 — profile-specific AudioChannelConfiguration schemes
+    if profiles_contain(mpd, "http://dashif.org/guidelines/dashif#ac-4")
+        && scheme != "tag:dolby.com,2014:dash:audio_channel_configuration:2011"
+    {
+        out.push(violation(
+            "R15.ac-4",
+            "If profile http://dashif.org/guidelines/dashif#ac-4 is used, then schemeIdUri attribute shall be tag:dolby.com,2014:dash:audio_channel_configuration:2011.",
+        ));
+    }
+    if profiles_contain(mpd, "http://dashif.org/guidelines/dashif#mha1")
+        && scheme != "urn:mpeg:mpegB:cicp:ChannelConfiguration"
+    {
+        out.push(violation(
+            "R15.mha1",
+            "If profile http://dashif.org/guidelines/dashif#mha1 is used, then schemeIdUri attribute shall be urn:mpeg:mpegB:cicp:ChannelConfiguration.",
+        ));
+    }
+}
+
+fn hbbtv_applies(node: Node<'_, '_>) -> bool {
+    const HBBTV: &str = "urn:hbbtv:dash:profile:isoff-live:2012";
+    if attr(node, "profiles").is_some_and(|p| p.contains(HBBTV)) {
+        return true;
+    }
+    if let Some(aset) = ancestor(node, "AdaptationSet")
+        && attr(aset, "profiles").is_some_and(|p| p.contains(HBBTV))
+    {
+        return true;
+    }
+    ancestor_mpd(node).is_some_and(|mpd| profiles_contain(mpd, HBBTV))
+}
+
+fn validate_hbbtv_adaptation_set(aset: Node<'_, '_>, dashif: bool, out: &mut Vec<IopViolation>) {
+    if !hbbtv_applies(aset) {
+        return;
+    }
+
+    if attr(aset, "subsegmentAlignment") == Some("true") {
+        out.push(violation(
+            "HbbTV.AS.subsegmentAlignment",
+            "HbbTV: AdaptationSet@subsegmentAlignment shall not be true.",
+        ));
+    }
+    if matches!(attr(aset, "subsegmentStartsWithSAP"), Some("1") | Some("2")) {
+        out.push(violation(
+            "HbbTV.AS.subsegmentStartsWithSAP",
+            "HbbTV: AdaptationSet@subsegmentStartsWithSAP shall not be 1 or 2.",
+        ));
+    }
+    if dashif && attr(aset, "segmentAlignment") != Some("true") {
+        out.push(violation(
+            "HbbTV.AS.segmentAlignment",
+            "HbbTV: AdaptationSet@segmentAlignment shall be true.",
+        ));
+    }
+}
+
+fn validate_hbbtv_representation(rep: Node<'_, '_>, out: &mut Vec<IopViolation>) {
+    if !hbbtv_applies(rep) {
+        return;
+    }
+
+    if has_direct_child(rep, "BaseURL") {
+        out.push(violation(
+            "HbbTV.Rep.BaseURL",
+            "HbbTV: Representation shall not contain a BaseURL element.",
+        ));
+    }
+
+    let has_template = has_direct_child(rep, "SegmentTemplate")
+        || parent(rep).is_some_and(|aset| has_direct_child(aset, "SegmentTemplate"))
+        || ancestor(rep, "Period").is_some_and(|p| has_direct_child(p, "SegmentTemplate"));
+    if !has_template {
+        out.push(violation(
+            "HbbTV.Rep.SegmentTemplate",
+            "HbbTV: SegmentTemplate shall be present on Period, AdaptationSet, or Representation.",
         ));
     }
 }
@@ -534,5 +630,59 @@ mod tests {
     fn accepts_static_dashif_simple_fixture() {
         let xml = include_str!("../fixtures/dashif_simple/manifest.mpd");
         validate_iop(xml).expect("dashif_simple should pass IOP validation");
+    }
+
+    #[test]
+    fn accepts_ac4_and_mha1_channel_configuration_schemes() {
+        validate_iop(include_str!("../fixtures/vod_ac4/manifest.mpd"))
+            .expect("ac-4 fixture should pass IOP validation");
+        validate_iop(include_str!("../fixtures/vod_mha1/manifest.mpd"))
+            .expect("mha1 fixture should pass IOP validation");
+    }
+
+    #[test]
+    fn rejects_ac4_profile_with_wrong_channel_configuration_scheme() {
+        let xml = r#"<?xml version="1.0"?>
+<MPD xmlns="urn:mpeg:dash:schema:mpd:2011" type="static"
+     mediaPresentationDuration="PT4S" minBufferTime="PT1S"
+     profiles="http://dashif.org/guidelines/dashif#ac-4">
+  <Period>
+    <AdaptationSet mimeType="audio/mp4" contentType="audio" lang="en">
+      <AudioChannelConfiguration schemeIdUri="urn:mpeg:mpegB:cicp:ChannelConfiguration" value="2"/>
+      <SegmentTemplate media="a.m4s" initialization="i.mp4" duration="2"/>
+      <Representation id="1" bandwidth="1" audioSamplingRate="48000"/>
+    </AdaptationSet>
+  </Period>
+</MPD>"#;
+        let err = validate_iop(xml).unwrap_err();
+        assert!(err.iter().any(|v| v.rule == "R15.ac-4"));
+    }
+
+    #[test]
+    fn accepts_known_mp2t_and_vp9_hdr_profiles() {
+        validate_iop(include_str!("../fixtures/vod_mp2t/manifest.mpd"))
+            .expect("mp2t-simple is a known profile");
+        validate_iop(include_str!("../fixtures/vod_vp9_hdr/manifest.mpd"))
+            .expect("vp9-hdr fixture should pass IOP validation");
+        validate_iop(include_str!("../fixtures/vod_dvb_hbbtv/manifest.mpd"))
+            .expect("dvb/hbbtv fixture should pass IOP validation");
+    }
+
+    #[test]
+    fn rejects_hbbtv_adaptation_set_without_segment_alignment_when_dashif() {
+        let xml = r#"<?xml version="1.0"?>
+<MPD xmlns="urn:mpeg:dash:schema:mpd:2011" type="static"
+     mediaPresentationDuration="PT4S" minBufferTime="PT1S"
+     profiles="http://dashif.org/guidelines/dash-if-simple,urn:hbbtv:dash:profile:isoff-live:2012">
+  <Period>
+    <AdaptationSet mimeType="video/mp4" contentType="video" maxWidth="640" maxHeight="360"
+                   maxFrameRate="25" par="16:9">
+      <SegmentTemplate media="a.m4s" initialization="i.mp4" duration="2"/>
+      <Representation id="1" bandwidth="1" width="640" height="360" frameRate="25" sar="1:1"/>
+    </AdaptationSet>
+  </Period>
+</MPD>"#;
+        let err = validate_iop(xml).unwrap_err();
+        assert!(err.iter().any(|v| v.rule == "HbbTV.AS.segmentAlignment"));
     }
 }

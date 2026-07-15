@@ -34,7 +34,7 @@ Status legend: `[ ]` not started · `[~]` partial · `[x]` done · `[—]` out o
 | MPD model / remote documents | `[~]` | Metadata elements remaining; Period xlink + Preselection done |
 | Buffer-target scheduling | `[x]` | Throttles prefetch at 25 s; honours `MPD@minBufferTime` for rebuffer |
 | Bitstream / AS switching | `[ ]` | Init always re-emitted; no cross-AS switch |
-| Containers beyond fMP4/CMAF | `[ ]` | mp2t, WebM, additional image MIME types |
+| Containers beyond fMP4/CMAF | `[~]` | mp2t byte delivery; WebM and additional image MIME types remain |
 
 ---
 
@@ -214,8 +214,9 @@ without changing playback behaviour.
   descriptors), `AssetIdentifier`, `Rating`, `Period/Label`, `Representation/Label`.
 - [x] **`MPD@minBufferTime` and `@maxSegmentDuration`.** Use for startup delay, buffer
   targets, scheduling validation.
-- [~] **Profile-specific playback.** `mp2t-main`, `mp2t-simple`, DVB, HbbTV, AC-4, MHA1,
-  VP9, VP9-HDR paths beyond conformance validation.
+- [x] **Profile-specific playback.** `mp2t-main` / `mp2t-simple` TS byte delivery (no
+  Initialization), plus AC-4 / MHA1 / VP9 / VP9-HDR fMP4 and DVB/HbbTV profile fixtures;
+  IOP rules for AC-4/MHA1 channel schemes and HbbTV AdaptationSet constraints.
 - [~] **AdaptationSet range attributes.** Enforce `@minBandwidth` / `@maxBandwidth` /
   `@minWidth` / `@maxWidth` / `@minHeight` / `@maxHeight` / `@minFrameRate` /
   `@maxFrameRate` against representations and ABR.
@@ -258,7 +259,8 @@ without changing playback behaviour.
 - [~] **`BaseURL@availabilityTimeOffset`.** Use BaseURL-level ATO, not only segment-level.
 - [ ] **DVB and other namespace BaseURL extensions.** e.g. `@dvb:priority` beyond deserialize.
 - [ ] **Steering beyond BaseURL reorder.** DCSM features past `SERVICE-LOCATION-PRIORITY`.
-- [ ] **MPEG-2 Transport Stream.** `mp2t-main` and `mp2t-simple` profile playback.
+- [x] **MPEG-2 Transport Stream.** `mp2t-main` / `mp2t-simple` segment byte delivery
+  (`$Ext$` → `ts`, no init emit); demux remains out of scope.
 - [ ] **WebM / Matroska.** `video/webm`, `audio/webm` segment delivery.
 - [ ] **Additional image MIME types.** `image/png`, `image/bmp`, and other thumbnail schemes.
 - [x] **Progressive MP4.** Non-fragmented whole-file playback via `SegmentBase`.

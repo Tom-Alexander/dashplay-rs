@@ -528,3 +528,66 @@ fn dvb_fallback_is_peer_not_standalone_track() {
     assert_eq!(selected[0].info.switchable_adaptation_indices, vec![1]);
     assert_eq!(selected[0].switch_peers.len(), 1);
 }
+
+#[test]
+fn prefers_ac4_mha1_and_vp09_codec_prefixes() {
+    let period = period(
+        r#"<MPD><Period>
+                <AdaptationSet id="aac" mimeType="audio/mp4" contentType="audio" lang="en">
+                  <Representation id="a" bandwidth="96000" codecs="mp4a.40.2"/>
+                </AdaptationSet>
+                <AdaptationSet id="ac4" mimeType="audio/mp4" contentType="audio" lang="en">
+                  <Representation id="b" bandwidth="128000" codecs="ac-4.02.01.00"/>
+                </AdaptationSet>
+                <AdaptationSet id="mha" mimeType="audio/mp4" contentType="audio" lang="en">
+                  <Representation id="c" bandwidth="256000" codecs="mha1.0.4.L3.C"/>
+                </AdaptationSet>
+                <AdaptationSet id="avc" mimeType="video/mp4" contentType="video">
+                  <Representation id="d" bandwidth="800000" codecs="avc1.4d401f"/>
+                </AdaptationSet>
+                <AdaptationSet id="vp9" mimeType="video/mp4" contentType="video">
+                  <EssentialProperty schemeIdUri="urn:dvb:dash:hdr-dmi" value="HDR10"/>
+                  <Representation id="e" bandwidth="2000000" codecs="vp09.02.10.10.01.09.16.09.01"/>
+                </AdaptationSet>
+            </Period></MPD>"#,
+    );
+
+    let audio = select_adaptation_sets(
+        &period,
+        &TrackSelection::default()
+            .with_video(TrackPreference::default().max_tracks(0))
+            .with_audio(TrackPreference::default().codec("ac-4").max_tracks(1)),
+    );
+    assert_eq!(audio[0].info.id.as_deref(), Some("ac4"));
+
+    let mpeg_h = select_adaptation_sets(
+        &period,
+        &TrackSelection::default()
+            .with_video(TrackPreference::default().max_tracks(0))
+            .with_audio(TrackPreference::default().codec("mha1").max_tracks(1)),
+    );
+    assert_eq!(mpeg_h[0].info.id.as_deref(), Some("mha"));
+
+    let video = select_adaptation_sets(
+        &period,
+        &TrackSelection::default()
+            .with_audio(TrackPreference::default().max_tracks(0))
+            .with_video(TrackPreference::default().codec("vp09").max_tracks(1)),
+    );
+    assert_eq!(video[0].info.id.as_deref(), Some("vp9"));
+}
+
+#[test]
+fn selects_mp2t_video_adaptation_set() {
+    let period = period(
+        r#"<MPD><Period>
+                <AdaptationSet id="ts" mimeType="video/mp2t" contentType="video">
+                  <Representation id="1" bandwidth="1000000" codecs="avc1.4d401f"/>
+                </AdaptationSet>
+            </Period></MPD>"#,
+    );
+    let selected = select_adaptation_sets(&period, &TrackSelection::default());
+    assert_eq!(selected.len(), 1);
+    assert_eq!(selected[0].info.kind, TrackKind::Video);
+    assert_eq!(selected[0].info.mime_type.as_deref(), Some("video/mp2t"));
+}

@@ -144,7 +144,11 @@ pub enum PlayerEvent {
     Error(PlayerEventError),
     /// MPD `EventStream` or in-band `emsg` timed event (including SCTE-35 ad markers).
     MediaEvent(super::media_events::MediaEvent),
-    /// Initialization segment (`ftyp` + `moov`).
+    /// Initialization segment when the addressing mode provides one.
+    ///
+    /// For ISOBMFF/CMAF this is typically `ftyp` + `moov`. MPEG-2 TS (`video/mp2t` /
+    /// `audio/mp2t`) and other container profiles may omit initialization; in that case
+    /// no [`Self::Init`] is emitted and media begins with [`Self::Segment`].
     Init(Bytes),
     Segment {
         number: u64,

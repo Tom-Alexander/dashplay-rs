@@ -719,6 +719,45 @@ fn template_vars_for_representation_inherits_adaptation_set_dimensions() {
 }
 
 #[test]
+fn template_vars_infer_ext_for_mp2t_and_webm() {
+    let mp2t = AdaptationSet {
+        mimeType: Some("video/mp2t".into()),
+        ..Default::default()
+    };
+    let webm = AdaptationSet {
+        mimeType: Some("video/webm".into()),
+        ..Default::default()
+    };
+    let audio_mp2t = AdaptationSet {
+        mimeType: Some("audio/mp2t".into()),
+        ..Default::default()
+    };
+    let rep = Representation {
+        bandwidth: Some(1_000_000),
+        ..Default::default()
+    };
+    assert_eq!(
+        template_vars_for_representation(&rep, &mp2t).ext,
+        Some("ts")
+    );
+    assert_eq!(
+        template_vars_for_representation(&rep, &audio_mp2t).ext,
+        Some("ts")
+    );
+    assert_eq!(
+        template_vars_for_representation(&rep, &webm).ext,
+        Some("webm")
+    );
+
+    let mut vars = template_vars_for_representation(&rep, &mp2t);
+    vars.number = Some(1);
+    assert_eq!(
+        interpolate_template("seg-$Number$.$Ext$", &vars),
+        "seg-1.ts"
+    );
+}
+
+#[test]
 fn align_start_index_rewinds_to_first_subsegment_without_subsegment_sap() {
     let aset = AdaptationSet {
         startWithSAP: Some(1),

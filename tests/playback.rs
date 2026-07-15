@@ -26,6 +26,146 @@ async fn vod_single_track_emits_init_segments_and_end() {
 }
 
 #[tokio::test]
+async fn vod_mp2t_delivers_ts_segments_without_init() {
+    let server = FixtureServer::spawn("vod_mp2t").await;
+    let events = play_single_track(&server.manifest_url, TIMEOUT)
+        .await
+        .expect("playback");
+
+    assert!(
+        init_payloads(&events).is_empty(),
+        "mp2t profiles omit Initialization; no Init event expected"
+    );
+    assert_eq!(
+        segment_payloads(&events),
+        vec![b"dashplay-ts-1".to_vec(), b"dashplay-ts-2".to_vec()]
+    );
+    assert!(has_end(&events));
+}
+
+#[tokio::test]
+async fn vod_ac4_profile_playback() {
+    let server = FixtureServer::spawn("vod_ac4").await;
+    let selection = dashplayrs::TrackSelection::default()
+        .with_video(dashplayrs::TrackPreference::default().max_tracks(0))
+        .with_audio(
+            dashplayrs::TrackPreference::default()
+                .codec("ac-4")
+                .max_tracks(1),
+        );
+    let player = dashplayrs::Player::new(server.manifest_url.as_str(), None)
+        .expect("player")
+        .with_track_selection(selection);
+    let outputs = player.start_tracks().await.expect("start");
+    assert_eq!(outputs.track_count(), 1);
+    assert_eq!(outputs.tracks[0].info().codecs, vec!["ac-4.02.01.00"]);
+
+    let all = play_all_tracks_with_outputs(outputs, TIMEOUT)
+        .await
+        .expect("playback");
+    let events = &all[0];
+    assert_eq!(
+        init_payload(events).as_deref(),
+        Some(b"dashplay-ac4-init".as_ref())
+    );
+    assert_eq!(
+        segment_payloads(events),
+        vec![
+            b"dashplay-ac4-seg-1".to_vec(),
+            b"dashplay-ac4-seg-2".to_vec()
+        ]
+    );
+    assert!(has_end(events));
+}
+
+#[tokio::test]
+async fn vod_mha1_profile_playback() {
+    let server = FixtureServer::spawn("vod_mha1").await;
+    let selection = dashplayrs::TrackSelection::default()
+        .with_video(dashplayrs::TrackPreference::default().max_tracks(0))
+        .with_audio(
+            dashplayrs::TrackPreference::default()
+                .codec("mha1")
+                .max_tracks(1),
+        );
+    let player = dashplayrs::Player::new(server.manifest_url.as_str(), None)
+        .expect("player")
+        .with_track_selection(selection);
+    let outputs = player.start_tracks().await.expect("start");
+    assert_eq!(outputs.tracks[0].info().codecs, vec!["mha1.0.4.L3.C"]);
+
+    let all = play_all_tracks_with_outputs(outputs, TIMEOUT)
+        .await
+        .expect("playback");
+    let events = &all[0];
+    assert_eq!(
+        init_payload(events).as_deref(),
+        Some(b"dashplay-mha1-init".as_ref())
+    );
+    assert_eq!(
+        segment_payloads(events),
+        vec![
+            b"dashplay-mha1-seg-1".to_vec(),
+            b"dashplay-mha1-seg-2".to_vec()
+        ]
+    );
+    assert!(has_end(events));
+}
+
+#[tokio::test]
+async fn vod_vp9_hdr_profile_playback() {
+    let server = FixtureServer::spawn("vod_vp9_hdr").await;
+    let selection = dashplayrs::TrackSelection::default().with_video(
+        dashplayrs::TrackPreference::default()
+            .codec("vp09")
+            .max_tracks(1),
+    );
+    let player = dashplayrs::Player::new(server.manifest_url.as_str(), None)
+        .expect("player")
+        .with_track_selection(selection);
+    let outputs = player.start_tracks().await.expect("start");
+    assert_eq!(
+        outputs.tracks[0].info().codecs,
+        vec!["vp09.02.10.10.01.09.16.09.01"]
+    );
+
+    let all = play_all_tracks_with_outputs(outputs, TIMEOUT)
+        .await
+        .expect("playback");
+    let events = &all[0];
+    assert_eq!(
+        init_payload(events).as_deref(),
+        Some(b"dashplay-vp9-init".as_ref())
+    );
+    assert_eq!(
+        segment_payloads(events),
+        vec![
+            b"dashplay-vp9-seg-1".to_vec(),
+            b"dashplay-vp9-seg-2".to_vec()
+        ]
+    );
+    assert!(has_end(events));
+}
+
+#[tokio::test]
+async fn vod_dvb_hbbtv_profile_selects_primary_not_fallback() {
+    let server = FixtureServer::spawn("vod_dvb_hbbtv").await;
+    let events = play_single_track(&server.manifest_url, TIMEOUT)
+        .await
+        .expect("playback");
+
+    assert_eq!(
+        init_payload(&events).as_deref(),
+        Some(b"dashplay-init-v1".as_ref())
+    );
+    assert_eq!(
+        segment_payloads(&events),
+        vec![b"dashplay-seg-1".to_vec(), b"dashplay-seg-2".to_vec()]
+    );
+    assert!(has_end(&events));
+}
+
+#[tokio::test]
 async fn vod_template_width_height_frame_rate_and_ext() {
     let server = FixtureServer::spawn("vod_template_vars").await;
     let events = play_single_track(&server.manifest_url, TIMEOUT)

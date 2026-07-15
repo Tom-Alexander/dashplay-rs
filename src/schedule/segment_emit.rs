@@ -12,11 +12,14 @@ use crate::manifest;
 use crate::media_events;
 use crate::metrics::TrackMetrics;
 use crate::mp4::prft;
-use crate::playback_control::{PlaybackController, PlaybackState};
+use crate::playback_control::PlaybackController;
 use crate::track_session::TrackSessionState;
 use crate::types::{PartialSegmentChunk, PlayerEvent};
 
 use super::segment_fetch::RepFetchEnv;
+
+/// Interval for advancing the media clock and republishing estimated buffer.
+pub(super) const MEDIA_CLOCK_TICK: Duration = Duration::from_millis(250);
 
 pub(super) fn partial_chunk_meta(
     chunk_idx: usize,
@@ -47,6 +50,7 @@ pub(super) fn emit_segment(
     playback: &PlaybackController,
     session: &TrackSessionState,
     prt_reference_id: Option<&str>,
+    buffer_tx: &watch::Sender<f64>,
 ) {
     prft::maybe_update_inband_anchor_from_segment(
         data.as_ref(),
@@ -69,6 +73,7 @@ pub(super) fn emit_segment(
     }
 
     let presentation_time = segment_presentation_time(period_start, seg);
+    let segment_end = presentation_time + Duration::from_secs_f64(seg.duration_s.max(0.0));
 
     let _ = tx.send(PlayerEvent::Segment {
         number: seg.number,
@@ -78,7 +83,9 @@ pub(super) fn emit_segment(
         partial,
         data,
     });
-    if playback.record_segment_delivery(track_idx, presentation_time) {
+    let clock_initialized =
+        playback.record_segment_delivery(track_idx, presentation_time, segment_end);
+    if clock_initialized {
         let _ = tx.send(PlayerEvent::PlayheadUpdated {
             presentation_time: playback.presentation_time(),
         });
@@ -91,9 +98,76 @@ pub(super) fn emit_segment(
         *playback_started_emitted = true;
     }
 
-    if playback.state() != PlaybackState::Playing {
-        playback.set_state(PlaybackState::Playing);
+    playback.on_media_delivered(track_idx);
+    publish_buffer_estimate(playback, track_idx, buffer_tx, metrics, tx, false);
+}
+
+/// Run `fut` while periodically advancing the media clock so stalls are detected during
+/// long downloads.
+pub(super) async fn with_media_clock_ticks<F, T>(
+    fut: F,
+    playback: &PlaybackController,
+    track_idx: usize,
+    buffer_tx: &watch::Sender<f64>,
+    metrics: &TrackMetrics,
+    event_tx: &broadcast::Sender<PlayerEvent>,
+) -> T
+where
+    F: std::future::Future<Output = T>,
+{
+    tokio::pin!(fut);
+    loop {
+        tokio::select! {
+            result = &mut fut => return result,
+            _ = crate::platform::sleep(MEDIA_CLOCK_TICK) => {
+                let _ = publish_buffer_estimate(
+                    playback,
+                    track_idx,
+                    buffer_tx,
+                    metrics,
+                    event_tx,
+                    true,
+                );
+            }
+        }
     }
+}
+
+/// Advance the media clock (optional), publish estimated buffer, and emit playhead events.
+///
+/// Returns the latest estimated buffer level for `track_idx`.
+pub(super) fn publish_buffer_estimate(
+    playback: &PlaybackController,
+    track_idx: usize,
+    buffer_tx: &watch::Sender<f64>,
+    metrics: &TrackMetrics,
+    event_tx: &broadcast::Sender<PlayerEvent>,
+    advance_clock: bool,
+) -> f64 {
+    let playhead_changed = if advance_clock {
+        playback.advance_media_clock().playhead_changed
+    } else {
+        false
+    };
+
+    let buffer_s = playback.estimated_buffer_s(track_idx);
+    let _ = playback.update_stall_state(buffer_s);
+
+    let previous = *buffer_tx.borrow();
+    if (previous - buffer_s).abs() > 1e-3 {
+        let _ = buffer_tx.send(buffer_s);
+        metrics.record_buffer(buffer_s);
+        let _ = event_tx.send(PlayerEvent::BufferUpdated { buffer_s });
+    }
+
+    if playhead_changed {
+        let _ = event_tx.send(PlayerEvent::PlayheadUpdated {
+            presentation_time: playback.presentation_time(),
+        });
+        apply_latency_control(event_tx, playback);
+    }
+
+    buffer_s
 }
 
 pub(crate) fn segment_presentation_time(

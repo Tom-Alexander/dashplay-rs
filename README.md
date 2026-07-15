@@ -444,8 +444,8 @@ Events emitted on a single adaptation-set stream. **Fragment** events carry medi
 | `Init(Bytes)` | Fragment | Initialization segment when declared (`ftyp` + `moov`, TTML header, fMP4 text init, etc.) |
 | `Segment { number, time, presentation_time, sub_number, data }` | Fragment | Media segment; `presentation_time` is seconds from the start of the presentation |
 | `ManifestLoaded { is_dynamic, media_presentation_duration, metadata }` | Lifecycle | An MPD was fetched and parsed (initial load or live refresh) |
-| `BufferUpdated { buffer_s }` | Observability | Consumer-reported buffer occupancy changed (emitted by [`BufferFeedback::report`](#bufferfeedback)) |
-| `PlayheadUpdated { presentation_time }` | Observability | Session presentation time changed (delivery frontier or seek target) |
+| `BufferUpdated { buffer_s }` | Observability | Buffer occupancy changed (media-clock estimate or [`BufferFeedback::report`](#bufferfeedback)) |
+| `PlayheadUpdated { presentation_time }` | Observability | Session presentation time changed (media clock, seek target, or clock init) |
 | `BitrateChanged { from_quality_index, to_quality_index, from_bitrate_bps, to_bitrate_bps }` | Observability | The active representation changed on the ladder |
 | `PlaybackStarted` | Lifecycle | First media segment delivered for this adaptation set |
 | `PlaybackEnded` | Lifecycle | Playback finished (VOD end, stop, or bounded window); precedes `End` |
@@ -505,15 +505,17 @@ One DASH adaptation set exposed as a `tokio::sync::broadcast` channel.
 
 ### `BufferFeedback`
 
-Consumer-reported buffer level (seconds of media buffered ahead of the playhead) used by
-the active [`AbrController`](#abr).
+Optional correction for buffer occupancy (seconds of media buffered ahead of the playhead)
+used by ABR and buffer-target scheduling.
+
+The library estimates buffer from delivered media versus an internal media clock, so
+calling `report` is not required for stall detection, ABR, or prefetch throttling. When the
+consumer has a real decoder / MSE buffer, report periodically so decisions stay aligned with
+actual occupancy.
 
 | Method | Description |
 |--------|-------------|
-| `report(buffer_s)` | Update the buffer level seen by ABR for this track |
-
-Report periodically as the decoder or renderer consumes media so bitrate decisions reflect
-actual playback state.
+| `report(buffer_s)` | Override the buffer level seen by ABR for this track and resync the media clock |
 
 ---
 
@@ -620,8 +622,8 @@ the same session.
 | `resume()` | Resume delivery after `pause` |
 | `seek(presentation_time)` | Seek to a presentation time ([`Duration`](https://doc.rust-lang.org/std/time/struct.Duration.html) from the start of the presentation) |
 | `set_track_selection(selection)` | Change audio/text preferences mid-playback without restarting (track slot count is fixed at start) |
-| `presentation_time()` | Current session presentation time; `None` before the first segment is delivered |
-| `subscribe_presentation_time()` | Watch presentation time updates (delivery frontier or pending seek target) |
+| `presentation_time()` | Current session presentation time (media clock); `None` before the first segment is delivered |
+| `subscribe_presentation_time()` | Watch presentation time updates (media clock, seek target, or clock init) |
 | `stop()` | Stop playback; no further segments are delivered |
 | `state()` | Current [`PlaybackState`](#playbackstate) |
 | `subscribe_state()` | Watch lifecycle state transitions |

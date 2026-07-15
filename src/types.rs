@@ -53,13 +53,16 @@ pub enum BufferFeedbackError {
 
 /// Reports playback buffer occupancy (seconds of media buffered ahead) to the ABR controller.
 ///
-/// Call [`Self::report`] periodically as the consumer decodes or renders media so adaptive
-/// bitrate decisions reflect actual playback state rather than download timing alone.
+/// The library estimates buffer from delivered media versus an internal media clock, so
+/// calling [`Self::report`] is optional. When the consumer has a real decoder / MSE buffer,
+/// report periodically so ABR and scheduling stay aligned with actual occupancy.
 #[derive(Clone)]
 pub struct BufferFeedback {
     tx: watch::Sender<f64>,
     metrics: TrackMetrics,
     event_tx: broadcast::Sender<PlayerEvent>,
+    playback: PlaybackController,
+    track_idx: usize,
 }
 
 impl BufferFeedback {
@@ -67,19 +70,28 @@ impl BufferFeedback {
         tx: watch::Sender<f64>,
         metrics: TrackMetrics,
         event_tx: broadcast::Sender<PlayerEvent>,
+        playback: PlaybackController,
+        track_idx: usize,
     ) -> Self {
         Self {
             tx,
             metrics,
             event_tx,
+            playback,
+            track_idx,
         }
     }
 
     /// Report the current buffer level in seconds.
     ///
-    /// Values are clamped internally by the ABR algorithm. Report `0.0` when stalled or empty.
-    /// Emits [`PlayerEvent::BufferUpdated`] on the track event stream.
+    /// Optional when relying on the library media-clock estimate. Values are clamped
+    /// internally by the ABR algorithm. Report `0.0` when stalled or empty.
+    /// Emits [`PlayerEvent::BufferUpdated`] on the track event stream and resyncs the
+    /// internal media clock so subsequent estimates follow this correction.
     pub fn report(&self, buffer_s: f64) -> Result<(), BufferFeedbackError> {
+        self.playback
+            .resync_media_clock_from_buffer(self.track_idx, buffer_s);
+        let _ = self.playback.update_stall_state(buffer_s);
         self.metrics.record_buffer(buffer_s);
         let _ = self.event_tx.send(PlayerEvent::BufferUpdated { buffer_s });
         self.tx
@@ -112,12 +124,12 @@ pub enum PlayerEvent {
         /// Descriptive MPD metadata (`ProgramInformation`, `Metrics`, period labels, …).
         metadata: ManifestMetadata,
     },
-    /// Consumer-reported buffer occupancy changed for this track.
+    /// Buffer occupancy changed for this track (media-clock estimate or consumer report).
     BufferUpdated {
         /// Seconds of media buffered ahead of the playhead.
         buffer_s: f64,
     },
-    /// Session presentation time changed (delivery frontier or seek target).
+    /// Session presentation time changed (media clock, seek target, or clock init).
     PlayheadUpdated {
         /// Seconds from the start of the presentation; `None` before the first segment.
         presentation_time: Option<Duration>,
@@ -224,6 +236,7 @@ pub struct PlayerTrack {
     meta: Arc<Mutex<TrackMeta>>,
     pub(crate) tx: broadcast::Sender<PlayerEvent>,
     pub(crate) buffer_feedback: BufferFeedback,
+    pub(crate) buffer_tx: watch::Sender<f64>,
     pub(crate) buffer_rx: watch::Receiver<f64>,
     pub(crate) metrics: TrackMetrics,
 }
@@ -233,6 +246,7 @@ impl PlayerTrack {
         info: TrackInfo,
         tx: broadcast::Sender<PlayerEvent>,
         buffer_feedback: BufferFeedback,
+        buffer_tx: watch::Sender<f64>,
         buffer_rx: watch::Receiver<f64>,
         metrics: TrackMetrics,
     ) -> Self {
@@ -243,6 +257,7 @@ impl PlayerTrack {
             })),
             tx,
             buffer_feedback,
+            buffer_tx,
             buffer_rx,
             metrics,
         }

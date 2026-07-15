@@ -1,14 +1,19 @@
-//! Buffer-target scheduling: throttle segment prefetch from consumer-reported occupancy.
+//! Buffer-target scheduling: throttle segment prefetch from buffer occupancy.
 //!
 //! Uses `MPD@minBufferTime` as the rebuffer floor and a high-water mark aligned with the
 //! default BOLA buffer ceiling so ABR and scheduling share the same scale.
+//! Occupancy comes from the media-clock estimate and optional consumer reports.
 
 use std::time::Duration;
 
 use dash_mpd::MPD;
-use tokio::sync::watch;
+use tokio::sync::{broadcast, watch};
 
+use crate::metrics::TrackMetrics;
 use crate::playback_control::PlaybackController;
+use crate::types::PlayerEvent;
+
+use super::segment_emit::{MEDIA_CLOCK_TICK, publish_buffer_estimate};
 
 /// Consumer buffer thresholds for segment download scheduling.
 #[derive(Debug, Clone, Copy, PartialEq)]
@@ -59,6 +64,15 @@ impl BufferTarget {
     }
 }
 
+/// Context for refreshing estimated buffer while waiting for fetch capacity.
+pub(crate) struct BufferEstimatePublish<'a> {
+    pub playback: &'a PlaybackController,
+    pub track_idx: usize,
+    pub buffer_tx: &'a watch::Sender<f64>,
+    pub metrics: &'a TrackMetrics,
+    pub event_tx: &'a broadcast::Sender<PlayerEvent>,
+}
+
 /// Block until buffer occupancy allows another media segment download.
 pub(crate) async fn wait_for_fetch_capacity(
     buffer_target: &BufferTarget,
@@ -66,6 +80,7 @@ pub(crate) async fn wait_for_fetch_capacity(
     media_segments_delivered: usize,
     playback: &PlaybackController,
     seek_generation_at_start: u64,
+    publish: &BufferEstimatePublish<'_>,
 ) {
     loop {
         if playback.is_stopped() || playback.seek_generation() != seek_generation_at_start {
@@ -73,13 +88,27 @@ pub(crate) async fn wait_for_fetch_capacity(
         }
         playback.wait_while_paused().await;
 
+        let _ = publish_buffer_estimate(
+            publish.playback,
+            publish.track_idx,
+            publish.buffer_tx,
+            publish.metrics,
+            publish.event_tx,
+            true,
+        );
+
         let buffer_s = *buffer_rx.borrow();
         if buffer_target.should_fetch(buffer_s, media_segments_delivered) {
             return;
         }
 
-        if buffer_rx.changed().await.is_err() {
-            return;
+        tokio::select! {
+            changed = buffer_rx.changed() => {
+                if changed.is_err() {
+                    return;
+                }
+            }
+            _ = crate::platform::sleep(MEDIA_CLOCK_TICK) => {}
         }
     }
 }

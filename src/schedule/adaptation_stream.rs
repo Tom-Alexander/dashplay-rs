@@ -26,11 +26,12 @@ use crate::types::PlayerEvent;
 
 use futures::future::join_all;
 
-use super::buffer_target::{BufferTarget, wait_for_fetch_capacity};
+use super::buffer_target::{BufferEstimatePublish, BufferTarget, wait_for_fetch_capacity};
 use super::parallel_prefetch::prefetch_batch_len;
 use super::segment_decrypt::decrypt_media_fragment;
 use super::segment_emit::{
-    emit_segment, latest_buffer_s, partial_chunk_meta, record_quality_switch_and_throughput,
+    emit_segment, latest_buffer_s, partial_chunk_meta, publish_buffer_estimate,
+    record_quality_switch_and_throughput, with_media_clock_ticks,
 };
 use super::segment_fetch::{
     RepFetchEnv, download_prepared_media, fetch_and_parse_segment_base_index,
@@ -97,8 +98,10 @@ pub(crate) struct AdaptationStreamContext {
     pub session: Arc<TrackSessionState>,
     pub blacklist: SegmentBlacklist,
     pub drm: Arc<AsyncMutex<DrmSessionCoordinator>>,
-    /// Latest buffer occupancy reported by the consumer (seconds).
+    /// Latest buffer occupancy (media-clock estimate and optional consumer reports).
     pub buffer_rx: watch::Receiver<f64>,
+    /// Sender used to publish estimated buffer occupancy.
+    pub buffer_tx: watch::Sender<f64>,
     /// Prefetch thresholds from `MPD@minBufferTime` and the BOLA buffer ceiling.
     pub buffer_target: BufferTarget,
     pub metrics: TrackMetrics,
@@ -143,6 +146,7 @@ pub(crate) async fn run_adaptation_stream(
         blacklist,
         drm,
         mut buffer_rx,
+        buffer_tx,
         buffer_target,
         metrics,
         playback,
@@ -415,13 +419,21 @@ pub(crate) async fn run_adaptation_stream(
             media_segments_delivered,
             &playback,
             seek_generation_at_start,
+            &BufferEstimatePublish {
+                playback: &playback,
+                track_idx,
+                buffer_tx: &buffer_tx,
+                metrics: &metrics,
+                event_tx: &tx,
+            },
         )
         .await;
         if playback.is_stopped() || playback.seek_generation() != seek_generation_at_start {
             return Ok(None);
         }
 
-        let buffer_s = latest_buffer_s(&buffer_rx);
+        let buffer_s =
+            publish_buffer_estimate(&playback, track_idx, &buffer_tx, &metrics, &tx, true);
         let batch_cap = prefetch_batch_len(
             &buffer_target,
             buffer_s,
@@ -434,7 +446,6 @@ pub(crate) async fn run_adaptation_stream(
 
         feed_abr_live_inputs(abr.as_mut(), &playback);
         abr.update_buffer(buffer_s);
-        metrics.record_buffer(buffer_s);
 
         let plan_ctx = SegmentPlanContext {
             segment_start_index,
@@ -452,14 +463,20 @@ pub(crate) async fn run_adaptation_stream(
         // LL-DASH chunked segments stay sequential (progressive emit).
         if first_plan.chunked {
             let t0 = Instant::now();
-            let (fragments, used_quality_index, seg_for_fetch) =
+            let (fragments, used_quality_index, seg_for_fetch) = with_media_clock_ticks(
                 fetch_cmaf_media_with_rep_fallback(
                     &fetch_env,
                     abr.as_ref(),
                     &first_plan,
                     &mut encrypted_init_by_rep,
-                )
-                .await?;
+                ),
+                &playback,
+                track_idx,
+                &buffer_tx,
+                &metrics,
+                &tx,
+            )
+            .await?;
             let elapsed_s = t0.elapsed().as_secs_f64().max(1e-6);
             let download_duration = t0.elapsed();
             let total_bytes: usize = fragments.iter().map(|f| f.len()).sum();
@@ -539,6 +556,7 @@ pub(crate) async fn run_adaptation_stream(
                     &playback,
                     &session,
                     prt_reference_id.as_deref(),
+                    &buffer_tx,
                 );
             }
 
@@ -601,11 +619,18 @@ pub(crate) async fn run_adaptation_stream(
         }
 
         let t0 = Instant::now();
-        let download_results = join_all(prepared.iter().map(|p| async {
-            let started = Instant::now();
-            let result = download_prepared_media(&fetch_env, p).await;
-            (started.elapsed(), result)
-        }))
+        let download_results = with_media_clock_ticks(
+            join_all(prepared.iter().map(|p| async {
+                let started = Instant::now();
+                let result = download_prepared_media(&fetch_env, p).await;
+                (started.elapsed(), result)
+            })),
+            &playback,
+            track_idx,
+            &buffer_tx,
+            &metrics,
+            &tx,
+        )
         .await;
         let _batch_elapsed = t0.elapsed();
 
@@ -710,6 +735,7 @@ pub(crate) async fn run_adaptation_stream(
                 &playback,
                 &session,
                 prt_reference_id.as_deref(),
+                &buffer_tx,
             );
 
             let mut delivered_tracker = session.lock_delivered();

@@ -158,10 +158,12 @@ async fn presentation_time_tracks_delivery_and_seek() {
         .await,
         Some(PlayerEvent::Segment { .. })
     ));
-    assert_eq!(
-        outputs.presentation_time(),
-        Some(Duration::from_secs(0)),
-        "first segment starts at t=0"
+    let first_playhead = outputs
+        .presentation_time()
+        .expect("playhead after first segment");
+    assert!(
+        first_playhead.as_secs_f64() < 0.5,
+        "media clock should start near the first segment (got {first_playhead:?})"
     );
 
     outputs.seek(Duration::from_secs(5)).expect("seek");
@@ -179,7 +181,7 @@ async fn presentation_time_tracks_delivery_and_seek() {
                 ev,
                 PlayerEvent::PlayheadUpdated {
                     presentation_time: Some(t),
-                } if t == Duration::from_secs(4)
+                } if t.as_secs_f64() >= 5.0
             ) {
                 saw_playhead_event = true;
             }
@@ -188,14 +190,16 @@ async fn presentation_time_tracks_delivery_and_seek() {
             }
         }
     }
-    assert_eq!(
-        outputs.presentation_time(),
-        Some(Duration::from_secs(4)),
-        "after SAP-aligned delivery, playhead follows segment start"
+    let after_seek = outputs
+        .presentation_time()
+        .expect("playhead after seek delivery");
+    assert!(
+        after_seek.as_secs_f64() >= 5.0,
+        "after SAP-aligned delivery, media clock remains at/after the seek target (got {after_seek:?})"
     );
     assert!(
         saw_playhead_event,
-        "expected PlayheadUpdated when delivery realigns playhead"
+        "expected PlayheadUpdated as the media clock advances past the seek target"
     );
 
     outputs.join.await.unwrap().expect("join");

@@ -1,9 +1,9 @@
 mod common;
 
-use common::FixtureServer;
-use dashplayrs::{Player, PlayerEvent};
+use common::{FixtureServer, recv_matching};
+use dashplayrs::{PlaybackState, Player, PlayerEvent};
 
-const TIMEOUT: std::time::Duration = std::time::Duration::from_secs(10);
+const TIMEOUT: std::time::Duration = std::time::Duration::from_secs(15);
 
 #[tokio::test]
 async fn buffer_target_throttles_second_segment_when_buffer_full() {
@@ -175,4 +175,150 @@ async fn parallel_segment_prefetch_downloads_concurrently() {
 
     drop(rx);
     outputs.join.await.unwrap().expect("join");
+}
+
+#[tokio::test]
+async fn automatic_buffer_estimate_emits_buffer_updated_without_report() {
+    let server = FixtureServer::spawn("vod_single").await;
+    let player = Player::new(server.manifest_url.as_str(), None).expect("player");
+    let outputs = player.start_tracks().await.expect("start");
+    let metrics = outputs.metrics(0).expect("metrics");
+    let mut rx = outputs.subscribe(0).expect("track");
+
+    let _ = recv_matching(&mut rx, TIMEOUT, |ev| {
+        matches!(ev, PlayerEvent::Segment { .. })
+    })
+    .await
+    .expect("first segment");
+
+    let buffer_updated = recv_matching(
+        &mut rx,
+        TIMEOUT,
+        |ev| matches!(ev, PlayerEvent::BufferUpdated { buffer_s } if *buffer_s > 0.0),
+    )
+    .await
+    .expect("automatic BufferUpdated");
+    assert!(
+        matches!(
+            buffer_updated,
+            PlayerEvent::BufferUpdated { buffer_s } if buffer_s > 0.0
+        ),
+        "expected positive automatic buffer estimate"
+    );
+
+    let snap = metrics.snapshot();
+    assert!(
+        snap.buffer_s > 0.0,
+        "metrics should reflect automatic buffer estimate, got {}",
+        snap.buffer_s
+    );
+
+    drop(rx);
+    outputs.join.await.unwrap().expect("join");
+}
+
+#[tokio::test]
+async fn automatic_rebuffer_when_media_clock_underruns() {
+    // Delay the second segment so the 4s first segment drains before it arrives.
+    let (server, _peak) = FixtureServer::spawn_with_concurrency_probe(
+        "vod_single",
+        &["/seg-2"],
+        std::time::Duration::from_secs(6),
+    )
+    .await;
+    let player = Player::new(server.manifest_url.as_str(), None).expect("player");
+    let outputs = player.start_tracks().await.expect("start");
+    let metrics = outputs.metrics(0).expect("metrics");
+    let mut state_rx = outputs.subscribe_playback_state();
+    let mut rx = outputs.subscribe(0).expect("track");
+
+    let _ = recv_matching(&mut rx, TIMEOUT, |ev| {
+        matches!(ev, PlayerEvent::Segment { .. })
+    })
+    .await
+    .expect("first segment");
+
+    let deadline = tokio::time::Instant::now() + TIMEOUT;
+    let mut saw_buffering = false;
+    while tokio::time::Instant::now() < deadline {
+        if *state_rx.borrow() == PlaybackState::Buffering
+            && !metrics.snapshot().rebuffer_events.is_empty()
+        {
+            saw_buffering = true;
+            break;
+        }
+        let _ =
+            tokio::time::timeout(std::time::Duration::from_millis(200), state_rx.changed()).await;
+    }
+    assert!(
+        saw_buffering,
+        "expected PlaybackState::Buffering and a rebuffer metric without BufferFeedback::report; \
+         state={:?} rebuffers={}",
+        outputs.playback_state(),
+        metrics.snapshot().rebuffer_events.len()
+    );
+
+    drop(rx);
+    let _ = outputs.stop();
+    let _ = outputs.join.await;
+}
+
+#[tokio::test]
+async fn pause_freezes_automatic_buffer_drain() {
+    let server = FixtureServer::spawn("vod_single").await;
+    let player = Player::new(server.manifest_url.as_str(), None).expect("player");
+    let outputs = player.start_tracks().await.expect("start");
+    let metrics = outputs.metrics(0).expect("metrics");
+    let mut rx = outputs.subscribe(0).expect("track");
+
+    let _ = recv_matching(&mut rx, TIMEOUT, |ev| {
+        matches!(ev, PlayerEvent::Segment { .. })
+    })
+    .await
+    .expect("first segment");
+    // Let the media clock advance briefly so buffer is below the delivered end.
+    tokio::time::sleep(std::time::Duration::from_millis(500)).await;
+    let before = metrics.snapshot().buffer_s;
+    assert!(before > 0.0, "expected automatic buffer before pause");
+
+    outputs.pause().expect("pause");
+    tokio::time::sleep(std::time::Duration::from_secs(2)).await;
+    let during_pause = metrics.snapshot().buffer_s;
+    assert!(
+        (during_pause - before).abs() < 0.75,
+        "pause should freeze media-clock drain: before={before} during={during_pause}"
+    );
+
+    outputs.resume().expect("resume");
+    drop(rx);
+    let _ = outputs.stop();
+    let _ = outputs.join.await;
+}
+
+#[tokio::test]
+async fn buffer_feedback_report_overrides_automatic_estimate() {
+    let server = FixtureServer::spawn("vod_single").await;
+    let player = Player::new(server.manifest_url.as_str(), None).expect("player");
+    let outputs = player.start_tracks().await.expect("start");
+    let metrics = outputs.metrics(0).expect("metrics");
+    let buffer_feedback = outputs.buffer_feedback(0).expect("track");
+    let mut rx = outputs.subscribe(0).expect("track");
+
+    let _ = recv_matching(&mut rx, TIMEOUT, |ev| {
+        matches!(ev, PlayerEvent::Segment { .. })
+    })
+    .await
+    .expect("first segment");
+    tokio::time::sleep(std::time::Duration::from_millis(300)).await;
+    assert!(metrics.snapshot().buffer_s > 0.0);
+
+    buffer_feedback.report(1.25).expect("override report");
+    assert!(
+        (metrics.snapshot().buffer_s - 1.25).abs() < 1e-6,
+        "report should snap metrics buffer to the consumer value"
+    );
+
+    drop(rx);
+    let _ = outputs.stop();
+    let _ = outputs.join.await;
 }

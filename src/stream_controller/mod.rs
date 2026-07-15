@@ -106,6 +106,7 @@ impl PlaybackLoopState {
                 }
 
                 let buffer_target = BufferTarget::from_mpd(tick.mpd);
+                playback.set_min_buffer_s(buffer_target.min_buffer_s);
                 let periods_to_play = periods_to_play(
                     tick.mpd,
                     tick.is_dynamic,
@@ -227,6 +228,7 @@ impl PlaybackLoopState {
                         let blacklist = blacklist.clone();
                         let drm = drm.clone();
                         let buffer_rx = tracks[track_idx].buffer_rx.clone();
+                        let buffer_tx = tracks[track_idx].buffer_tx.clone();
                         let metrics = tracks[track_idx].metrics.clone();
                         let track_kind = tracks[track_idx].info().kind;
                         let playback = playback.clone();
@@ -275,6 +277,7 @@ impl PlaybackLoopState {
                                 blacklist,
                                 drm,
                                 buffer_rx,
+                                buffer_tx,
                                 buffer_target,
                                 metrics,
                                 playback,

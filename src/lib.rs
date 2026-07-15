@@ -18,7 +18,7 @@
 //!     while let Ok(event) = rx.recv().await {
 //!         match event {
 //!             PlayerEvent::Init(_) | PlayerEvent::Segment { .. } => {
-//!                 // decode, then report buffered seconds ahead of the playhead
+//!                 // optional: correct the media-clock estimate with the real decoder buffer
 //!                 let _ = buffer.report(4.0);
 //!             }
 //!             PlayerEvent::BufferUpdated { .. }

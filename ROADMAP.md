@@ -32,7 +32,7 @@ Status legend: `[ ]` not started · `[~]` partial · `[x]` done · `[—]` out o
 | Metrics / rich events | `[~]` | Per-track [`TrackMetrics`]; fragment + [`MediaEvent`] events |
 | Pluggable networking / ABR | `[x]` | HTTP client trait + `ReqwestClient`; ABR trait + `BolaAbrFactory` / `LolPlusAbrFactory` |
 | MPD model / remote documents | `[x]` | Period xlink, Preselection, and MPD metadata elements exposed |
-| Buffer-target scheduling | `[x]` | Throttles prefetch at 25 s; honours `MPD@minBufferTime` for rebuffer; up to 2 concurrent media GETs per track |
+| Buffer-target scheduling | `[x]` | Throttles prefetch at 25 s; honours `MPD@minBufferTime` for rebuffer; up to 2 concurrent media GETs per track; media-clock buffer estimate without `BufferFeedback::report` |
 | Bitstream / AS switching | `[ ]` | Init always re-emitted; no cross-AS switch |
 | Containers beyond fMP4/CMAF | `[~]` | mp2t byte delivery; WebM and additional image MIME types remain |
 
@@ -247,7 +247,7 @@ without changing playback behaviour.
   seamless cross-AS switch (plus DVB `fallback_adaptation_set`).
 - [ ] **Playback rate / fast-forward.** `@maxPlayoutRate` and `@codingDependency` on main
   video.
-- [ ] **Automatic stall detection.** Detect rebuffer without requiring consumer
+- [x] **Automatic stall detection.** Detect rebuffer without requiring consumer
   `BufferFeedback::report`.
 - [~] **Pause semantics.** Buffer drain signalling; optional in-flight download cancellation.
 - [x] **Playhead API.** Track and expose current presentation time.

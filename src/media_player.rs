@@ -162,22 +162,29 @@ impl MediaPlayer {
 
         let adaptation_sets = select_adaptation_sets(period, &self.track_selection);
 
+        let playback = PlaybackController::new();
+        playback.mark_started();
+
         let mut tracks = Vec::with_capacity(adaptation_sets.len());
-        for selected in adaptation_sets {
+        for (track_idx, selected) in adaptation_sets.into_iter().enumerate() {
             let (tx, _rx) = broadcast::channel(32);
             let (buffer_tx, buffer_rx) = watch::channel(0.0);
             let metrics = super::metrics::TrackMetrics::new();
             tracks.push(super::types::PlayerTrack::new(
                 selected.info,
                 tx.clone(),
-                super::types::BufferFeedback::new(buffer_tx, metrics.clone(), tx),
+                super::types::BufferFeedback::new(
+                    buffer_tx.clone(),
+                    metrics.clone(),
+                    tx,
+                    playback.clone(),
+                    track_idx,
+                ),
+                buffer_tx,
                 buffer_rx,
                 metrics,
             ));
         }
-
-        let playback = PlaybackController::new();
-        playback.mark_started();
 
         let manifest_metadata = manifest::ManifestMetadata::from_mpd(mpd, self.mpd_xml.as_deref());
 

@@ -262,9 +262,17 @@ without changing playback behaviour.
 
 ## P8 — Networking, platform, and containers (unsupported backlog)
 
+- [ ] **CLI tool (ffmpeg pipe).** Argument-configured binary that fetches DASH and writes
+  fMP4/CMAF segment bytes to stdout so callers can pipe into `ffmpeg` (e.g.
+  `dashplay … | ffmpeg -i pipe:0 …`). Library remains bytes-only; demux/decode stay
+  out of scope.
 - [ ] **HTTP retry with backoff.** Transient manifest/segment failures (failover only today).
 - [ ] **Conditional manifest fetch.** `If-None-Match` / `304 Not Modified` on live refresh.
 - [x] **Shipped WASM / browser `HttpClient`.** Reference fetch backend for WASM targets.
+- [~] **WASM test player.** Browser MSE demo under `wasm/dashplay-wasm` for clear-stream
+  validation (`FetchClient` + SourceBuffer). Remaining: real MSE buffer feedback, live
+  MSE lifecycle, text/trick-play/image tracks, and broader stream/fixture coverage beyond
+  the current proof-of-concept.
 - [~] **`BaseURL@availabilityTimeOffset`.** Use BaseURL-level ATO, not only segment-level.
 - [ ] **DVB and other namespace BaseURL extensions.** e.g. `@dvb:priority` beyond deserialize.
 - [ ] **Steering beyond BaseURL reorder.** DCSM features past `SERVICE-LOCATION-PRIORITY`.

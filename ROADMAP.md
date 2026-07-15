@@ -34,7 +34,7 @@ Status legend: `[ ]` not started · `[~]` partial · `[x]` done · `[—]` out o
 | MPD model / remote documents | `[x]` | Period xlink, Preselection, and MPD metadata elements exposed |
 | Buffer-target scheduling | `[x]` | Throttles prefetch at 25 s; honours `MPD@minBufferTime` for rebuffer; up to 2 concurrent media GETs per track; media-clock buffer estimate without `BufferFeedback::report` |
 | Bitstream / AS switching | `[ ]` | Init always re-emitted; no cross-AS switch |
-| Containers beyond fMP4/CMAF | `[~]` | mp2t byte delivery; WebM and additional image MIME types remain |
+| Containers beyond fMP4/CMAF | `[x]` | mp2t, WebM/Matroska, and `image/*` byte delivery |
 
 ---
 
@@ -78,8 +78,8 @@ These close the largest gaps between "delivers some streams" and "handles confor
 - [x] **Rich track selection.** Select by language, role, codecs, and accessibility;
   allow user preferences and multiple audio tracks. Today selection is MIME-type only.
 - [x] **Subtitles / captions.** `text/vtt`, TTML, and in-band caption tracks (`stpp`, `wvtt`, `c608`).
-- [x] **Thumbnails / trick-play.** Image adaptation sets (`image/jpeg`) and trick-play
-  tracks.
+- [x] **Thumbnails / trick-play.** Image adaptation sets (`image/*`, including jpeg/png/bmp)
+  and trick-play tracks.
 - [x] **EssentialProperty / SupplementalProperty.** Respect descriptors for codec/scheme
   compatibility and role signalling.
 
@@ -278,8 +278,10 @@ without changing playback behaviour.
 - [ ] **Steering beyond BaseURL reorder.** DCSM features past `SERVICE-LOCATION-PRIORITY`.
 - [x] **MPEG-2 Transport Stream.** `mp2t-main` / `mp2t-simple` segment byte delivery
   (`$Ext$` → `ts`, no init emit); demux remains out of scope.
-- [ ] **WebM / Matroska.** `video/webm`, `audio/webm` segment delivery.
-- [ ] **Additional image MIME types.** `image/png`, `image/bmp`, and other thumbnail schemes.
+- [x] **WebM / Matroska.** `video/webm`, `audio/webm` (and `*/x-matroska`) segment delivery
+  (`$Ext$` → `webm`); demux remains out of scope.
+- [x] **Additional image MIME types.** `image/png`, `image/bmp`, and other `image/*`
+  thumbnail schemes (including legacy `http://dashif.org/thumbnail_tile`).
 - [x] **Progressive MP4.** Non-fragmented whole-file playback via `SegmentBase`.
 - [ ] **Multiplexed A+V.** Single adaptation set carrying multiplexed audio and video.
 - [ ] **`UTCTiming` WebSocket scheme.** `urn:mpeg:dash:utc:websocket`.

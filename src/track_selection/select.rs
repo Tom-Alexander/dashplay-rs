@@ -40,9 +40,13 @@ pub(crate) fn track_kind(adaptation_set: &AdaptationSet) -> Option<TrackKind> {
 }
 
 fn is_image_adaptation_set(adaptation_set: &AdaptationSet) -> bool {
-    effective_mime_type(adaptation_set)
-        .is_some_and(|mime_type| mime_type.eq_ignore_ascii_case("image/jpeg"))
+    effective_mime_type(adaptation_set).is_some_and(|mime_type| is_image_mime_type(&mime_type))
         || is_thumbnail_tile_adaptation_set(adaptation_set)
+}
+
+/// `image/*` MIME types used for thumbnail / still-image adaptation sets.
+fn is_image_mime_type(mime_type: &str) -> bool {
+    mime_type.to_ascii_lowercase().starts_with("image/")
 }
 
 fn effective_mime_type(adaptation_set: &AdaptationSet) -> Option<String> {

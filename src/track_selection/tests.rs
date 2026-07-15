@@ -625,3 +625,46 @@ fn selects_mp2t_video_adaptation_set() {
     assert_eq!(selected[0].info.kind, TrackKind::Video);
     assert_eq!(selected[0].info.mime_type.as_deref(), Some("video/mp2t"));
 }
+
+#[test]
+fn selects_webm_video_and_audio_adaptation_sets() {
+    let period = period(
+        r#"<MPD><Period>
+                <AdaptationSet id="v" mimeType="video/webm" contentType="video">
+                  <Representation id="1" bandwidth="1000000" codecs="vp9"/>
+                </AdaptationSet>
+                <AdaptationSet id="a" mimeType="audio/webm" contentType="audio" lang="en">
+                  <Representation id="2" bandwidth="128000" codecs="opus"/>
+                </AdaptationSet>
+            </Period></MPD>"#,
+    );
+    let selected = select_adaptation_sets(&period, &TrackSelection::default());
+    assert_eq!(selected.len(), 2);
+    assert_eq!(selected[0].info.kind, TrackKind::Video);
+    assert_eq!(selected[0].info.mime_type.as_deref(), Some("video/webm"));
+    assert_eq!(selected[1].info.kind, TrackKind::Audio);
+    assert_eq!(selected[1].info.mime_type.as_deref(), Some("audio/webm"));
+}
+
+#[test]
+fn image_png_and_bmp_tracks_are_selected_when_enabled() {
+    let period = period(
+        r#"<MPD><Period>
+                <AdaptationSet id="png" mimeType="image/png" contentType="image">
+                  <Representation id="tiles" bandwidth="1000" width="320" height="180"/>
+                </AdaptationSet>
+                <AdaptationSet id="bmp" mimeType="image/bmp" contentType="image">
+                  <EssentialProperty schemeIdUri="http://dashif.org/thumbnail_tile" value="3x1"/>
+                  <Representation id="tiles" bandwidth="1000" width="160" height="90"/>
+                </AdaptationSet>
+            </Period></MPD>"#,
+    );
+    let selection = TrackSelection::default().with_image(TrackPreference::default().max_tracks(2));
+
+    let selected = select_adaptation_sets(&period, &selection);
+    assert_eq!(selected.len(), 2);
+    assert_eq!(selected[0].info.kind, TrackKind::Image);
+    assert_eq!(selected[0].info.mime_type.as_deref(), Some("image/png"));
+    assert_eq!(selected[1].info.mime_type.as_deref(), Some("image/bmp"));
+    assert_eq!(selected[1].info.thumbnail_tile, Some((3, 1)));
+}

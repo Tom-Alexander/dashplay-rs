@@ -46,6 +46,24 @@ async fn vod_mp2t_delivers_ts_segments_without_init() {
 }
 
 #[tokio::test]
+async fn vod_webm_delivers_init_and_webm_segments() {
+    let server = FixtureServer::spawn("vod_webm").await;
+    let events = play_single_track(&server.manifest_url, TIMEOUT)
+        .await
+        .expect("playback");
+
+    assert_eq!(
+        init_payload(&events).as_deref(),
+        Some(b"dashplay-webm-init".as_ref())
+    );
+    assert_eq!(
+        segment_payloads(&events),
+        vec![b"dashplay-webm-1".to_vec(), b"dashplay-webm-2".to_vec()]
+    );
+    assert!(has_end(&events));
+}
+
+#[tokio::test]
 async fn vod_ac4_profile_playback() {
     let server = FixtureServer::spawn("vod_ac4").await;
     let selection = dashplayrs::TrackSelection::default()
@@ -1223,6 +1241,84 @@ async fn image_thumbnail_track_delivers_init_and_segments() {
         vec![
             b"dashplay-thumb-seg-1".to_vec(),
             b"dashplay-thumb-seg-2".to_vec()
+        ]
+    );
+    assert!(has_end(&events));
+}
+
+#[tokio::test]
+async fn image_png_thumbnail_track_delivers_via_ext_template() {
+    let server = FixtureServer::spawn("thumbnail_png").await;
+    let player = dashplayrs::Player::new(server.manifest_url.as_str(), None)
+        .expect("player")
+        .with_track_selection(image_track_selection());
+    let outputs = player.start_tracks().await.expect("start");
+
+    assert_eq!(outputs.track_count(), 1);
+    assert_eq!(outputs.tracks[0].info().kind, dashplayrs::TrackKind::Image);
+    assert_eq!(outputs.tracks[0].info().thumbnail_tile, Some((4, 2)));
+    assert_eq!(
+        outputs.tracks[0].info().mime_type.as_deref(),
+        Some("image/png")
+    );
+
+    let mut rx = outputs
+        .tracks
+        .into_iter()
+        .next()
+        .expect("image track")
+        .into_receiver();
+    let events = common::collect_events(&mut rx, TIMEOUT).await;
+    outputs.join.await.unwrap().expect("join");
+
+    assert_eq!(
+        init_payload(&events).as_deref(),
+        Some(b"dashplay-png-init".as_ref())
+    );
+    assert_eq!(
+        segment_payloads(&events),
+        vec![
+            b"dashplay-png-seg-1".to_vec(),
+            b"dashplay-png-seg-2".to_vec()
+        ]
+    );
+    assert!(has_end(&events));
+}
+
+#[tokio::test]
+async fn image_bmp_thumbnail_track_accepts_legacy_tile_scheme() {
+    let server = FixtureServer::spawn("thumbnail_bmp").await;
+    let player = dashplayrs::Player::new(server.manifest_url.as_str(), None)
+        .expect("player")
+        .with_track_selection(image_track_selection());
+    let outputs = player.start_tracks().await.expect("start");
+
+    assert_eq!(outputs.track_count(), 1);
+    assert_eq!(outputs.tracks[0].info().kind, dashplayrs::TrackKind::Image);
+    assert_eq!(outputs.tracks[0].info().thumbnail_tile, Some((2, 2)));
+    assert_eq!(
+        outputs.tracks[0].info().mime_type.as_deref(),
+        Some("image/bmp")
+    );
+
+    let mut rx = outputs
+        .tracks
+        .into_iter()
+        .next()
+        .expect("image track")
+        .into_receiver();
+    let events = common::collect_events(&mut rx, TIMEOUT).await;
+    outputs.join.await.unwrap().expect("join");
+
+    assert_eq!(
+        init_payload(&events).as_deref(),
+        Some(b"dashplay-bmp-init".as_ref())
+    );
+    assert_eq!(
+        segment_payloads(&events),
+        vec![
+            b"dashplay-bmp-seg-1".to_vec(),
+            b"dashplay-bmp-seg-2".to_vec()
         ]
     );
     assert!(has_end(&events));

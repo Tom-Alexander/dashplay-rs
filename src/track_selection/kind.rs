@@ -11,7 +11,8 @@ pub enum TrackKind {
     Text,
     /// A trick-play video adaptation set (`http://dashif.org/guidelines/trickmode`).
     TrickPlay,
-    /// A thumbnail image adaptation set (`image/jpeg`, often with `thumbnail_tile`).
+    /// A thumbnail image adaptation set (`image/jpeg`, `image/png`, `image/bmp`, or other
+    /// `image/*` MIME types; often with `thumbnail_tile`).
     Image,
 }
 

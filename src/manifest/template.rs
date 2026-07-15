@@ -56,10 +56,17 @@ pub(super) fn infer_template_ext(
         .as_deref()
         .or(adaptation_set.mimeType.as_deref())
         .unwrap_or("");
-    if mime.eq_ignore_ascii_case("video/webm") || mime.contains("/webm") {
+    let mime_lower = mime.to_ascii_lowercase();
+    if mime_lower.contains("/webm") || mime_lower.contains("matroska") {
         "webm"
-    } else if mime.contains("mp2t") {
+    } else if mime_lower.contains("mp2t") {
         "ts"
+    } else if mime_lower == "image/jpeg" || mime_lower == "image/jpg" {
+        "jpg"
+    } else if mime_lower == "image/png" {
+        "png"
+    } else if mime_lower == "image/bmp" || mime_lower == "image/x-ms-bmp" {
+        "bmp"
     } else {
         "m4s"
     }

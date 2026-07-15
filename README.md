@@ -165,9 +165,11 @@ for track in &outputs.tracks {
 ### Trick-play and thumbnails
 
 Trick-play video (`http://dashif.org/guidelines/trickmode`) and thumbnail image
-(`image/jpeg`, often with `http://dashif.org/guidelines/thumbnail_tile`) adaptation sets use the
-same fragment pipeline as other tracks. The library does not decode JPEG tiles or render preview
-UI — feed the payloads to your image decoder or scrub-bar component.
+(`image/jpeg`, `image/png`, `image/bmp`, and other `image/*` types; often with
+`http://dashif.org/guidelines/thumbnail_tile` or the legacy `http://dashif.org/thumbnail_tile`
+scheme) adaptation sets use the same fragment pipeline as other tracks. The library does not
+decode image tiles or render preview UI — feed the payloads to your image decoder or scrub-bar
+component.
 
 Enable delivery with [`TrackSelection::with_trick_play`](#trick-play-and-thumbnails) or
 [`TrackSelection::with_image`](#trick-play-and-thumbnails). Both are disabled by default

@@ -196,9 +196,10 @@ pub enum PlayerEvent {
     CmsdUpdated { cmsd: super::cmcd::CmsdSnapshot },
     /// Initialization segment when the addressing mode provides one.
     ///
-    /// For ISOBMFF/CMAF this is typically `ftyp` + `moov`. MPEG-2 TS (`video/mp2t` /
-    /// `audio/mp2t`) and other container profiles may omit initialization; in that case
-    /// no [`Self::Init`] is emitted and media begins with [`Self::Segment`].
+    /// For ISOBMFF/CMAF this is typically `ftyp` + `moov`. WebM/Matroska often ships a
+    /// short init (EBML + Tracks). MPEG-2 TS (`video/mp2t` / `audio/mp2t`) and other
+    /// container profiles may omit initialization; in that case no [`Self::Init`] is
+    /// emitted and media begins with [`Self::Segment`].
     Init(Bytes),
     Segment {
         number: u64,

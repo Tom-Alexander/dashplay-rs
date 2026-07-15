@@ -68,26 +68,34 @@ pub(crate) fn is_trick_play_adaptation_set(adaptation_set: &AdaptationSet) -> bo
         })
 }
 
+const THUMBNAIL_TILE_SCHEMES: &[&str] = &[
+    "http://dashif.org/guidelines/thumbnail_tile",
+    // Legacy DASH-IF thumbnail URI (still seen in the wild).
+    "http://dashif.org/thumbnail_tile",
+];
+
+fn is_thumbnail_tile_scheme(scheme_id_uri: &str) -> bool {
+    THUMBNAIL_TILE_SCHEMES
+        .iter()
+        .any(|scheme| scheme_eq(scheme_id_uri, scheme))
+}
+
 /// Returns whether this adaptation set carries thumbnail-tile `EssentialProperty` descriptors.
 pub(crate) fn is_thumbnail_tile_adaptation_set(adaptation_set: &AdaptationSet) -> bool {
-    const THUMBNAIL_TILE_SCHEME: &str = "http://dashif.org/guidelines/thumbnail_tile";
-
     adaptation_set
         .essential_property
         .iter()
-        .any(|property| scheme_eq(&property.schemeIdUri, THUMBNAIL_TILE_SCHEME))
+        .any(|property| is_thumbnail_tile_scheme(&property.schemeIdUri))
         || adaptation_set.representations.iter().any(|representation| {
             representation
                 .essential_property
                 .iter()
-                .any(|property| scheme_eq(&property.schemeIdUri, THUMBNAIL_TILE_SCHEME))
+                .any(|property| is_thumbnail_tile_scheme(&property.schemeIdUri))
         })
 }
 
 /// Parse `thumbnail_tile` tile layout as `(horizontal_tiles, vertical_tiles)`.
 pub(crate) fn thumbnail_tile_layout(adaptation_set: &AdaptationSet) -> Option<(u32, u32)> {
-    const THUMBNAIL_TILE_SCHEME: &str = "http://dashif.org/guidelines/thumbnail_tile";
-
     let property = adaptation_set
         .essential_property
         .iter()
@@ -97,7 +105,7 @@ pub(crate) fn thumbnail_tile_layout(adaptation_set: &AdaptationSet) -> Option<(u
                 .iter()
                 .flat_map(|representation| representation.essential_property.iter()),
         )
-        .find(|property| scheme_eq(&property.schemeIdUri, THUMBNAIL_TILE_SCHEME))?;
+        .find(|property| is_thumbnail_tile_scheme(&property.schemeIdUri))?;
     let value = property.value.as_deref()?;
     let mut parts = value.split('x');
     let horizontal = parts.next()?.parse().ok()?;
@@ -327,6 +335,17 @@ mod tests {
             </AdaptationSet></Period></MPD>"#,
         );
         assert_eq!(thumbnail_tile_layout(&aset), Some((10, 5)));
+    }
+
+    #[test]
+    fn legacy_thumbnail_tile_scheme_is_recognized() {
+        let aset = adaptation_set(
+            r#"<MPD><Period><AdaptationSet mimeType="image/png" contentType="image">
+                <EssentialProperty schemeIdUri="http://dashif.org/thumbnail_tile" value="4x3"/>
+            </AdaptationSet></Period></MPD>"#,
+        );
+        assert!(is_thumbnail_tile_adaptation_set(&aset));
+        assert_eq!(thumbnail_tile_layout(&aset), Some((4, 3)));
     }
 
     #[test]

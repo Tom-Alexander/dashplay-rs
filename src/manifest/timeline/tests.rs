@@ -715,7 +715,7 @@ fn template_vars_for_representation_inherits_adaptation_set_dimensions() {
 }
 
 #[test]
-fn template_vars_infer_ext_for_mp2t_and_webm() {
+fn template_vars_infer_ext_for_mp2t_webm_and_images() {
     let mp2t = AdaptationSet {
         mimeType: Some("video/mp2t".into()),
         ..Default::default()
@@ -724,8 +724,28 @@ fn template_vars_infer_ext_for_mp2t_and_webm() {
         mimeType: Some("video/webm".into()),
         ..Default::default()
     };
+    let audio_webm = AdaptationSet {
+        mimeType: Some("audio/webm".into()),
+        ..Default::default()
+    };
+    let matroska = AdaptationSet {
+        mimeType: Some("video/x-matroska".into()),
+        ..Default::default()
+    };
     let audio_mp2t = AdaptationSet {
         mimeType: Some("audio/mp2t".into()),
+        ..Default::default()
+    };
+    let jpeg = AdaptationSet {
+        mimeType: Some("image/jpeg".into()),
+        ..Default::default()
+    };
+    let png = AdaptationSet {
+        mimeType: Some("image/png".into()),
+        ..Default::default()
+    };
+    let bmp = AdaptationSet {
+        mimeType: Some("image/bmp".into()),
         ..Default::default()
     };
     let rep = Representation {
@@ -744,12 +764,39 @@ fn template_vars_infer_ext_for_mp2t_and_webm() {
         template_vars_for_representation(&rep, &webm).ext,
         Some("webm")
     );
+    assert_eq!(
+        template_vars_for_representation(&rep, &audio_webm).ext,
+        Some("webm")
+    );
+    assert_eq!(
+        template_vars_for_representation(&rep, &matroska).ext,
+        Some("webm")
+    );
+    assert_eq!(
+        template_vars_for_representation(&rep, &jpeg).ext,
+        Some("jpg")
+    );
+    assert_eq!(
+        template_vars_for_representation(&rep, &png).ext,
+        Some("png")
+    );
+    assert_eq!(
+        template_vars_for_representation(&rep, &bmp).ext,
+        Some("bmp")
+    );
 
     let mut vars = template_vars_for_representation(&rep, &mp2t);
     vars.number = Some(1);
     assert_eq!(
         interpolate_template("seg-$Number$.$Ext$", &vars),
         "seg-1.ts"
+    );
+
+    let mut vars = template_vars_for_representation(&rep, &png);
+    vars.number = Some(2);
+    assert_eq!(
+        interpolate_template("thumb-$Number$.$Ext$", &vars),
+        "thumb-2.png"
     );
 }
 

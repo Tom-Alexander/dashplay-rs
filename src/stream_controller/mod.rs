@@ -338,6 +338,10 @@ impl PlaybackLoopState {
                     break;
                 }
 
+                if tracks.iter().all(|t| t.receiver_count() == 0) {
+                    break;
+                }
+
                 sleep(tick.min_update_period).await;
             }
 

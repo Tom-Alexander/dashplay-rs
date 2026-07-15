@@ -78,6 +78,7 @@ impl Player {
     pub async fn start_merged(self) -> Result<PlayerMergedOutput, PlayerError> {
         let PlayerOutputs {
             tracks,
+            is_dynamic: _,
             loop_state,
             playback: _playback,
             manifest_metadata: _,

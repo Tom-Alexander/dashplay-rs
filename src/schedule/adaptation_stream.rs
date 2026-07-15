@@ -76,6 +76,112 @@ fn feed_abr_live_inputs(abr: &mut dyn crate::abr::AbrController, playback: &Play
     abr.update_playback_rate(playback.suggested_playback_rate());
 }
 
+/// Whether this addressing can invent later `$Number$` segments from `@duration` alone
+/// (no MPD refresh / SegmentTimeline update required).
+fn duration_template_live_edge(addressing: &manifest::SegmentAddressing, is_dynamic: bool) -> bool {
+    if !is_dynamic {
+        return false;
+    }
+    match addressing {
+        manifest::SegmentAddressing::Template(st) => {
+            st.SegmentTimeline.is_none() && st.duration.is_some_and(|d| d > 0.0)
+        }
+        _ => false,
+    }
+}
+
+fn next_duration_template_segment(
+    last: &manifest::TimelineSegment,
+) -> Option<manifest::TimelineSegment> {
+    if !last.duration_s.is_finite() || last.duration_s <= 0.0 {
+        return None;
+    }
+    Some(manifest::TimelineSegment {
+        number: last.number.saturating_add(1),
+        time: last.time.saturating_add(last.duration),
+        duration: last.duration,
+        duration_s: last.duration_s,
+        presentation_time_s: last.presentation_time_s + last.duration_s,
+        sub_number: None,
+        resync_start_chunk: None,
+        media_url: None,
+        media_range: None,
+    })
+}
+
+struct LiveEdgeExtend<'a> {
+    segments: &'a mut Vec<manifest::TimelineSegment>,
+    addressing: &'a manifest::SegmentAddressing,
+    timeline_ctx: &'a TimelineBuildContext,
+    period_start: Duration,
+    since_ast_base: Option<Duration>,
+    live_edge_anchor: Instant,
+    playback: &'a PlaybackController,
+    seek_generation_at_start: u64,
+    event_tx: &'a broadcast::Sender<PlayerEvent>,
+}
+
+/// Wait until the next `@duration` live segment is published, then append it to `segments`.
+///
+/// Duration-template live does not require `minimumUpdatePeriod` refreshes to discover new
+/// `$Number$` values: availability follows wall clock (Instant-extrapolated from the snapshot
+/// `since_availability_start`). Returns `false` when the presentation has ended or the client
+/// must refresh the MPD (e.g. SegmentTimeline / Period boundary).
+async fn extend_duration_template_live_edge(ctx: LiveEdgeExtend<'_>) -> bool {
+    let LiveEdgeExtend {
+        segments,
+        addressing,
+        timeline_ctx,
+        period_start,
+        since_ast_base,
+        live_edge_anchor,
+        playback,
+        seek_generation_at_start,
+        event_tx,
+    } = ctx;
+
+    if !duration_template_live_edge(addressing, timeline_ctx.is_dynamic) {
+        return false;
+    }
+    // Bounded Periods (known `@duration` / end / mediaPresentationDuration) must return so the
+    // stream controller can advance Periods and refresh the MPD. Only open-ended live Periods
+    // invent `$Number$` values from the wall clock without an MPD update.
+    if timeline_ctx.period_end_secs().is_some() {
+        return false;
+    }
+    let Some(since_base) = since_ast_base else {
+        return false;
+    };
+    let Some(last) = segments.last() else {
+        return false;
+    };
+    let Some(next) = next_duration_template_segment(last) else {
+        return false;
+    };
+
+    let availability = manifest::SegmentAvailability::from_addressing(addressing);
+    let poll =
+        Duration::from_millis(100).min(Duration::from_secs_f64(next.duration_s.max(0.05) / 2.0));
+
+    loop {
+        playback.wait_while_paused().await;
+        if playback.is_stopped() || playback.seek_generation() != seek_generation_at_start {
+            return false;
+        }
+        if event_tx.receiver_count() == 0 {
+            return false;
+        }
+
+        let since = since_base.saturating_add(live_edge_anchor.elapsed());
+        if manifest::segment_is_available(&next, period_start, since, &availability) {
+            segments.push(next);
+            return true;
+        }
+
+        crate::platform::sleep(poll).await;
+    }
+}
+
 pub(crate) struct AdaptationStreamContext {
     pub client: SharedHttpClient,
     pub segment_base_ctx: manifest::SegmentBaseContext,
@@ -379,10 +485,31 @@ pub(crate) async fn run_adaptation_stream(
     let mut playback_started_emitted = false;
     let mut media_segments_delivered = 0usize;
     let mut held: Option<Vec<PlayerEvent>> = None;
-    let segments: Vec<manifest::TimelineSegment> = segments;
+    let mut segments: Vec<manifest::TimelineSegment> = segments;
     let mut cursor = 0usize;
+    let live_edge_anchor = Instant::now();
+    let since_ast_base = timeline_ctx.since_availability_start;
 
-    while cursor < segments.len() {
+    loop {
+        if cursor >= segments.len() {
+            let extended = extend_duration_template_live_edge(LiveEdgeExtend {
+                segments: &mut segments,
+                addressing: &addressing,
+                timeline_ctx: &timeline_ctx,
+                period_start,
+                since_ast_base,
+                live_edge_anchor,
+                playback: &playback,
+                seek_generation_at_start,
+                event_tx: &tx,
+            })
+            .await;
+            if !extended {
+                break;
+            }
+            continue;
+        }
+
         playback.wait_while_paused().await;
         if playback.is_stopped() || playback.seek_generation() != seek_generation_at_start {
             return Ok(None);
@@ -558,6 +685,8 @@ pub(crate) async fn run_adaptation_stream(
                     prt_reference_id.as_deref(),
                     &buffer_tx,
                 );
+                // Let event consumers (e.g. WASM → MSE) drain between CMAF chunks.
+                tokio::task::yield_now().await;
             }
 
             let mut delivered_tracker = session.lock_delivered();

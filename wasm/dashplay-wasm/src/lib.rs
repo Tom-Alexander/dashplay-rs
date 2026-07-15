@@ -29,6 +29,7 @@ struct TrackInfoJs {
     codecs: Vec<String>,
     kind: &'static str,
     language: Option<String>,
+    is_dynamic: bool,
 }
 
 fn kind_label(kind: TrackKind) -> &'static str {
@@ -126,10 +127,17 @@ async fn run_playback(
     let outputs = media_player.start().await?;
 
     let track_count = outputs.tracks.len();
+    let is_dynamic = outputs.is_dynamic;
     emit_status(
         on_status,
         &format!("loaded manifest with {track_count} track(s)"),
     );
+
+    if is_dynamic {
+        emit_status(on_status, "manifest:live");
+    } else {
+        emit_status(on_status, "manifest:vod");
+    }
 
     let mut receivers = Vec::with_capacity(track_count);
     let mut buffer_feedbacks = Vec::with_capacity(track_count);
@@ -141,6 +149,7 @@ async fn run_playback(
             codecs: track.info().codecs.clone(),
             kind: kind_label(track.info().kind),
             language: track.info().language.clone(),
+            is_dynamic,
         };
 
         if let Some(callback) = on_track {
@@ -188,12 +197,16 @@ async fn consume_track_events(
                         Ok(PlayerEvent::Init(data)) => {
                             emit_fragment(on_fragment.as_ref(), index, "init", &data);
                         }
-                        Ok(PlayerEvent::Segment { data, .. }) => {
+                        Ok(PlayerEvent::Segment { data, partial, .. }) => {
                             emit_fragment(on_fragment.as_ref(), index, "segment", &data);
-                            segments_seen = segments_seen.saturating_add(1);
-                            let estimated_buffer = (segments_seen as f64 * 2.0).min(20.0);
-                            let _ = buffer.report(estimated_buffer);
+                            let counts_toward_buffer = partial.is_none_or(|p| p.is_final);
+                            if counts_toward_buffer {
+                                segments_seen = segments_seen.saturating_add(1);
+                                let estimated_buffer = (segments_seen as f64 * 2.0).min(20.0);
+                                let _ = buffer.report(estimated_buffer);
+                            }
                         }
+                        Ok(PlayerEvent::ManifestLoaded { .. }) => {}
                         Ok(PlayerEvent::BitrateChanged { to_bitrate_bps, .. }) => {
                             emit_status(
                                 on_status.as_ref(),

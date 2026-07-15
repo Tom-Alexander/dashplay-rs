@@ -13,6 +13,7 @@ const tracks = new Map();
 let wasmReady = false;
 let mediaSource = null;
 let currentPlayer = null;
+let isLiveManifest = false;
 
 function setStatus(message) {
   statusEl.textContent = message;
@@ -58,6 +59,9 @@ function createTrackSink(track) {
   }
 
   const sourceBuffer = source.addSourceBuffer(mime);
+  if (isLiveManifest && "mode" in sourceBuffer) {
+    sourceBuffer.mode = "sequence";
+  }
   const sink = {
     mime,
     sourceBuffer,
@@ -68,6 +72,10 @@ function createTrackSink(track) {
   sourceBuffer.addEventListener("updateend", () => {
     sink.appending = false;
     drainQueue(sink);
+  });
+
+  sourceBuffer.addEventListener("error", () => {
+    setError(`SourceBuffer error for ${track.kind} (${mime})`);
   });
 
   tracks.set(track.index, sink);
@@ -102,6 +110,7 @@ async function startPlayback(manifestUrl) {
   playButton.disabled = true;
   tracks.clear();
   currentPlayer = null;
+  isLiveManifest = false;
 
   if (!wasmReady) {
     await init();
@@ -130,7 +139,6 @@ async function startPlayback(manifestUrl) {
   const player = new DashPlayer(manifestUrl);
 
   player.on_track((track) => {
-
     console.log("track", track);
 
     try {
@@ -142,18 +150,39 @@ async function startPlayback(manifestUrl) {
   });
 
   player.on_fragment((trackIndex, kind, bytes) => {
-
     console.log("fragment", trackIndex, kind, bytes.length);
 
     enqueueFragment(trackIndex, bytes);
     if (kind === "segment" && video.paused) {
       video.play().catch((e) => {
-        console.error("Failed to play video", e);
+        setError(`Failed to start playback: ${e}`);
       });
     }
   });
 
   player.on_status((message) => {
+    if (message === "manifest:live") {
+      isLiveManifest = true;
+      if (mediaSource?.readyState === "open") {
+        try {
+          mediaSource.duration = Infinity;
+        } catch (err) {
+          console.warn("Could not set live MediaSource duration", err);
+        }
+      }
+      for (const sink of tracks.values()) {
+        if ("mode" in sink.sourceBuffer) {
+          sink.sourceBuffer.mode = "sequence";
+        }
+      }
+      setStatus("live manifest loaded");
+      return;
+    }
+    if (message === "manifest:vod") {
+      isLiveManifest = false;
+      setStatus("vod manifest loaded");
+      return;
+    }
     setStatus(message);
   });
 
@@ -161,6 +190,12 @@ async function startPlayback(manifestUrl) {
     setError(message);
     playButton.disabled = false;
   });
+
+  video.onerror = () => {
+    const detail = video.error?.message ?? "unknown video error";
+    setError(`Video element error: ${detail}`);
+    playButton.disabled = false;
+  };
 
   currentPlayer = player;
   player.start();

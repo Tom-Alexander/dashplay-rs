@@ -36,8 +36,9 @@ pub(crate) use alignment::{
     align_start_index_to_sap, align_start_index_with_random_access, align_start_with_resync_hints,
 };
 pub(crate) use availability::{
-    SegmentAvailability, filter_segments_by_availability, target_presentation_time_at,
-    target_presentation_time_from_since, uses_chunked_segment_transfer,
+    SegmentAvailability, filter_segments_by_availability, segment_is_available,
+    target_presentation_time_at, target_presentation_time_from_since,
+    uses_chunked_segment_transfer,
 };
 pub(crate) use base_url::{SegmentBaseContext, merge_base_url, segment_bases_for_representation};
 pub(crate) use bitstream_switching::bitstream_switching_enabled;

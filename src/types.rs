@@ -317,6 +317,8 @@ pub struct PlayerOutputs {
     /// One channel per selected AdaptationSet (audio/video/text/trick-play/image filtered by
     /// [`TrackSelection`]).
     pub tracks: Vec<PlayerTrack>,
+    /// Whether the loaded MPD is dynamic (live / sliding window).
+    pub is_dynamic: bool,
     /// Seek, pause, resume, stop, and lifecycle state for this session.
     pub playback: PlaybackController,
     /// Descriptive metadata from the initially loaded MPD.
@@ -344,6 +346,7 @@ impl PlayerOutputs {
     pub async fn run(self) -> Result<(), PlayerError> {
         let Self {
             tracks,
+            is_dynamic: _,
             playback: _,
             manifest_metadata: _,
             loop_state,

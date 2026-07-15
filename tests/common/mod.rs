@@ -386,6 +386,62 @@ impl Drop for PartialLiveServer {
     }
 }
 
+/// Duration-template live with a very long `minimumUpdatePeriod`.
+///
+/// New `$Number$` segments must be discovered from wall-clock progress without waiting for MPD
+/// refresh (Akamai CMAF ULL-style streams use `PT500S` MUP).
+pub struct LongMupLiveServer {
+    pub manifest_url: Url,
+    shutdown: Option<oneshot::Sender<()>>,
+    handle: JoinHandle<()>,
+}
+
+impl LongMupLiveServer {
+    pub async fn spawn() -> Self {
+        let root = fixture_dir("live_duration");
+        let files = Arc::new(load_fixture_files(&root));
+        let state = PartialLiveState { files };
+
+        let app = Router::new()
+            .route("/manifest.mpd", get(serve_long_mup_live_manifest))
+            .route("/{*path}", get(serve_partial_live_path))
+            .with_state(state);
+
+        let listener = tokio::net::TcpListener::bind("127.0.0.1:0")
+            .await
+            .expect("bind test server");
+        let addr = listener.local_addr().expect("local addr");
+
+        let (shutdown_tx, shutdown_rx) = oneshot::channel();
+        let handle = tokio::spawn(async move {
+            axum::serve(listener, app)
+                .with_graceful_shutdown(async move {
+                    let _ = shutdown_rx.await;
+                })
+                .await
+                .expect("serve");
+        });
+
+        let manifest_url =
+            Url::parse(&format!("http://{addr}/manifest.mpd")).expect("manifest url");
+
+        Self {
+            manifest_url,
+            shutdown: Some(shutdown_tx),
+            handle,
+        }
+    }
+}
+
+impl Drop for LongMupLiveServer {
+    fn drop(&mut self) {
+        if let Some(tx) = self.shutdown.take() {
+            let _ = tx.send(());
+        }
+        self.handle.abort();
+    }
+}
+
 /// Dynamic live server with `ServiceDescription/Latency@target` for catch-up tests.
 pub struct LatencyLiveServer {
     pub manifest_url: Url,
@@ -485,6 +541,38 @@ async fn serve_partial_live_manifest() -> Response {
       <SegmentTemplate timescale="1000" duration="4000" initialization="init.mp4" media="seg-$Number$.m4s" startNumber="1" availabilityTimeOffset="7" availabilityTimeComplete="false"/>
       <Representation id="1" bandwidth="100000" codecs="avc1.42E01E" width="640" height="360"/>
       <ProducerReferenceTime id="0" type="encoder" wallClockTime="2020-05-01T12:00:00Z" presentationTime="0"/>
+    </AdaptationSet>
+  </Period>
+</MPD>
+"#;
+
+    Response::builder()
+        .status(StatusCode::OK)
+        .header("Content-Type", "application/dash+xml")
+        .body(Body::from(body))
+        .unwrap_or_else(|_| StatusCode::INTERNAL_SERVER_ERROR.into_response())
+}
+
+/// Flat duration template with MUP far too long to cover segment cadence.
+///
+/// UTC at AST+5s / 1s segments → live edge number 6 at join; Instant progress must unlock 7+.
+async fn serve_long_mup_live_manifest() -> Response {
+    let body = r#"<?xml version="1.0" encoding="UTF-8"?>
+<MPD xmlns="urn:mpeg:dash:schema:mpd:2011"
+     type="dynamic"
+     minimumUpdatePeriod="PT500S"
+     availabilityStartTime="2020-05-01T12:00:00Z"
+     timeShiftBufferDepth="PT30S"
+     maxSegmentDuration="PT1S"
+     minBufferTime="PT1S">
+  <UTCTiming schemeIdUri="urn:mpeg:dash:utc:direct:2014" value="2020-05-01T12:00:05Z"/>
+  <ServiceDescription id="0">
+    <Latency target="2000"/>
+  </ServiceDescription>
+  <Period>
+    <AdaptationSet mimeType="video/mp4" contentType="video">
+      <SegmentTemplate timescale="1000" duration="1000" initialization="init.mp4" media="seg-$Number$.m4s" startNumber="1" availabilityTimeOffset="0.8" availabilityTimeComplete="false"/>
+      <Representation id="1" bandwidth="100000" codecs="avc1.42E01E" width="640" height="360"/>
     </AdaptationSet>
   </Period>
 </MPD>

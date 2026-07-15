@@ -68,11 +68,17 @@ impl CmafChunkAccumulator {
             return None;
         }
 
-        let (moof_size, moof_header) = read_box_size(data, offset)?;
-        if moof_size < moof_header || offset + moof_size > data.len() {
+        // Drop leading CMAF boxes (`styp`, `prft`, …) so consumers receive moof[/mdat] only.
+        if offset > 0 {
+            let _ = self.buffer.split_to(offset);
+        }
+
+        let data = self.buffer.as_ref();
+        let (moof_size, moof_header) = read_box_size(data, 0)?;
+        if moof_size < moof_header || moof_size > data.len() {
             return None;
         }
-        let moof_end = offset + moof_size;
+        let moof_end = moof_size;
         if moof_end + 8 > data.len() {
             return None;
         }
@@ -84,8 +90,7 @@ impl CmafChunkAccumulator {
         let ty = box_type_at(data, moof_end, mdat_header)?;
         if &ty != b"mdat" {
             // moof-only chunk; emit once the moof box is complete.
-            let fragment = self.buffer.split_to(moof_end).freeze();
-            return Some(fragment);
+            return Some(self.buffer.split_to(moof_end).freeze());
         }
         if moof_end + mdat_size > data.len() {
             return None;
@@ -215,6 +220,60 @@ mod tests {
         let frags = acc.drain_fragments();
         assert_eq!(frags.len(), 1);
         assert_eq!(frags[0].as_ref(), body.as_slice());
+    }
+
+    #[test]
+    fn accumulator_strips_cmaf_styp_and_prft_prefix() {
+        let styp = box_bytes(b"styp", b"msdh");
+        let prft = box_bytes(b"prft", b"wallclock");
+        let moof = box_bytes(b"moof", b"abc");
+        let mdat = box_bytes(b"mdat", b"xyz");
+        let expected = [moof.as_slice(), mdat.as_slice()].concat();
+
+        let mut body = styp;
+        body.extend_from_slice(&prft);
+        body.extend_from_slice(&expected);
+
+        let mut acc = CmafChunkAccumulator::default();
+        acc.push(&body);
+        let frags = acc.drain_fragments();
+        assert_eq!(frags.len(), 1);
+        assert_eq!(frags[0].as_ref(), expected.as_slice());
+        assert_eq!(&frags[0].as_ref()[4..8], b"moof");
+    }
+
+    #[test]
+    fn accumulator_strips_prft_between_cmaf_chunks() {
+        let styp = box_bytes(b"styp", b"msdh");
+        let prft = box_bytes(b"prft", b"wallclock");
+        let moof1 = box_bytes(b"moof", b"one");
+        let mdat1 = box_bytes(b"mdat", b"aaa");
+        let prft2 = box_bytes(b"prft", b"wallclock2");
+        let moof2 = box_bytes(b"moof", b"two");
+        let mdat2 = box_bytes(b"mdat", b"bbb");
+
+        let mut body = styp;
+        body.extend_from_slice(&prft);
+        body.extend_from_slice(&moof1);
+        body.extend_from_slice(&mdat1);
+        body.extend_from_slice(&prft2);
+        body.extend_from_slice(&moof2);
+        body.extend_from_slice(&mdat2);
+
+        let mut acc = CmafChunkAccumulator::default();
+        acc.push(&body);
+        let frags = acc.drain_fragments();
+        assert_eq!(frags.len(), 2);
+        assert_eq!(&frags[0].as_ref()[4..8], b"moof");
+        assert_eq!(&frags[1].as_ref()[4..8], b"moof");
+        assert_eq!(
+            frags[0].as_ref(),
+            [moof1.as_slice(), mdat1.as_slice()].concat()
+        );
+        assert_eq!(
+            frags[1].as_ref(),
+            [moof2.as_slice(), mdat2.as_slice()].concat()
+        );
     }
 
     #[test]

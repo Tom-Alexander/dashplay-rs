@@ -167,7 +167,9 @@ impl MediaPlayer {
 
         let mut tracks = Vec::with_capacity(adaptation_sets.len());
         for (track_idx, selected) in adaptation_sets.into_iter().enumerate() {
-            let (tx, _rx) = broadcast::channel(32);
+            // CMAF / LL-DASH can emit dozens of moof+mdat events per media segment; keep
+            // enough headroom so slow consumers (e.g. MSE append queues) do not lag out.
+            let (tx, _rx) = broadcast::channel(256);
             let (buffer_tx, buffer_rx) = watch::channel(0.0);
             let metrics = super::metrics::TrackMetrics::new();
             tracks.push(super::types::PlayerTrack::new(
@@ -200,6 +202,7 @@ impl MediaPlayer {
 
         Ok(PlayerOutputs {
             tracks,
+            is_dynamic: manifest::is_dynamic_mpd(mpd),
             playback,
             manifest_metadata,
             loop_state,

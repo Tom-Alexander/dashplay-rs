@@ -2,9 +2,10 @@ mod common;
 
 use common::{
     AdvancingLiveServer, FixtureServer, InbandProducerReferenceLiveServer, LatencyLiveServer,
-    PartialLiveServer, ProducerReferenceLiveServer, assert_no_duplicate_segments, has_end,
-    init_payload, init_payloads, partial_segment_payloads, play_single_track,
-    play_single_track_live, playback_rate_suggestions, segment_numbers, segment_payloads,
+    LongMupLiveServer, PartialLiveServer, ProducerReferenceLiveServer,
+    assert_no_duplicate_segments, has_end, init_payload, init_payloads, partial_segment_payloads,
+    play_single_track, play_single_track_live, playback_rate_suggestions, segment_numbers,
+    segment_payloads,
 };
 
 const LIVE_TIMEOUT: std::time::Duration = std::time::Duration::from_millis(800);
@@ -235,6 +236,27 @@ async fn live_inband_prft_producer_reference_time_selects_correct_window() {
         &numbers[..2],
         [1, 2],
         "live window must follow in-band prft / ProducerReferenceTime, not UTCTiming alone"
+    );
+    assert!(!has_end(&events));
+}
+
+#[tokio::test]
+async fn live_duration_template_extends_past_manifest_window_without_mup() {
+    // MUP is PT500S; without wall-clock live-edge extension the client would stall after the
+    // first snapshot (edge ≈ `$Number$=6` at the frozen UTCTiming).
+    let server = LongMupLiveServer::spawn().await;
+    let events = play_single_track_live(&server.manifest_url, std::time::Duration::from_secs(4))
+        .await
+        .expect("playback");
+
+    assert_eq!(
+        init_payload(&events).as_deref(),
+        Some(b"dashplay-init-v1".as_ref())
+    );
+    let numbers = segment_numbers(&events);
+    assert!(
+        numbers.iter().any(|&n| n >= 7),
+        "expected Instant-extrapolated segments past the initial live edge, got {numbers:?}"
     );
     assert!(!has_end(&events));
 }

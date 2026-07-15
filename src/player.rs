@@ -10,6 +10,7 @@ use tokio_stream::wrappers::ReceiverStream;
 use super::abr::SharedAbrFactory;
 use super::cmcd::CmcdConfig;
 use super::http::SharedHttpClient;
+use super::manifest::ManifestMetadata;
 use super::media_player::{MediaPlayer, WidevineLicenseFetcher};
 use super::metrics::TrackMetrics;
 use super::playback_control::{PlaybackControlError, PlaybackController, PlaybackState};
@@ -138,6 +139,8 @@ impl Player {
         let tracks = outputs.tracks.clone();
         let playback = outputs.playback.clone();
         let cmcd = outputs.loop_state.cmcd.clone();
+        let is_dynamic = outputs.is_dynamic;
+        let manifest_metadata = outputs.manifest_metadata.clone();
         let join = outputs.spawn();
 
         let mut outs = Vec::with_capacity(tracks.len());
@@ -157,6 +160,8 @@ impl Player {
             tracks: outs,
             join,
             playback,
+            is_dynamic,
+            manifest_metadata,
             senders,
             cmcd,
         })
@@ -200,6 +205,10 @@ pub struct PlayerTrackOutputs {
     pub join: JoinHandle<Result<(), PlayerError>>,
     /// Seek, pause, resume, stop, and lifecycle state for this session.
     pub playback: PlaybackController,
+    /// Whether the loaded MPD is dynamic (live / sliding window).
+    pub is_dynamic: bool,
+    /// Descriptive metadata from the initially loaded MPD.
+    pub manifest_metadata: ManifestMetadata,
     senders: Vec<PlayerTrack>,
     cmcd: Option<crate::cmcd::CmcdSession>,
 }
@@ -311,6 +320,8 @@ impl PlayerTrackOutputs {
             tracks,
             join,
             playback: _playback,
+            is_dynamic: _,
+            manifest_metadata: _,
             senders,
             cmcd: _,
         } = self;

@@ -266,6 +266,8 @@ pub(crate) fn is_switch_opportunity(seg: &TimelineSegment, hints: &[SwitchingHin
 }
 
 /// `Switching@type=bitstream` opportunity for `seg`, if any.
+/// Whether `seg` is a switch-to opportunity for `@type="bitstream"` Switching hints.
+#[allow(dead_code)] // Exercised by unit tests; reserved for future ABR/SAP gating.
 pub(crate) fn bitstream_switch_opportunity(seg: &TimelineSegment, hints: &[SwitchingHint]) -> bool {
     hints.iter().any(|h| {
         h.strategy == SwitchingStrategy::Bitstream && is_interval_opportunity(seg, h.interval_ticks)

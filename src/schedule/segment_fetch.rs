@@ -28,6 +28,40 @@ use crate::track_selection::TrackKind;
 use crate::types::PlayerEvent;
 
 use super::segment_plan::SegmentPlan;
+use std::collections::HashSet;
+
+/// Tracks which Representation Initialization Segments have been delivered to the consumer.
+///
+/// `@bitstreamSwitching` does **not** mean Representation inits are interchangeable: each
+/// Representation may still carry a distinct SPS/PPS (common on CMAF ladders). Consumers such as
+/// MSE must receive the matching Init before media from that Representation.
+pub(crate) struct InitSignalState {
+    signaled: HashSet<(usize, String)>,
+    /// Soft Period continuity: suppress emission of the first Init acquired in this stream.
+    suppress_next_emit: bool,
+}
+
+impl InitSignalState {
+    pub(crate) fn new(suppress_first_emit: bool) -> Self {
+        Self {
+            signaled: HashSet::new(),
+            suppress_next_emit: suppress_first_emit,
+        }
+    }
+
+    /// Returns whether `PlayerEvent::Init` should be sent for this Representation.
+    fn take_emit(&mut self, period_adaptation_index: usize, rep_id: &str) -> bool {
+        let key = (period_adaptation_index, rep_id.to_string());
+        if !self.signaled.insert(key) {
+            return false;
+        }
+        if self.suppress_next_emit {
+            self.suppress_next_emit = false;
+            return false;
+        }
+        true
+    }
+}
 
 pub(crate) struct RepFetchEnv<'a> {
     pub(crate) client: &'a SharedHttpClient,
@@ -37,6 +71,7 @@ pub(crate) struct RepFetchEnv<'a> {
     pub(crate) adaptation_sets: &'a HashMap<usize, AdaptationSet>,
     pub(crate) primary_period_adaptation_index: usize,
     /// `@bitstreamSwitching` (or equivalent) per period adaptation index.
+    #[allow(dead_code)]
     pub(crate) bitstream_switching: &'a HashMap<usize, bool>,
     pub(crate) blacklist: &'a SegmentBlacklist,
     pub(crate) drm: &'a Arc<AsyncMutex<DrmSessionCoordinator>>,
@@ -44,8 +79,9 @@ pub(crate) struct RepFetchEnv<'a> {
     pub(crate) metrics: &'a TrackMetrics,
     pub(crate) track_kind: TrackKind,
     pub(crate) cmcd: Option<&'a CmcdSession>,
-    /// When false, Initialization Segment bytes are still fetched for decrypt but
-    /// [`PlayerEvent::Init`] is not emitted (period continuity / connectivity).
+    /// Retained for call-site clarity around period continuity; Init emission is owned by
+    /// [`InitSignalState`].
+    #[allow(dead_code)]
     pub(crate) emit_init: bool,
 }
 
@@ -73,13 +109,6 @@ impl RepFetchEnv<'_> {
             adaptation_set,
             rung.representation_index,
         )
-    }
-
-    fn bitstream_switching_for(&self, period_adaptation_index: usize) -> bool {
-        self.bitstream_switching
-            .get(&period_adaptation_index)
-            .copied()
-            .unwrap_or(false)
     }
 
     fn cmcd_fetch(
@@ -118,6 +147,7 @@ pub(crate) async fn fetch_init_with_rep_fallback(
     abr: &dyn AbrController,
     start_quality_index: usize,
     encrypted_init_by_rep: &mut HashMap<(usize, String), Bytes>,
+    init_signal: &mut InitSignalState,
 ) -> Result<(Bytes, String), PlayerError> {
     let mut last_err = PlayerError::from(SegmentError::ExhaustedRepresentations);
     for quality_index in quality_indices_for_fallback(start_quality_index) {
@@ -130,6 +160,7 @@ pub(crate) async fn fetch_init_with_rep_fallback(
             adaptation_set,
             rep,
             encrypted_init_by_rep,
+            init_signal,
         )
         .await
         {
@@ -162,6 +193,7 @@ pub(crate) async fn prepare_media_with_rep_fallback(
     encrypted_init_by_rep: &mut HashMap<(usize, String), Bytes>,
     sidx_segments_by_rep: &mut HashMap<String, Vec<manifest::TimelineSegment>>,
     per_segment_index_ranges_by_rep: &mut HashMap<String, HashMap<u64, manifest::ByteRange>>,
+    init_signal: &mut InitSignalState,
 ) -> Result<PreparedMediaFetch, PlayerError> {
     let mut last_err = PlayerError::from(SegmentError::ExhaustedRepresentations);
     for quality_index in quality_indices_for_fallback(plan.quality_index) {
@@ -173,6 +205,7 @@ pub(crate) async fn prepare_media_with_rep_fallback(
             encrypted_init_by_rep,
             sidx_segments_by_rep,
             per_segment_index_ranges_by_rep,
+            init_signal,
         )
         .await
         {
@@ -212,6 +245,7 @@ pub(crate) async fn fetch_media_with_rep_fallback(
     encrypted_init_by_rep: &mut HashMap<(usize, String), Bytes>,
     sidx_segments_by_rep: &mut HashMap<String, Vec<manifest::TimelineSegment>>,
     per_segment_index_ranges_by_rep: &mut HashMap<String, HashMap<u64, manifest::ByteRange>>,
+    init_signal: &mut InitSignalState,
 ) -> Result<(Vec<u8>, usize, manifest::TimelineSegment), PlayerError> {
     let mut last_err = PlayerError::from(SegmentError::ExhaustedRepresentations);
     for quality_index in quality_indices_for_fallback(plan.quality_index) {
@@ -223,6 +257,7 @@ pub(crate) async fn fetch_media_with_rep_fallback(
             encrypted_init_by_rep,
             sidx_segments_by_rep,
             per_segment_index_ranges_by_rep,
+            init_signal,
         )
         .await
         {
@@ -242,6 +277,7 @@ pub(crate) async fn fetch_media_with_rep_fallback(
     Err(last_err)
 }
 
+#[allow(clippy::too_many_arguments)]
 async fn prepare_media_at_quality(
     env: &RepFetchEnv<'_>,
     abr: &dyn AbrController,
@@ -250,6 +286,7 @@ async fn prepare_media_at_quality(
     encrypted_init_by_rep: &mut HashMap<(usize, String), Bytes>,
     sidx_segments_by_rep: &mut HashMap<String, Vec<manifest::TimelineSegment>>,
     per_segment_index_ranges_by_rep: &mut HashMap<String, HashMap<u64, manifest::ByteRange>>,
+    init_signal: &mut InitSignalState,
 ) -> Result<PreparedMediaFetch, PlayerError> {
     let (period_adaptation_index, adaptation_set, rep_idx) =
         env.resolve_quality(abr, quality_index);
@@ -262,6 +299,7 @@ async fn prepare_media_at_quality(
         adaptation_set,
         rep,
         encrypted_init_by_rep,
+        init_signal,
     )
     .await?;
 
@@ -351,6 +389,7 @@ pub(super) async fn fetch_cmaf_media_with_rep_fallback(
     abr: &dyn AbrController,
     plan: &SegmentPlan,
     encrypted_init_by_rep: &mut HashMap<(usize, String), Bytes>,
+    init_signal: &mut InitSignalState,
 ) -> Result<(Vec<Bytes>, usize, manifest::TimelineSegment), PlayerError> {
     let mut last_err = PlayerError::from(SegmentError::ExhaustedRepresentations);
     for quality_index in quality_indices_for_fallback(plan.quality_index) {
@@ -365,6 +404,7 @@ pub(super) async fn fetch_cmaf_media_with_rep_fallback(
             adaptation_set,
             rep,
             encrypted_init_by_rep,
+            init_signal,
         )
         .await
         {
@@ -422,24 +462,17 @@ async fn ensure_init_for_rep(
     adaptation_set: &AdaptationSet,
     rep: &Representation,
     encrypted_init_by_rep: &mut HashMap<(usize, String), Bytes>,
+    init_signal: &mut InitSignalState,
 ) -> Result<Bytes, PlayerError> {
     let rep_id = rep.id.as_deref().unwrap_or_default();
     let cache_key = (period_adaptation_index, rep_id.to_string());
     if let Some(init) = encrypted_init_by_rep.get(&cache_key) {
+        // Init bytes are already cached; still signal the consumer on first use of this rep.
+        if init_signal.take_emit(period_adaptation_index, rep_id) && !init.is_empty() {
+            let out = consumer_init_bytes(env, period_adaptation_index, rep_id, init).await?;
+            let _ = env.tx.send(PlayerEvent::Init(out));
+        }
         return Ok(init.clone());
-    }
-
-    // ISO/IEC 23009-1: with bitstream switching, Media Segments from different
-    // Representations may be concatenated without re-initializing the decoder.
-    // Sharing is scoped to the owning Adaptation Set only.
-    if env.bitstream_switching_for(period_adaptation_index)
-        && let Some(shared) = encrypted_init_by_rep
-            .iter()
-            .find(|((aset_idx, _), _)| *aset_idx == period_adaptation_index)
-            .map(|(_, v)| v.clone())
-    {
-        encrypted_init_by_rep.insert(cache_key.clone(), shared.clone());
-        return Ok(shared);
     }
 
     let bases =
@@ -449,6 +482,7 @@ async fn ensure_init_for_rep(
     let template_vars = manifest::template_vars_for_representation(rep, adaptation_set);
     let Some(init_target) = init_target_for_addressing(&rep_addressing, &template_vars)? else {
         encrypted_init_by_rep.insert(cache_key, Bytes::new());
+        let _ = init_signal.take_emit(period_adaptation_index, rep_id);
         return Ok(Bytes::new());
     };
     let br_bps = rep.bandwidth.map(|b| b as f64);
@@ -467,44 +501,55 @@ async fn ensure_init_for_rep(
             .await?;
     }
 
-    #[cfg(feature = "drm")]
-    let out = {
-        let license = {
-            let guard = env.drm.lock().await;
-            guard.license_for_rep(period_adaptation_index, rep_id)
-        };
-        if let Some(ref lic) = license {
-            match lic.decrypt(&init_bytes, Option::<&Bytes>::None) {
-                Ok(decrypted) => decrypted,
-                Err(e) if License::is_likely_missing_key(&e) => {
-                    let mut guard = env.drm.lock().await;
-                    guard
-                        .recover_from_decrypt_failure(
-                            period_adaptation_index,
-                            rep_id,
-                            &init_bytes,
-                            &[],
-                        )
-                        .await?;
-                    let refreshed = guard.license_for_rep(period_adaptation_index, rep_id);
-                    drop(guard);
-                    refreshed
-                        .ok_or(DrmError::License(e))?
-                        .decrypt(&init_bytes, Option::<&Bytes>::None)
-                        .map_err(DrmError::License)?
-                }
-                Err(e) => return Err(PlayerError::Drm(DrmError::License(e))),
-            }
-        } else {
-            init_bytes.clone()
-        }
-    };
-    #[cfg(not(feature = "drm"))]
-    let out = init_bytes.clone();
-    if env.emit_init {
+    let out = consumer_init_bytes(env, period_adaptation_index, rep_id, &init_bytes).await?;
+    if init_signal.take_emit(period_adaptation_index, rep_id) && !out.is_empty() {
         let _ = env.tx.send(PlayerEvent::Init(out));
     }
     Ok(init_bytes)
+}
+
+#[cfg(feature = "drm")]
+async fn consumer_init_bytes(
+    env: &RepFetchEnv<'_>,
+    period_adaptation_index: usize,
+    rep_id: &str,
+    init_bytes: &Bytes,
+) -> Result<Bytes, PlayerError> {
+    let license = {
+        let guard = env.drm.lock().await;
+        guard.license_for_rep(period_adaptation_index, rep_id)
+    };
+    if let Some(ref lic) = license {
+        match lic.decrypt(init_bytes, Option::<&Bytes>::None) {
+            Ok(decrypted) => Ok(decrypted),
+            Err(e) if License::is_likely_missing_key(&e) => {
+                let mut guard = env.drm.lock().await;
+                guard
+                    .recover_from_decrypt_failure(period_adaptation_index, rep_id, init_bytes, &[])
+                    .await?;
+                let refreshed = guard.license_for_rep(period_adaptation_index, rep_id);
+                drop(guard);
+                refreshed
+                    .ok_or(DrmError::License(e))?
+                    .decrypt(init_bytes, Option::<&Bytes>::None)
+                    .map_err(DrmError::License)
+                    .map_err(PlayerError::Drm)
+            }
+            Err(e) => Err(PlayerError::Drm(DrmError::License(e))),
+        }
+    } else {
+        Ok(init_bytes.clone())
+    }
+}
+
+#[cfg(not(feature = "drm"))]
+async fn consumer_init_bytes(
+    _env: &RepFetchEnv<'_>,
+    _period_adaptation_index: usize,
+    _rep_id: &str,
+    init_bytes: &Bytes,
+) -> Result<Bytes, PlayerError> {
+    Ok(init_bytes.clone())
 }
 
 fn init_target_for_addressing(

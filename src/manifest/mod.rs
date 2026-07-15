@@ -55,8 +55,8 @@ pub(crate) use period::{
 pub(crate) use period_connectivity::{PeriodLink, adaptation_set_period_link, period_link};
 pub(crate) use sidx::{parse_sidx_index_for_segment_base, parse_sidx_index_from_template};
 pub(crate) use switch_access::{
-    RandomAccessSupplements, SwitchingHint, bitstream_switch_opportunity, is_switch_opportunity,
-    parse_random_access_supplements, switching_hints_for,
+    RandomAccessSupplements, SwitchingHint, is_switch_opportunity, parse_random_access_supplements,
+    switching_hints_for,
 };
 pub(crate) use template::{TemplateVars, interpolate_template, template_vars_for_representation};
 pub(crate) use timeline::timeline_segments_for_addressing;

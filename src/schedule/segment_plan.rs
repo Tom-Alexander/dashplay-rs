@@ -12,7 +12,7 @@ use dash_mpd::AdaptationSet;
 use crate::abr::AbrController;
 use crate::manifest::{
     self, ByteRange, SegmentAddressing, SegmentAvailability, SwitchingHint, TimelineBuildContext,
-    TimelineSegment, bitstream_switch_opportunity, is_switch_opportunity, switching_hints_for,
+    TimelineSegment, is_switch_opportunity, switching_hints_for,
 };
 
 /// First-segment init fetch decision for a track.
@@ -30,6 +30,7 @@ pub(crate) struct SegmentPlanContext<'a> {
     /// Primary and switch/fallback peers keyed by period adaptation index.
     pub adaptation_sets: &'a HashMap<usize, AdaptationSet>,
     /// `@bitstreamSwitching` (or equivalent) per period adaptation index.
+    #[allow(dead_code)]
     pub bitstream_switching: &'a HashMap<usize, bool>,
     pub addressing: &'a SegmentAddressing,
     pub timeline_ctx: &'a TimelineBuildContext,
@@ -140,23 +141,9 @@ pub(crate) fn plan_segment(
     let rep = &adaptation_set.representations[representation_index];
     let rep_id = rep.id.as_deref().unwrap_or_default();
     let cache_key = (period_adaptation_index, rep_id.to_string());
-    let switching_hints = switching_hints_for(adaptation_set, Some(rep));
-    let bitstream = ctx
-        .bitstream_switching
-        .get(&period_adaptation_index)
-        .copied()
-        .unwrap_or(false)
-        || bitstream_switch_opportunity(segment, &switching_hints);
-    let init_needed = if bitstream
-        && ctx
-            .cached_inits
-            .keys()
-            .any(|(aset_idx, _)| *aset_idx == period_adaptation_index)
-    {
-        false
-    } else {
-        !ctx.cached_inits.contains_key(&cache_key)
-    };
+    // Always load the Init for the selected Representation. `@bitstreamSwitching` allows
+    // seamless switches at SAP points; it does not imply Initialization Segments are shared.
+    let init_needed = !ctx.cached_inits.contains_key(&cache_key);
 
     let set_availability = SegmentAvailability::from_addressing(ctx.addressing);
     let chunked = ctx.timeline_ctx.is_dynamic
@@ -382,7 +369,7 @@ mod tests {
     }
 
     #[test]
-    fn plan_segment_skips_init_on_switch_when_bitstream_switching() {
+    fn plan_segment_marks_init_needed_when_switching_representation() {
         let set = AdaptationSet {
             representations: vec![
                 Representation {
@@ -417,7 +404,7 @@ mod tests {
             last_quality_index: None,
         };
         let plan = plan_segment(abr.as_mut(), 5.0, &segment(1), 0, &ctx);
-        assert!(!plan.init_needed);
+        assert!(plan.init_needed);
         assert_eq!(plan.representation_index, 1);
     }
 

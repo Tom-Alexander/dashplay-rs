@@ -7,7 +7,21 @@ const video = document.getElementById("video");
 const statusEl = document.getElementById("status");
 const errorEl = document.getElementById("error");
 
-/** @type {Map<number, { mime: string, sourceBuffer: SourceBuffer, queue: Uint8Array[], appending: boolean }>} */
+/** Keep roughly this many seconds of MSE media ahead of the playhead for live. */
+const LIVE_BUFFER_KEEP_S = 25;
+
+/**
+ * @typedef {{
+ *   mime: string,
+ *   sourceBuffer: SourceBuffer,
+ *   queue: Uint8Array[],
+ *   appending: boolean,
+ *   timestampOffsetReady: boolean,
+ *   timescale: number,
+ * }} TrackSink
+ */
+
+/** @type {Map<number, TrackSink>} */
 const tracks = new Map();
 
 let wasmReady = false;
@@ -23,9 +37,21 @@ function setError(message) {
   errorEl.textContent = message ?? "";
 }
 
+/** Prefer the highest AVC profile/level so ABR upswitches stay SourceBuffer-compatible. */
+function pickCodec(codecs) {
+  if (!codecs?.length) {
+    return null;
+  }
+  const avc = codecs.filter((c) => /^avc1\./i.test(c));
+  if (avc.length > 0) {
+    return [...avc].sort((a, b) => a.localeCompare(b, undefined, { sensitivity: "base" })).at(-1);
+  }
+  return codecs[0];
+}
+
 function mimeForTrack(track) {
   const mime = track.mime_type ?? "video/mp4";
-  const codec = track.codecs?.[0];
+  const codec = pickCodec(track.codecs);
   if (!codec) {
     return mime;
   }
@@ -40,6 +66,147 @@ function ensureMediaSource() {
   mediaSource = new MediaSource();
   video.src = URL.createObjectURL(mediaSource);
   return mediaSource;
+}
+
+/**
+ * Walk ISO-BMFF boxes and invoke `visit(type, payloadStart, payloadEnd)`.
+ * Return a value from `visit` to stop early.
+ */
+function walkBoxes(bytes, start, end, visit) {
+  const view = new DataView(bytes.buffer, bytes.byteOffset, bytes.byteLength);
+  let offset = start;
+  while (offset + 8 <= end) {
+    let size = view.getUint32(offset);
+    let header = 8;
+    if (size === 1) {
+      if (offset + 16 > end) {
+        return null;
+      }
+      const hi = view.getUint32(offset + 8);
+      const lo = view.getUint32(offset + 12);
+      size = hi * 2 ** 32 + lo;
+      header = 16;
+    } else if (size === 0) {
+      size = end - offset;
+    }
+    if (size < header || offset + size > end) {
+      return null;
+    }
+
+    const type = String.fromCharCode(
+      bytes[offset + 4],
+      bytes[offset + 5],
+      bytes[offset + 6],
+      bytes[offset + 7],
+    );
+    const payloadStart = offset + header;
+    const payloadEnd = offset + size;
+
+    const early = visit(type, payloadStart, payloadEnd, view);
+    if (early !== undefined) {
+      return early;
+    }
+
+    if (
+      type === "moov" ||
+      type === "trak" ||
+      type === "mdia" ||
+      type === "minf" ||
+      type === "stbl" ||
+      type === "moof" ||
+      type === "traf"
+    ) {
+      const nested = walkBoxes(bytes, payloadStart, payloadEnd, visit);
+      if (nested !== null && nested !== undefined) {
+        return nested;
+      }
+    }
+
+    offset += size;
+  }
+  return null;
+}
+
+function readMdhdTimescale(bytes) {
+  return walkBoxes(bytes, 0, bytes.length, (type, payloadStart, payloadEnd, view) => {
+    if (type !== "mdhd") {
+      return undefined;
+    }
+    const version = bytes[payloadStart];
+    if (version === 0 && payloadStart + 20 <= payloadEnd) {
+      return view.getUint32(payloadStart + 12);
+    }
+    if (version === 1 && payloadStart + 28 <= payloadEnd) {
+      return view.getUint32(payloadStart + 20);
+    }
+    return undefined;
+  });
+}
+
+/**
+ * Read `baseMediaDecodeTime` from the first `tfdt` in an fMP4 fragment.
+ * @returns {{ decodeTime: number, timescale: number } | null}
+ */
+function readTfdtTiming(bytes, timescaleHint) {
+  const decodeTime = walkBoxes(bytes, 0, bytes.length, (type, payloadStart, payloadEnd, view) => {
+    if (type !== "tfdt") {
+      return undefined;
+    }
+    const version = bytes[payloadStart];
+    if (version === 0 && payloadStart + 8 <= payloadEnd) {
+      return view.getUint32(payloadStart + 4);
+    }
+    if (version === 1 && payloadStart + 12 <= payloadEnd) {
+      const hi = view.getUint32(payloadStart + 4);
+      const lo = view.getUint32(payloadStart + 8);
+      return hi * 2 ** 32 + lo;
+    }
+    return undefined;
+  });
+  if (decodeTime === null || decodeTime === undefined) {
+    return null;
+  }
+  const timescale = timescaleHint && timescaleHint > 0 ? timescaleHint : 1;
+  return { decodeTime, timescale };
+}
+
+function isInitSegment(bytes) {
+  if (bytes.length < 8) {
+    return false;
+  }
+  const view = new DataView(bytes.buffer, bytes.byteOffset, bytes.byteLength);
+  for (let offset = 0; offset + 8 <= bytes.length; ) {
+    let size = view.getUint32(offset);
+    let header = 8;
+    if (size === 1) {
+      if (offset + 16 > bytes.length) {
+        break;
+      }
+      const hi = view.getUint32(offset + 8);
+      const lo = view.getUint32(offset + 12);
+      size = hi * 2 ** 32 + lo;
+      header = 16;
+    } else if (size === 0) {
+      size = bytes.length - offset;
+    }
+    if (size < header) {
+      break;
+    }
+    const type = String.fromCharCode(
+      bytes[offset + 4],
+      bytes[offset + 5],
+      bytes[offset + 6],
+      bytes[offset + 7],
+    );
+    if (type === "moov" || type === "ftyp") {
+      return true;
+    }
+    if (type === "moof" || type === "mdat") {
+      return false;
+    }
+    offset += size;
+  }
+  return false;
 }
 
 function createTrackSink(track) {
@@ -58,19 +225,26 @@ function createTrackSink(track) {
     throw new Error(`Browser does not support ${mime}`);
   }
 
+  // Use segments mode + timestampOffset for live. Safari/WebKit often fatal-errors
+  // (`PIPELINE_ERROR_DECODE` / VT -12909) when sequence mode + ABR init switches reorder
+  // format changes relative to non-keyframes (see WebKit bug 314035).
   const sourceBuffer = source.addSourceBuffer(mime);
-  if (isLiveManifest && "mode" in sourceBuffer) {
-    sourceBuffer.mode = "sequence";
+  if ("mode" in sourceBuffer) {
+    sourceBuffer.mode = "segments";
   }
   const sink = {
     mime,
     sourceBuffer,
     queue: [],
     appending: false,
+    timestampOffsetReady: false,
+    timescale: 0,
   };
 
   sourceBuffer.addEventListener("updateend", () => {
     sink.appending = false;
+    maybeSeekToBufferedStart();
+    pruneLiveBuffer(sink);
     drainQueue(sink);
   });
 
@@ -82,6 +256,75 @@ function createTrackSink(track) {
   return sink;
 }
 
+function maybeSeekToBufferedStart() {
+  if (!video.paused || tracks.size === 0) {
+    return;
+  }
+  try {
+    let start = Infinity;
+    for (const sink of tracks.values()) {
+      const buffered = sink.sourceBuffer.buffered;
+      if (buffered.length > 0) {
+        start = Math.min(start, buffered.start(0));
+      }
+    }
+    if (Number.isFinite(start) && start > 0.25 && Math.abs(video.currentTime - start) > 0.25) {
+      video.currentTime = start;
+    }
+  } catch {
+    // Ignore transient InvalidStateError while buffers settle.
+  }
+}
+
+function pruneLiveBuffer(sink) {
+  if (!isLiveManifest || sink.sourceBuffer.updating) {
+    return;
+  }
+  try {
+    const buffered = sink.sourceBuffer.buffered;
+    if (buffered.length === 0) {
+      return;
+    }
+    const end = buffered.end(buffered.length - 1);
+    const keepFrom = Math.max(buffered.start(0), end - LIVE_BUFFER_KEEP_S);
+    if (keepFrom - buffered.start(0) > 1.0) {
+      sink.sourceBuffer.remove(buffered.start(0), keepFrom);
+    }
+  } catch {
+    // remove() may throw while appending; next updateend retries.
+  }
+}
+
+function prepareChunk(sink, chunk) {
+  const bytes = chunk instanceof Uint8Array ? chunk : new Uint8Array(chunk);
+
+  if (isInitSegment(bytes)) {
+    const timescale = readMdhdTimescale(bytes);
+    if (timescale && timescale > 0) {
+      sink.timescale = timescale;
+    }
+    return bytes;
+  }
+
+  if (!sink.timestampOffsetReady) {
+    const timing = readTfdtTiming(bytes, sink.timescale);
+    if (timing && timing.timescale > 0) {
+      const pts = timing.decodeTime / timing.timescale;
+      try {
+        sink.sourceBuffer.timestampOffset = -pts;
+        sink.timestampOffsetReady = true;
+        console.log("timestampOffset", sink.mime, -pts);
+      } catch (err) {
+        console.warn("timestampOffset failed", err);
+      }
+    } else {
+      sink.timestampOffsetReady = true;
+    }
+  }
+
+  return bytes;
+}
+
 function drainQueue(sink) {
   if (sink.appending || sink.queue.length === 0) {
     return;
@@ -91,8 +334,14 @@ function drainQueue(sink) {
   }
 
   const chunk = sink.queue.shift();
+  const bytes = prepareChunk(sink, chunk);
   sink.appending = true;
-  sink.sourceBuffer.appendBuffer(chunk);
+  try {
+    sink.sourceBuffer.appendBuffer(bytes);
+  } catch (err) {
+    sink.appending = false;
+    setError(`appendBuffer failed: ${err}`);
+  }
 }
 
 function enqueueFragment(trackIndex, bytes) {
@@ -115,6 +364,20 @@ async function startPlayback(manifestUrl) {
   if (!wasmReady) {
     await init();
     wasmReady = true;
+  }
+
+  // Reset MediaSource so SourceBuffers from a previous play attempt cannot linger.
+  if (mediaSource) {
+    try {
+      if (video.src) {
+        URL.revokeObjectURL(video.src);
+      }
+    } catch {
+      // ignore
+    }
+    mediaSource = null;
+    video.removeAttribute("src");
+    video.load();
   }
 
   const source = ensureMediaSource();
@@ -165,14 +428,9 @@ async function startPlayback(manifestUrl) {
       isLiveManifest = true;
       if (mediaSource?.readyState === "open") {
         try {
-          mediaSource.duration = Infinity;
+          mediaSource.duration = Number.POSITIVE_INFINITY;
         } catch (err) {
           console.warn("Could not set live MediaSource duration", err);
-        }
-      }
-      for (const sink of tracks.values()) {
-        if ("mode" in sink.sourceBuffer) {
-          sink.sourceBuffer.mode = "sequence";
         }
       }
       setStatus("live manifest loaded");

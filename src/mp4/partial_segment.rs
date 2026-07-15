@@ -32,16 +32,14 @@ impl CmafChunkAccumulator {
         out
     }
 
-    /// Remaining bytes when the HTTP body ended (single-box tail or full segment).
+    /// Remaining bytes when the HTTP body ended.
+    ///
+    /// Incomplete trailing boxes are discarded — never forwarded to MSE/decoders.
     pub(crate) fn finish(mut self) -> Option<Bytes> {
         if self.buffer.is_empty() {
             return None;
         }
-        if self.try_take_fragment().is_some() {
-            // Should not happen if stream ended cleanly on box boundaries; return rest anyway.
-            return Some(self.buffer.freeze());
-        }
-        Some(self.buffer.freeze())
+        self.try_take_fragment()
     }
 
     fn try_take_fragment(&mut self) -> Option<Bytes> {

@@ -34,7 +34,7 @@ use super::segment_emit::{
     record_quality_switch_and_throughput, with_media_clock_ticks,
 };
 use super::segment_fetch::{
-    RepFetchEnv, download_prepared_media, fetch_and_parse_segment_base_index,
+    InitSignalState, RepFetchEnv, download_prepared_media, fetch_and_parse_segment_base_index,
     fetch_and_parse_segment_template_index, fetch_cmaf_media_with_rep_fallback,
     fetch_init_with_rep_fallback, fetch_media_with_rep_fallback, prepare_media_with_rep_fallback,
 };
@@ -441,6 +441,9 @@ pub(crate) async fn run_adaptation_stream(
 
     // Cache init segments by (Adaptation Set index, Representation ID).
     let mut encrypted_init_by_rep: HashMap<(usize, String), Bytes> = HashMap::new();
+    // Soft period transitions keep `have_init`: suppress re-emitting the continuing Init, but still
+    // emit when ABR switches to a Representation whose Init the consumer has not seen.
+    let mut init_signal = InitSignalState::new(!init_taken);
     let fetch_env = RepFetchEnv {
         client: &client,
         segment_base_ctx: &segment_base_ctx,
@@ -454,7 +457,6 @@ pub(crate) async fn run_adaptation_stream(
         metrics: &metrics,
         track_kind,
         cmcd: cmcd.as_ref(),
-        // Soft period transitions keep `have_init`; still fetch init bytes for decrypt without re-emitting.
         emit_init: init_taken,
     };
     if init_taken {
@@ -465,6 +467,7 @@ pub(crate) async fn run_adaptation_stream(
                 abr.as_ref(),
                 init_plan.quality_index,
                 &mut encrypted_init_by_rep,
+                &mut init_signal,
             )
             .await?;
             let _ = rep_id;
@@ -596,6 +599,7 @@ pub(crate) async fn run_adaptation_stream(
                     abr.as_ref(),
                     &first_plan,
                     &mut encrypted_init_by_rep,
+                    &mut init_signal,
                 ),
                 &playback,
                 track_idx,
@@ -742,6 +746,7 @@ pub(crate) async fn run_adaptation_stream(
                     &mut encrypted_init_by_rep,
                     &mut sidx_segments_by_rep,
                     &mut per_segment_index_ranges_by_rep,
+                    &mut init_signal,
                 )
                 .await?,
             );
@@ -795,6 +800,7 @@ pub(crate) async fn run_adaptation_stream(
                                 &mut encrypted_init_by_rep,
                                 &mut sidx_segments_by_rep,
                                 &mut per_segment_index_ranges_by_rep,
+                                &mut init_signal,
                             )
                             .await?;
                         (retry_t0.elapsed(), bytes, used_quality_index, seg_for_fetch)

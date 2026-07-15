@@ -22,7 +22,7 @@ use crate::types::PlayerEvent;
 use super::segment_decrypt::decrypt_media_fragment;
 use super::segment_emit::segment_presentation_time;
 use super::segment_fetch::{
-    RepFetchEnv, fetch_init_with_rep_fallback, fetch_media_with_rep_fallback,
+    InitSignalState, RepFetchEnv, fetch_init_with_rep_fallback, fetch_media_with_rep_fallback,
 };
 use super::segment_plan::{SegmentPlanContext, plan_init, plan_segment};
 
@@ -124,12 +124,15 @@ pub(crate) async fn prefetch_next_period_first_segment(
     };
 
     let mut encrypted_init_by_rep: HashMap<(usize, String), Bytes> = HashMap::new();
+    // Prefetch holds events until PeriodChanged; Init is emitted then via held events when needed.
+    let mut init_signal = InitSignalState::new(true);
     let init_plan = plan_init(abr.as_mut(), 0.0);
     let _ = fetch_init_with_rep_fallback(
         &fetch_env,
         abr.as_ref(),
         init_plan.quality_index,
         &mut encrypted_init_by_rep,
+        &mut init_signal,
     )
     .await?;
 
@@ -165,6 +168,7 @@ pub(crate) async fn prefetch_next_period_first_segment(
         &mut encrypted_init_by_rep,
         &mut sidx_segments_by_rep,
         &mut per_segment_index_ranges_by_rep,
+        &mut init_signal,
     )
     .await?;
 

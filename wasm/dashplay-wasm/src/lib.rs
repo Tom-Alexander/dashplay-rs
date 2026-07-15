@@ -192,15 +192,34 @@ async fn consume_track_events(
             let on_status = on_status.cloned();
             async move {
                 let mut segments_seen = 0u32;
+                // Safari/WebKit MSE is unreliable when fed dozens of tiny CMAF chunks
+                // (`appendBuffer` per moof+mdat). The HTTP body is already complete before
+                // fragments are emitted, so coalesce back into one MSE append per segment.
+                let mut pending_media = bytes::BytesMut::new();
                 loop {
                     match rx.recv().await {
                         Ok(PlayerEvent::Init(data)) => {
+                            if !pending_media.is_empty() {
+                                emit_fragment(
+                                    on_fragment.as_ref(),
+                                    index,
+                                    "segment",
+                                    &pending_media.split().freeze(),
+                                );
+                            }
                             emit_fragment(on_fragment.as_ref(), index, "init", &data);
                         }
                         Ok(PlayerEvent::Segment { data, partial, .. }) => {
-                            emit_fragment(on_fragment.as_ref(), index, "segment", &data);
-                            let counts_toward_buffer = partial.is_none_or(|p| p.is_final);
-                            if counts_toward_buffer {
+                            pending_media.extend_from_slice(&data);
+                            let complete = partial.is_none_or(|p| p.is_final);
+                            if complete {
+                                let coalesced = pending_media.split().freeze();
+                                emit_fragment(
+                                    on_fragment.as_ref(),
+                                    index,
+                                    "segment",
+                                    &coalesced,
+                                );
                                 segments_seen = segments_seen.saturating_add(1);
                                 let estimated_buffer = (segments_seen as f64 * 2.0).min(20.0);
                                 let _ = buffer.report(estimated_buffer);
@@ -213,7 +232,17 @@ async fn consume_track_events(
                                 &format!("track {index} bitrate {to_bitrate_bps} bps"),
                             );
                         }
-                        Ok(PlayerEvent::End | PlayerEvent::PlaybackEnded) => break,
+                        Ok(PlayerEvent::End | PlayerEvent::PlaybackEnded) => {
+                            if !pending_media.is_empty() {
+                                emit_fragment(
+                                    on_fragment.as_ref(),
+                                    index,
+                                    "segment",
+                                    &pending_media.split().freeze(),
+                                );
+                            }
+                            break;
+                        }
                         Ok(PlayerEvent::Error(err)) => {
                             return Err(PlayerError::Segment(dashplayrs::SegmentError::Request(
                                 dashplayrs::HttpError::Transport(err.0),
@@ -227,7 +256,17 @@ async fn consume_track_events(
                                 ),
                             )));
                         }
-                        Err(RecvError::Closed) => break,
+                        Err(RecvError::Closed) => {
+                            if !pending_media.is_empty() {
+                                emit_fragment(
+                                    on_fragment.as_ref(),
+                                    index,
+                                    "segment",
+                                    &pending_media.split().freeze(),
+                                );
+                            }
+                            break;
+                        }
                     }
                 }
                 Ok::<(), PlayerError>(())

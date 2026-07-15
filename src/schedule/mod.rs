@@ -2,6 +2,7 @@
 
 mod adaptation_stream;
 mod buffer_target;
+mod parallel_prefetch;
 mod segment_decrypt;
 mod segment_emit;
 mod segment_fetch;

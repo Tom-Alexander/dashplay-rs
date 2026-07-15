@@ -143,6 +143,68 @@ pub(crate) async fn fetch_init_with_rep_fallback(
     Err(last_err)
 }
 
+/// Resolved media download ready for HTTP (init/index already prepared).
+#[derive(Debug, Clone)]
+pub(crate) struct PreparedMediaFetch {
+    pub quality_index: usize,
+    pub bases: Vec<url::Url>,
+    pub target: manifest::SegmentFetchTarget,
+    pub seg_for_fetch: manifest::TimelineSegment,
+    pub encoded_bitrate_bps: Option<f64>,
+    pub object_duration_ms: Option<u64>,
+}
+
+/// Resolve URL/byte-range and ensure init for a media segment, without fetching media bytes.
+pub(crate) async fn prepare_media_with_rep_fallback(
+    env: &RepFetchEnv<'_>,
+    abr: &dyn AbrController,
+    plan: &SegmentPlan,
+    encrypted_init_by_rep: &mut HashMap<(usize, String), Bytes>,
+    sidx_segments_by_rep: &mut HashMap<String, Vec<manifest::TimelineSegment>>,
+    per_segment_index_ranges_by_rep: &mut HashMap<String, HashMap<u64, manifest::ByteRange>>,
+) -> Result<PreparedMediaFetch, PlayerError> {
+    let mut last_err = PlayerError::from(SegmentError::ExhaustedRepresentations);
+    for quality_index in quality_indices_for_fallback(plan.quality_index) {
+        match prepare_media_at_quality(
+            env,
+            abr,
+            plan,
+            quality_index,
+            encrypted_init_by_rep,
+            sidx_segments_by_rep,
+            per_segment_index_ranges_by_rep,
+        )
+        .await
+        {
+            Ok(prepared) => return Ok(prepared),
+            Err(e) => last_err = e,
+        }
+    }
+    Err(last_err)
+}
+
+/// Fetch media bytes for a prepared download target.
+pub(crate) async fn download_prepared_media(
+    env: &RepFetchEnv<'_>,
+    prepared: &PreparedMediaFetch,
+) -> Result<FetchedBytes, PlayerError> {
+    let cmcd = env.cmcd_fetch(
+        env.media_object_type(),
+        prepared.encoded_bitrate_bps,
+        prepared.object_duration_ms,
+    );
+    let fetched = fetch_segment_target(
+        env.client,
+        &prepared.bases,
+        &prepared.target,
+        env.blacklist,
+        cmcd,
+    )
+    .await?;
+    env.report_cmsd(fetched.cmsd.clone());
+    Ok(fetched)
+}
+
 pub(crate) async fn fetch_media_with_rep_fallback(
     env: &RepFetchEnv<'_>,
     abr: &dyn AbrController,
@@ -153,112 +215,135 @@ pub(crate) async fn fetch_media_with_rep_fallback(
 ) -> Result<(Vec<u8>, usize, manifest::TimelineSegment), PlayerError> {
     let mut last_err = PlayerError::from(SegmentError::ExhaustedRepresentations);
     for quality_index in quality_indices_for_fallback(plan.quality_index) {
-        let (period_adaptation_index, adaptation_set, rep_idx) =
-            env.resolve_quality(abr, quality_index);
-        let rep = &adaptation_set.representations[rep_idx];
-        let bases =
-            manifest::segment_bases_for_representation(env.segment_base_ctx, adaptation_set, rep)?;
-        match ensure_init_for_rep(
+        let prepared = match prepare_media_at_quality(
             env,
-            period_adaptation_index,
-            adaptation_set,
-            rep,
+            abr,
+            plan,
+            quality_index,
             encrypted_init_by_rep,
+            sidx_segments_by_rep,
+            per_segment_index_ranges_by_rep,
         )
         .await
         {
-            Ok(_) => {}
+            Ok(p) => p,
             Err(e) => {
                 last_err = e;
                 continue;
             }
-        }
-
-        let rep_addressing =
-            manifest::segment_addressing_for_representation(env.period, adaptation_set, rep)?;
-        let mut seg_for_fetch = plan.segment.clone();
-        if let Some(media_range) = plan.media_range {
-            seg_for_fetch.media_range = Some(media_range);
-        }
-        match rep_addressing {
-            manifest::SegmentAddressing::Base(ref sb)
-                if manifest::segment_base_uses_sidx_index(sb) =>
-            {
-                let rep_segs = sidx_segments_for_rep(
-                    env.client,
-                    env.segment_base_ctx,
-                    env.period,
-                    adaptation_set,
-                    rep,
-                    env.blacklist,
-                    sidx_segments_by_rep,
-                )
-                .await?;
-                if let Some(rep_seg) = rep_segs.get(plan.local_index) {
-                    seg_for_fetch.media_range = rep_seg.media_range;
-                }
-            }
-            manifest::SegmentAddressing::Template(ref st)
-                if manifest::segment_template_uses_global_sidecar_index(st) =>
-            {
-                let rep_segs = sidx_segments_for_rep_template(
-                    env.client,
-                    env.segment_base_ctx,
-                    env.period,
-                    adaptation_set,
-                    rep,
-                    env.blacklist,
-                    sidx_segments_by_rep,
-                )
-                .await?;
-                if let Some(rep_seg) = rep_segs.get(plan.local_index) {
-                    seg_for_fetch.media_range = rep_seg.media_range;
-                }
-            }
-            manifest::SegmentAddressing::Template(ref st)
-                if manifest::segment_template_uses_per_segment_index(st) =>
-            {
-                if let Some(media_range) = media_range_for_per_segment_index(
-                    env,
-                    adaptation_set,
-                    rep,
-                    &seg_for_fetch,
-                    per_segment_index_ranges_by_rep,
-                )
-                .await?
-                {
-                    seg_for_fetch.media_range = Some(media_range);
-                }
-            }
-            _ => {}
-        }
-        let base_vars = manifest::template_vars_for_representation(rep, adaptation_set);
-        let init_path = manifest::resolved_initialization_path(&rep_addressing, &base_vars);
-        let template_vars = manifest::TemplateVars {
-            number: Some(seg_for_fetch.number),
-            time: Some(seg_for_fetch.time),
-            sub_number: seg_for_fetch.sub_number,
-            initialization: init_path.as_deref(),
-            ..base_vars
         };
-        let seg_target = media_target_for_addressing(
-            &rep_addressing,
-            &seg_for_fetch,
-            plan.list_index,
-            &template_vars,
-        )?;
-        let br_bps = rep.bandwidth.map(|b| b as f64);
-        let d_ms = object_duration_ms(&seg_for_fetch);
-        let cmcd = env.cmcd_fetch(env.media_object_type(), br_bps, d_ms);
-        match fetch_segment_target(env.client, &bases, &seg_target, env.blacklist, cmcd).await {
+        match download_prepared_media(env, &prepared).await {
             Ok(fetched) => {
-                env.report_cmsd(fetched.cmsd.clone());
-                return Ok((fetched.data, quality_index, seg_for_fetch));
+                return Ok((fetched.data, prepared.quality_index, prepared.seg_for_fetch));
             }
             Err(e) => last_err = e,
         }
     }
     Err(last_err)
+}
+
+async fn prepare_media_at_quality(
+    env: &RepFetchEnv<'_>,
+    abr: &dyn AbrController,
+    plan: &SegmentPlan,
+    quality_index: usize,
+    encrypted_init_by_rep: &mut HashMap<(usize, String), Bytes>,
+    sidx_segments_by_rep: &mut HashMap<String, Vec<manifest::TimelineSegment>>,
+    per_segment_index_ranges_by_rep: &mut HashMap<String, HashMap<u64, manifest::ByteRange>>,
+) -> Result<PreparedMediaFetch, PlayerError> {
+    let (period_adaptation_index, adaptation_set, rep_idx) =
+        env.resolve_quality(abr, quality_index);
+    let rep = &adaptation_set.representations[rep_idx];
+    let bases =
+        manifest::segment_bases_for_representation(env.segment_base_ctx, adaptation_set, rep)?;
+    ensure_init_for_rep(
+        env,
+        period_adaptation_index,
+        adaptation_set,
+        rep,
+        encrypted_init_by_rep,
+    )
+    .await?;
+
+    let rep_addressing =
+        manifest::segment_addressing_for_representation(env.period, adaptation_set, rep)?;
+    let mut seg_for_fetch = plan.segment.clone();
+    if let Some(media_range) = plan.media_range {
+        seg_for_fetch.media_range = Some(media_range);
+    }
+    match rep_addressing {
+        manifest::SegmentAddressing::Base(ref sb) if manifest::segment_base_uses_sidx_index(sb) => {
+            let rep_segs = sidx_segments_for_rep(
+                env.client,
+                env.segment_base_ctx,
+                env.period,
+                adaptation_set,
+                rep,
+                env.blacklist,
+                sidx_segments_by_rep,
+            )
+            .await?;
+            if let Some(rep_seg) = rep_segs.get(plan.local_index) {
+                seg_for_fetch.media_range = rep_seg.media_range;
+            }
+        }
+        manifest::SegmentAddressing::Template(ref st)
+            if manifest::segment_template_uses_global_sidecar_index(st) =>
+        {
+            let rep_segs = sidx_segments_for_rep_template(
+                env.client,
+                env.segment_base_ctx,
+                env.period,
+                adaptation_set,
+                rep,
+                env.blacklist,
+                sidx_segments_by_rep,
+            )
+            .await?;
+            if let Some(rep_seg) = rep_segs.get(plan.local_index) {
+                seg_for_fetch.media_range = rep_seg.media_range;
+            }
+        }
+        manifest::SegmentAddressing::Template(ref st)
+            if manifest::segment_template_uses_per_segment_index(st) =>
+        {
+            if let Some(media_range) = media_range_for_per_segment_index(
+                env,
+                adaptation_set,
+                rep,
+                &seg_for_fetch,
+                per_segment_index_ranges_by_rep,
+            )
+            .await?
+            {
+                seg_for_fetch.media_range = Some(media_range);
+            }
+        }
+        _ => {}
+    }
+    let base_vars = manifest::template_vars_for_representation(rep, adaptation_set);
+    let init_path = manifest::resolved_initialization_path(&rep_addressing, &base_vars);
+    let template_vars = manifest::TemplateVars {
+        number: Some(seg_for_fetch.number),
+        time: Some(seg_for_fetch.time),
+        sub_number: seg_for_fetch.sub_number,
+        initialization: init_path.as_deref(),
+        ..base_vars
+    };
+    let target = media_target_for_addressing(
+        &rep_addressing,
+        &seg_for_fetch,
+        plan.list_index,
+        &template_vars,
+    )?;
+    Ok(PreparedMediaFetch {
+        quality_index,
+        bases,
+        target,
+        encoded_bitrate_bps: rep.bandwidth.map(|b| b as f64),
+        object_duration_ms: object_duration_ms(&seg_for_fetch),
+        seg_for_fetch,
+    })
 }
 
 pub(super) async fn fetch_cmaf_media_with_rep_fallback(

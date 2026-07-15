@@ -130,3 +130,49 @@ async fn buffer_target_rebuffer_recovery_fetches_when_below_min_buffer_time() {
     drop(rx);
     outputs.join.await.unwrap().expect("join");
 }
+
+#[tokio::test]
+async fn parallel_segment_prefetch_downloads_concurrently() {
+    let (server, peak) = FixtureServer::spawn_with_concurrency_probe(
+        "dashif_simple",
+        &["/V300/"],
+        std::time::Duration::from_millis(250),
+    )
+    .await;
+    let player = Player::new(server.manifest_url.as_str(), None).expect("player");
+    let outputs = player.start_tracks().await.expect("start");
+    let buffer_feedback = outputs.buffer_feedback(0).expect("track");
+    // Keep buffer below high-water so later segments may be prefetched together.
+    buffer_feedback.report(5.0).expect("buffer report");
+
+    let mut rx = outputs
+        .tracks
+        .into_iter()
+        .next()
+        .expect("track")
+        .into_receiver();
+
+    let deadline = tokio::time::Instant::now() + TIMEOUT;
+    let mut segments = 0usize;
+    while tokio::time::Instant::now() < deadline && segments < 4 {
+        let remaining = deadline.saturating_duration_since(tokio::time::Instant::now());
+        match tokio::time::timeout(remaining, rx.recv()).await {
+            Ok(Ok(PlayerEvent::Segment { .. })) => segments += 1,
+            Ok(Ok(PlayerEvent::End)) => break,
+            Ok(Ok(_)) => continue,
+            Ok(Err(_)) | Err(_) => break,
+        }
+    }
+    assert!(
+        segments >= 3,
+        "expected several media segments, got {segments}"
+    );
+    assert!(
+        peak.load(std::sync::atomic::Ordering::SeqCst) >= 2,
+        "expected concurrent media segment downloads, peak={}",
+        peak.load(std::sync::atomic::Ordering::SeqCst)
+    );
+
+    drop(rx);
+    outputs.join.await.unwrap().expect("join");
+}

@@ -28,6 +28,11 @@ struct AppState {
     files: Arc<HashMap<String, Vec<u8>>>,
     not_found_prefixes: Arc<HashSet<String>>,
     delay_prefixes: Arc<HashSet<String>>,
+    /// Optional delay applied to `delay_prefixes` (defaults to 11s when unset).
+    delay_duration: Option<StdDuration>,
+    /// Peak concurrent in-flight requests matching `delay_prefixes` (media paths).
+    peak_concurrency: Option<Arc<AtomicUsize>>,
+    in_flight: Option<Arc<AtomicUsize>>,
 }
 
 pub struct FixtureServer {
@@ -43,19 +48,39 @@ impl FixtureServer {
 
     /// URL path prefixes (e.g. `"/bad"`) that always return HTTP 404.
     pub async fn spawn_with_options(fixture: &str, not_found_prefixes: &[&str]) -> Self {
-        Self::spawn_configured(fixture, not_found_prefixes, &[]).await
+        Self::spawn_configured(fixture, not_found_prefixes, &[], None, None).await
     }
 
     /// Like [`Self::spawn_with_options`], but adds an artificial delay before responding for
     /// paths under the given prefixes (used to simulate slow high-bitrate downloads in ABR tests).
     pub async fn spawn_with_delays(fixture: &str, delay_prefixes: &[&str]) -> Self {
-        Self::spawn_configured(fixture, &[], delay_prefixes).await
+        Self::spawn_configured(fixture, &[], delay_prefixes, None, None).await
+    }
+
+    /// Media-path delay plus peak in-flight concurrency probe (for parallel prefetch tests).
+    pub async fn spawn_with_concurrency_probe(
+        fixture: &str,
+        delay_prefixes: &[&str],
+        delay: StdDuration,
+    ) -> (Self, Arc<AtomicUsize>) {
+        let peak = Arc::new(AtomicUsize::new(0));
+        let server = Self::spawn_configured(
+            fixture,
+            &[],
+            delay_prefixes,
+            Some(delay),
+            Some(Arc::clone(&peak)),
+        )
+        .await;
+        (server, peak)
     }
 
     async fn spawn_configured(
         fixture: &str,
         not_found_prefixes: &[&str],
         delay_prefixes: &[&str],
+        delay_duration: Option<StdDuration>,
+        peak_concurrency: Option<Arc<AtomicUsize>>,
     ) -> Self {
         let root = fixture_dir(fixture);
         let files = Arc::new(load_fixture_files(&root));
@@ -72,10 +97,17 @@ impl FixtureServer {
                 .collect::<HashSet<_>>(),
         );
 
+        let in_flight = peak_concurrency
+            .as_ref()
+            .map(|_| Arc::new(AtomicUsize::new(0)));
+
         let state = AppState {
             files,
             not_found_prefixes,
             delay_prefixes,
+            delay_duration,
+            peak_concurrency,
+            in_flight,
         };
 
         let app = Router::new()
@@ -1001,14 +1033,48 @@ async fn serve_path(
         }
     }
 
+    let mut matches_delay = false;
     for prefix in state.delay_prefixes.iter() {
         if path_has_prefix(&url_path, prefix) {
-            tokio::time::sleep(StdDuration::from_secs(11)).await;
+            matches_delay = true;
             break;
         }
     }
 
+    let _guard = if matches_delay {
+        if let (Some(in_flight), Some(peak)) =
+            (state.in_flight.as_ref(), state.peak_concurrency.as_ref())
+        {
+            let current = in_flight.fetch_add(1, Ordering::SeqCst) + 1;
+            peak.fetch_max(current, Ordering::SeqCst);
+            Some(InFlightGuard {
+                in_flight: Arc::clone(in_flight),
+            })
+        } else {
+            None
+        }
+    } else {
+        None
+    };
+
+    if matches_delay {
+        let delay = state
+            .delay_duration
+            .unwrap_or_else(|| StdDuration::from_secs(11));
+        tokio::time::sleep(delay).await;
+    }
+
     serve_static_path(&state.files, &path, &uri, &headers)
+}
+
+struct InFlightGuard {
+    in_flight: Arc<AtomicUsize>,
+}
+
+impl Drop for InFlightGuard {
+    fn drop(&mut self) {
+        self.in_flight.fetch_sub(1, Ordering::SeqCst);
+    }
 }
 
 fn load_fixture_files(root: &FsPath) -> HashMap<String, Vec<u8>> {

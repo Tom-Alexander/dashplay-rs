@@ -24,17 +24,20 @@ use crate::segment_blacklist::SegmentBlacklist;
 use crate::track_session::TrackSessionState;
 use crate::types::PlayerEvent;
 
+use futures::future::join_all;
+
 use super::buffer_target::{BufferTarget, wait_for_fetch_capacity};
+use super::parallel_prefetch::prefetch_batch_len;
 use super::segment_decrypt::decrypt_media_fragment;
 use super::segment_emit::{
     emit_segment, latest_buffer_s, partial_chunk_meta, record_quality_switch_and_throughput,
 };
 use super::segment_fetch::{
-    RepFetchEnv, fetch_and_parse_segment_base_index, fetch_and_parse_segment_template_index,
-    fetch_cmaf_media_with_rep_fallback, fetch_init_with_rep_fallback,
-    fetch_media_with_rep_fallback,
+    RepFetchEnv, download_prepared_media, fetch_and_parse_segment_base_index,
+    fetch_and_parse_segment_template_index, fetch_cmaf_media_with_rep_fallback,
+    fetch_init_with_rep_fallback, fetch_media_with_rep_fallback, prepare_media_with_rep_fallback,
 };
-use super::segment_plan::{SegmentPlanContext, plan_init, plan_segment};
+use super::segment_plan::{SegmentPlan, SegmentPlanContext, plan_init, plan_segment};
 use super::sync_prefetch::{SyncPrefetchPlan, prefetch_next_period_first_segment};
 
 fn align_start_index_with_resync(
@@ -372,8 +375,10 @@ pub(crate) async fn run_adaptation_stream(
     let mut playback_started_emitted = false;
     let mut media_segments_delivered = 0usize;
     let mut held: Option<Vec<PlayerEvent>> = None;
+    let segments: Vec<manifest::TimelineSegment> = segments;
+    let mut cursor = 0usize;
 
-    for (local_idx, seg) in segments.into_iter().enumerate() {
+    while cursor < segments.len() {
         playback.wait_while_paused().await;
         if playback.is_stopped() || playback.seek_generation() != seek_generation_at_start {
             return Ok(None);
@@ -381,7 +386,8 @@ pub(crate) async fn run_adaptation_stream(
 
         {
             let delivered_tracker = session.lock_delivered();
-            if delivered_tracker.is_delivered(&seg, period_start.as_secs_f64()) {
+            if delivered_tracker.is_delivered(&segments[cursor], period_start.as_secs_f64()) {
+                cursor += 1;
                 continue;
             }
         }
@@ -415,33 +421,42 @@ pub(crate) async fn run_adaptation_stream(
             return Ok(None);
         }
 
-        feed_abr_live_inputs(abr.as_mut(), &playback);
-        abr.update_buffer(latest_buffer_s(&buffer_rx));
-        metrics.record_buffer(latest_buffer_s(&buffer_rx));
-        let plan = plan_segment(
-            abr.as_mut(),
-            latest_buffer_s(&buffer_rx),
-            &seg,
-            local_idx,
-            &SegmentPlanContext {
-                segment_start_index,
-                primary_period_adaptation_index: period_adaptation_index,
-                adaptation_sets: &adaptation_sets,
-                bitstream_switching: &bitstream_switching,
-                addressing: &addressing,
-                timeline_ctx: &timeline_ctx,
-                cached_inits: &encrypted_init_by_rep,
-                last_quality_index,
-            },
+        let buffer_s = latest_buffer_s(&buffer_rx);
+        let batch_cap = prefetch_batch_len(
+            &buffer_target,
+            buffer_s,
+            media_segments_delivered,
+            segments.len() - cursor,
         );
+        if batch_cap == 0 {
+            continue;
+        }
 
-        let t0 = Instant::now();
-        if plan.chunked {
+        feed_abr_live_inputs(abr.as_mut(), &playback);
+        abr.update_buffer(buffer_s);
+        metrics.record_buffer(buffer_s);
+
+        let plan_ctx = SegmentPlanContext {
+            segment_start_index,
+            primary_period_adaptation_index: period_adaptation_index,
+            adaptation_sets: &adaptation_sets,
+            bitstream_switching: &bitstream_switching,
+            addressing: &addressing,
+            timeline_ctx: &timeline_ctx,
+            cached_inits: &encrypted_init_by_rep,
+            last_quality_index,
+        };
+
+        let first_plan = plan_segment(abr.as_mut(), buffer_s, &segments[cursor], cursor, &plan_ctx);
+
+        // LL-DASH chunked segments stay sequential (progressive emit).
+        if first_plan.chunked {
+            let t0 = Instant::now();
             let (fragments, used_quality_index, seg_for_fetch) =
                 fetch_cmaf_media_with_rep_fallback(
                     &fetch_env,
                     abr.as_ref(),
-                    &plan,
+                    &first_plan,
                     &mut encrypted_init_by_rep,
                 )
                 .await?;
@@ -473,7 +488,7 @@ pub(crate) async fn run_adaptation_stream(
                 .ok_or(SegmentError::ExhaustedRepresentations)?;
 
             let fragment_count = fragments.len();
-            let start_chunk = seg.resync_start_chunk.unwrap_or(1);
+            let start_chunk = segments[cursor].resync_start_chunk.unwrap_or(1);
             for (chunk_idx, fragment) in fragments.into_iter().enumerate() {
                 if (chunk_idx as u64 + 1) < start_chunk {
                     continue;
@@ -530,87 +545,179 @@ pub(crate) async fn run_adaptation_stream(
             let mut delivered_tracker = session.lock_delivered();
             delivered_tracker.mark_delivered(&seg_for_fetch, period_start.as_secs_f64());
             media_segments_delivered += 1;
+            cursor += 1;
             continue;
         }
 
-        let (bytes, used_quality_index, seg_for_fetch) = fetch_media_with_rep_fallback(
-            &fetch_env,
-            abr.as_ref(),
-            &plan,
-            &mut encrypted_init_by_rep,
-            &mut sidx_segments_by_rep,
-            &mut per_segment_index_ranges_by_rep,
-        )
-        .await?;
-        let elapsed_s = t0.elapsed().as_secs_f64().max(1e-6);
-        let download_duration = t0.elapsed();
-        let throughput_bps = (bytes.len() as f64 * 8.0) / elapsed_s;
+        let mut plans: Vec<SegmentPlan> = Vec::with_capacity(batch_cap);
+        plans.push(first_plan);
+        let mut speculative_last_q = Some(plans[0].quality_index);
 
-        record_quality_switch_and_throughput(
-            &fetch_env,
-            abr.as_mut(),
-            &metrics,
-            &tx,
-            &mut last_quality_index,
-            used_quality_index,
-            throughput_bps,
-            bytes.len(),
-            download_duration,
-            &buffer_rx,
-        )
-        .await?;
+        let mut look = cursor + 1;
+        while plans.len() < batch_cap && look < segments.len() {
+            {
+                let delivered_tracker = session.lock_delivered();
+                if delivered_tracker.is_delivered(&segments[look], period_start.as_secs_f64()) {
+                    look += 1;
+                    continue;
+                }
+            }
+            let plan_ctx = SegmentPlanContext {
+                segment_start_index,
+                primary_period_adaptation_index: period_adaptation_index,
+                adaptation_sets: &adaptation_sets,
+                bitstream_switching: &bitstream_switching,
+                addressing: &addressing,
+                timeline_ctx: &timeline_ctx,
+                cached_inits: &encrypted_init_by_rep,
+                last_quality_index: speculative_last_q,
+            };
+            let plan = plan_segment(abr.as_mut(), buffer_s, &segments[look], look, &plan_ctx);
+            if plan.chunked {
+                break;
+            }
+            speculative_last_q = Some(plan.quality_index);
+            plans.push(plan);
+            look += 1;
+        }
 
-        let (rep_period_idx, rep_aset, rep_idx) =
-            fetch_env.resolve_quality(abr.as_ref(), used_quality_index);
-        let rep = &rep_aset.representations[rep_idx];
-        let rep_id = rep.id.as_deref().unwrap_or_default();
-        let init_for_decrypt = encrypted_init_by_rep
-            .get(&(rep_period_idx, rep_id.to_string()))
-            .ok_or(SegmentError::ExhaustedRepresentations)?;
+        let batch_len = plans.len();
+        let mut prepared = Vec::with_capacity(batch_len);
+        for plan in &plans {
+            if playback.is_stopped() || playback.seek_generation() != seek_generation_at_start {
+                return Ok(None);
+            }
+            prepared.push(
+                prepare_media_with_rep_fallback(
+                    &fetch_env,
+                    abr.as_ref(),
+                    plan,
+                    &mut encrypted_init_by_rep,
+                    &mut sidx_segments_by_rep,
+                    &mut per_segment_index_ranges_by_rep,
+                )
+                .await?,
+            );
+        }
 
+        let t0 = Instant::now();
+        let download_results = join_all(prepared.iter().map(|p| async {
+            let started = Instant::now();
+            let result = download_prepared_media(&fetch_env, p).await;
+            (started.elapsed(), result)
+        }))
+        .await;
+        let _batch_elapsed = t0.elapsed();
+
+        for ((plan, prepared_item), (download_duration, download_result)) in
+            plans.into_iter().zip(prepared).zip(download_results)
         {
-            let mut guard = drm.lock().await;
-            guard
-                .ensure_from_fragments(rep_period_idx, rep_id, init_for_decrypt, Some(&bytes))
-                .await?;
+            if playback.is_stopped() || playback.seek_generation() != seek_generation_at_start {
+                return Ok(None);
+            }
+            playback.wait_while_paused().await;
+
+            let (download_duration, bytes, used_quality_index, seg_for_fetch) =
+                match download_result {
+                    Ok(fetched) => (
+                        download_duration,
+                        fetched.data,
+                        prepared_item.quality_index,
+                        prepared_item.seg_for_fetch,
+                    ),
+                    Err(err) if prepared_item.quality_index == 0 => {
+                        return Err(err);
+                    }
+                    Err(_) => {
+                        // Media GET failed at the prepared quality; try lower rungs only.
+                        let mut fallback_plan = plan;
+                        fallback_plan.quality_index = prepared_item.quality_index - 1;
+                        let retry_t0 = Instant::now();
+                        let (bytes, used_quality_index, seg_for_fetch) =
+                            fetch_media_with_rep_fallback(
+                                &fetch_env,
+                                abr.as_ref(),
+                                &fallback_plan,
+                                &mut encrypted_init_by_rep,
+                                &mut sidx_segments_by_rep,
+                                &mut per_segment_index_ranges_by_rep,
+                            )
+                            .await?;
+                        (retry_t0.elapsed(), bytes, used_quality_index, seg_for_fetch)
+                    }
+                };
+
+            let elapsed_s = download_duration.as_secs_f64().max(1e-6);
+            let throughput_bps = (bytes.len() as f64 * 8.0) / elapsed_s;
+
+            record_quality_switch_and_throughput(
+                &fetch_env,
+                abr.as_mut(),
+                &metrics,
+                &tx,
+                &mut last_quality_index,
+                used_quality_index,
+                throughput_bps,
+                bytes.len(),
+                download_duration,
+                &buffer_rx,
+            )
+            .await?;
+
+            let (rep_period_idx, rep_aset, rep_idx) =
+                fetch_env.resolve_quality(abr.as_ref(), used_quality_index);
+            let rep = &rep_aset.representations[rep_idx];
+            let rep_id = rep.id.as_deref().unwrap_or_default();
+            let init_for_decrypt = encrypted_init_by_rep
+                .get(&(rep_period_idx, rep_id.to_string()))
+                .ok_or(SegmentError::ExhaustedRepresentations)?;
+
+            {
+                let mut guard = drm.lock().await;
+                guard
+                    .ensure_from_fragments(rep_period_idx, rep_id, init_for_decrypt, Some(&bytes))
+                    .await?;
+            }
+
+            let data = decrypt_media_fragment(
+                &drm,
+                rep_period_idx,
+                rep_id,
+                init_for_decrypt,
+                Bytes::from(bytes),
+            )
+            .await?;
+
+            if playback.is_stopped() || playback.seek_generation() != seek_generation_at_start {
+                return Ok(None);
+            }
+            if playback.is_paused() {
+                continue;
+            }
+
+            emit_segment(
+                &tx,
+                &metrics,
+                &period,
+                rep_aset,
+                rep,
+                &seg_for_fetch,
+                data,
+                None,
+                period_start,
+                track_idx,
+                &mut playback_started_emitted,
+                &playback,
+                &session,
+                prt_reference_id.as_deref(),
+            );
+
+            let mut delivered_tracker = session.lock_delivered();
+            delivered_tracker.mark_delivered(&seg_for_fetch, period_start.as_secs_f64());
+            media_segments_delivered += 1;
         }
 
-        let data = decrypt_media_fragment(
-            &drm,
-            rep_period_idx,
-            rep_id,
-            init_for_decrypt,
-            Bytes::from(bytes),
-        )
-        .await?;
-
-        if playback.is_stopped() || playback.seek_generation() != seek_generation_at_start {
-            return Ok(None);
-        }
-        if playback.is_paused() {
-            continue;
-        }
-
-        emit_segment(
-            &tx,
-            &metrics,
-            &period,
-            rep_aset,
-            rep,
-            &seg_for_fetch,
-            data,
-            None,
-            period_start,
-            track_idx,
-            &mut playback_started_emitted,
-            &playback,
-            &session,
-            prt_reference_id.as_deref(),
-        );
-
-        let mut delivered_tracker = session.lock_delivered();
-        delivered_tracker.mark_delivered(&seg_for_fetch, period_start.as_secs_f64());
-        media_segments_delivered += 1;
+        cursor += batch_len;
     }
 
     Ok(held.map(|events| (track_idx, events)))

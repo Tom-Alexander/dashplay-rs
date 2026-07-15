@@ -32,7 +32,7 @@ Status legend: `[ ]` not started · `[~]` partial · `[x]` done · `[—]` out o
 | Metrics / rich events | `[~]` | Per-track [`TrackMetrics`]; fragment + [`MediaEvent`] events |
 | Pluggable networking / ABR | `[x]` | HTTP client trait + `ReqwestClient`; ABR trait + `BolaAbrFactory` / `LolPlusAbrFactory` |
 | MPD model / remote documents | `[x]` | Period xlink, Preselection, and MPD metadata elements exposed |
-| Buffer-target scheduling | `[x]` | Throttles prefetch at 25 s; honours `MPD@minBufferTime` for rebuffer |
+| Buffer-target scheduling | `[x]` | Throttles prefetch at 25 s; honours `MPD@minBufferTime` for rebuffer; up to 2 concurrent media GETs per track |
 | Bitstream / AS switching | `[ ]` | Init always re-emitted; no cross-AS switch |
 | Containers beyond fMP4/CMAF | `[~]` | mp2t byte delivery; WebM and additional image MIME types remain |
 
@@ -237,7 +237,7 @@ without changing playback behaviour.
   honour `MPD@minBufferTime` for startup and rebuffer recovery.
 - [ ] **Manifest-derived BOLA parameters.** Derive segment duration and buffer limits from
   MPD segment durations instead of hardcoded 4 s / 25 s assumptions.
-- [ ] **Parallel segment prefetch.** Concurrent segment downloads per track.
+- [x] **Parallel segment prefetch.** Concurrent segment downloads per track.
 - [~] **ABR inputs.** Live latency and suggested playback rate are fed into ABR (used by
   LoL+); dropped-frame signals remain pending per `ARCHITECTURE.md`.
 - [ ] **User quality constraints.** Max/min bitrate cap, fixed quality rung, data-saver mode.

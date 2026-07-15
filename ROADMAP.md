@@ -264,7 +264,7 @@ without changing playback behaviour.
 
 - [ ] **HTTP retry with backoff.** Transient manifest/segment failures (failover only today).
 - [ ] **Conditional manifest fetch.** `If-None-Match` / `304 Not Modified` on live refresh.
-- [ ] **Shipped WASM / browser `HttpClient`.** Reference fetch backend for WASM targets.
+- [x] **Shipped WASM / browser `HttpClient`.** Reference fetch backend for WASM targets.
 - [~] **`BaseURL@availabilityTimeOffset`.** Use BaseURL-level ATO, not only segment-level.
 - [ ] **DVB and other namespace BaseURL extensions.** e.g. `@dvb:priority` beyond deserialize.
 - [ ] **Steering beyond BaseURL reorder.** DCSM features past `SERVICE-LOCATION-PRIORITY`.

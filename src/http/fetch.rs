@@ -1,12 +1,17 @@
-//! Browser `fetch` backend for [`dashplayrs::HttpClient`].
+//! Browser `fetch` backend for [`HttpClient`](super::HttpClient).
+//!
+//! Available on `wasm32` targets. Uses `window.fetch` with CORS mode.
 
 use bytes::Bytes;
-use dashplayrs::{HttpClient, HttpError, HttpFuture, HttpMethod, HttpRequest, HttpResponse};
 use js_sys::Uint8Array;
 use wasm_bindgen::JsCast;
+use wasm_bindgen::JsValue;
 use wasm_bindgen_futures::JsFuture;
 use web_sys::{Headers, Request, RequestInit, RequestMode, Response};
 
+use super::{HttpClient, HttpError, HttpFuture, HttpMethod, HttpRequest, HttpResponse};
+
+/// Reference [`HttpClient`] backed by the browser Fetch API.
 #[derive(Debug, Clone, Default)]
 pub struct FetchClient;
 
@@ -30,20 +35,26 @@ impl FetchClient {
             HttpMethod::Post => "POST",
         };
 
-        let mut init = RequestInit::new();
-        init.method(method);
-        init.mode(RequestMode::Cors);
+        let init = RequestInit::new();
+        init.set_method(method);
+        init.set_mode(RequestMode::Cors);
 
         let headers = Headers::new()
             .map_err(|_| HttpError::Transport("failed to create request headers".into()))?;
         for (name, value) in request.headers() {
             headers
-                .append(&name, &value)
+                .append(name, value)
                 .map_err(|_| HttpError::Transport(format!("invalid header: {name}")))?;
         }
-        init.headers(&headers);
+        init.set_headers(&headers);
 
-        let fetch_request = Request::new_with_str_and_init(&request.url().to_string(), &init)
+        if let Some(body) = request.body.as_ref() {
+            let array = Uint8Array::new_with_length(body.len() as u32);
+            array.copy_from(body);
+            init.set_body(&array);
+        }
+
+        let fetch_request = Request::new_with_str_and_init(request.url().as_str(), &init)
             .map_err(|_| HttpError::Transport("failed to create fetch request".into()))?;
 
         let window = Self::window()?;
@@ -105,14 +116,14 @@ fn collect_response_headers(response: &Response) -> Vec<(String, String)> {
     out
 }
 
-fn js_value_to_bytes(value: &wasm_bindgen::JsValue) -> Result<Bytes, HttpError> {
+fn js_value_to_bytes(value: &JsValue) -> Result<Bytes, HttpError> {
     let array = Uint8Array::new(value);
     let mut bytes = vec![0u8; array.length() as usize];
     array.copy_to(&mut bytes);
     Ok(Bytes::from(bytes))
 }
 
-fn format_js_error(context: &str, err: wasm_bindgen::JsValue) -> String {
+fn format_js_error(context: &str, err: JsValue) -> String {
     if let Some(message) = err.as_string() {
         format!("{context}: {message}")
     } else {

@@ -1,13 +1,15 @@
 //! Pluggable HTTP client for manifest, segment, clock-sync, and license requests.
 //!
-//! The default backend is [`ReqwestClient`]. Supply a custom [`HttpClient`] via
-//! [`crate::MediaPlayer::with_http_client`] or [`crate::Player::with_http_client`] to integrate
-//! browser fetch, embedded stacks, or custom TLS.
+//! The default backend is [`ReqwestClient`] (native) or [`FetchClient`] (WASM without
+//! `reqwest-http`). Supply a custom [`HttpClient`] via [`crate::MediaPlayer::with_http_client`]
+//! or [`crate::Player::with_http_client`] to integrate embedded stacks or custom TLS.
 
 use std::sync::Arc;
 
 mod body_stream;
 mod error;
+#[cfg(target_arch = "wasm32")]
+mod fetch;
 mod request;
 #[cfg(feature = "reqwest-http")]
 mod reqwest;
@@ -18,6 +20,8 @@ mod unconfigured;
 pub(crate) use body_stream::HttpBodyStream;
 
 pub use error::HttpError;
+#[cfg(target_arch = "wasm32")]
+pub use fetch::FetchClient;
 pub use request::HttpRequest;
 #[cfg(feature = "reqwest-http")]
 pub use reqwest::ReqwestClient;

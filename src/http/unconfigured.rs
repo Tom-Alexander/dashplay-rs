@@ -11,7 +11,7 @@ impl HttpClient for UnconfiguredHttpClient {
     ) -> HttpFuture<'a, Result<HttpResponse, HttpError>> {
         Box::pin(async move {
             Err(HttpError::Transport(
-                "no HTTP client configured; call MediaPlayer::with_http_client or enable the reqwest-http feature".into(),
+                "no HTTP client configured; call MediaPlayer::with_http_client, enable the reqwest-http feature, or use the wasm32 FetchClient default".into(),
             ))
         })
     }

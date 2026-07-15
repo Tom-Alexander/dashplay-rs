@@ -11,7 +11,7 @@ A pure Rust implementation of an MPEG-DASH player library.
 - **Adaptive bitrate** — pluggable [`AbrFactory`](#abr) with BOLA ([`BolaAbrFactory`](#abr)) as the default and optional LoL+ ([`LolPlusAbrFactory`](#abr)) for CMAF low-latency; automatic representation switching and init re-emission on quality changes
 - **Widevine DRM** — PSSH and license URL parsing from the MPD, license acquisition, and in-pipeline segment decryption
 - **Custom license handling** — Pluggable async license fetcher for custom headers, cookies, or proxies
-- **Pluggable HTTP client** — [`HttpClient`](#http-client) trait with a default [`ReqwestClient`](#http-client); swap in browser fetch, embedded stacks, or custom TLS
+- **Pluggable HTTP client** — [`HttpClient`](#http-client) trait with default [`ReqwestClient`](#http-client) (native) and [`FetchClient`](#http-client) (WASM); swap in embedded stacks or custom TLS
 - **Resilient fetching** — BaseURL resolution and failover, representation fallback, and segment URL blacklisting after failures
 - **Clock sync** — `UTCTiming` resolution for live edge calculation (HTTP, NTP/SNTP, and related schemes)
 - **Modular API** — High-level [`Player`](#player) wrapper or lower-level [`MediaPlayer`](#mediaplayer) for finer control
@@ -231,9 +231,10 @@ let outputs = Player::new("https://example.com/manifest.mpd", None)?
 # }
 ```
 
-For environments without `reqwest` (browser `fetch`, embedded stacks, corporate proxies),
-implement [`HttpClient`](#http-client) and pass a shared handle via
-[`Player::with_http_client`](#player) or [`MediaPlayer::with_http_client`](#mediaplayer):
+For environments without `reqwest` (embedded stacks, corporate proxies), implement
+[`HttpClient`](#http-client) and pass a shared handle via
+[`Player::with_http_client`](#player) or [`MediaPlayer::with_http_client`](#mediaplayer).
+On `wasm32` builds without `reqwest-http`, [`FetchClient`](#http-client) is already the default.
 
 ```rust
 use dashplayrs::{
@@ -689,14 +690,17 @@ Async callback invoked for Widevine license POSTs instead of the built-in HTTP c
 ### HTTP client
 
 Networking is abstracted behind [`HttpClient`](src/http/mod.rs) so playback is not tied to a
-single HTTP library. The default backend is [`ReqwestClient`](src/http/reqwest.rs).
+single HTTP library. The default backend is [`ReqwestClient`](src/http/reqwest.rs) on native
+targets (with the `reqwest-http` feature). On `wasm32` without `reqwest-http`, the default is
+[`FetchClient`](src/http/fetch.rs) (browser `fetch`).
 
 | Type / function | Description |
 |-----------------|-------------|
 | `HttpClient` | Async trait: `send(HttpRequest) -> Result<HttpResponse, HttpError>` |
 | `SharedHttpClient` | `Arc<dyn HttpClient>` shared across playback tasks |
 | `shared(client)` | Wrap a concrete client for use with `with_http_client` |
-| `ReqwestClient` | Default backend; `ReqwestClient::new(reqwest::Client)` for custom `reqwest` settings |
+| `ReqwestClient` | Default native backend; `ReqwestClient::new(reqwest::Client)` for custom `reqwest` settings |
+| `FetchClient` | Reference WASM / browser backend (`window.fetch`); default on `wasm32` without `reqwest-http` |
 | `HttpRequest` | `get` / `head` / `post` builders with `header` and `byte_range` |
 | `HttpResponse` | Status, headers, and body; `is_success()`, `header(name)`, `text()`, `into_bytes()` |
 | `HttpError` | Transport or body decode failure |

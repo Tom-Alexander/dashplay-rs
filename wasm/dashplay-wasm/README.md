@@ -40,12 +40,13 @@ Big Buck Bunny test stream.
 ```text
   Browser                         WASM (dashplay-wasm)
   -------                         --------------------
-  fetch ◄──────────────────────── FetchClient (HttpClient)
+  fetch ◄──────────────────────── dashplayrs::FetchClient
   MSE SourceBuffer ◄─ on_fragment ─ MediaPlayer segment events
   <video>            ◄────────────── init + media fMP4 bytes
 ```
 
-- **`FetchClient`** implements [`dashplayrs::HttpClient`](../../src/http/mod.rs) using `window.fetch`.
+- **`FetchClient`** — library [`dashplayrs::FetchClient`](../../src/http/fetch.rs) (default on
+  `wasm32` without `reqwest-http`) uses `window.fetch`.
 - **`DashPlayer`** wraps [`MediaPlayer::start`](../../src/media_player.rs) + [`PlayerOutputs::run`](../../src/types.rs) on the browser async runtime (no extra Tokio tasks).
 - **`dist/app.js`** maps each audio/video track to a `SourceBuffer` and appends init/segment fragments.
 

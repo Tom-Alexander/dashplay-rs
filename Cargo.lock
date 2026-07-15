@@ -659,6 +659,7 @@ dependencies = [
  "gloo-timers",
  "hex",
  "hmac",
+ "js-sys",
  "mp4decrypt",
  "num-derive",
  "num-traits",
@@ -676,6 +677,9 @@ dependencies = [
  "tokio-stream",
  "tokio-util",
  "url",
+ "wasm-bindgen",
+ "wasm-bindgen-futures",
+ "web-sys",
  "web-time",
  "widevine-proto",
 ]

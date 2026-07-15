@@ -1,12 +1,9 @@
 //! WASM bindings for browser playback via Media Source Extensions.
 
-mod fetch_client;
-
 use std::cell::RefCell;
 use std::rc::Rc;
 
-use dashplayrs::{BufferFeedback, MediaPlayer, PlayerError, PlayerEvent, TrackKind, shared};
-use fetch_client::FetchClient;
+use dashplayrs::{BufferFeedback, MediaPlayer, PlayerError, PlayerEvent, TrackKind};
 use js_sys::Function;
 use serde::Serialize;
 use tokio::sync::broadcast::error::RecvError;
@@ -122,8 +119,7 @@ async fn run_playback(
     let _ = on_error;
     emit_status(on_status, "loading manifest");
 
-    let client = shared(FetchClient::default());
-    let media_player = MediaPlayer::new(manifest_url, None)?.with_http_client(client);
+    let media_player = MediaPlayer::new(manifest_url, None)?;
     let outputs = media_player.start().await?;
 
     let track_count = outputs.tracks.len();
@@ -214,12 +210,7 @@ async fn consume_track_events(
                             let complete = partial.is_none_or(|p| p.is_final);
                             if complete {
                                 let coalesced = pending_media.split().freeze();
-                                emit_fragment(
-                                    on_fragment.as_ref(),
-                                    index,
-                                    "segment",
-                                    &coalesced,
-                                );
+                                emit_fragment(on_fragment.as_ref(), index, "segment", &coalesced);
                                 segments_seen = segments_seen.saturating_add(1);
                                 let estimated_buffer = (segments_seen as f64 * 2.0).min(20.0);
                                 let _ = buffer.report(estimated_buffer);

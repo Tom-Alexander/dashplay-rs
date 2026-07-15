@@ -7,9 +7,11 @@ use url::Url;
 use super::PlayerError;
 use super::abr::{BolaAbrFactory, SharedAbrFactory, shared as shared_abr_factory};
 use super::cmcd::{CmcdConfig, CmcdObjectType, CmcdSession, CmcdStreamType, parse_cmsd_headers};
+#[cfg(all(target_arch = "wasm32", not(feature = "reqwest-http")))]
+use super::http::FetchClient;
 #[cfg(feature = "reqwest-http")]
 use super::http::ReqwestClient;
-#[cfg(not(feature = "reqwest-http"))]
+#[cfg(all(not(target_arch = "wasm32"), not(feature = "reqwest-http")))]
 use super::http::UnconfiguredHttpClient;
 use super::http::{HttpRequest, SharedHttpClient, shared};
 use super::manifest::{self, ManifestError};
@@ -41,7 +43,9 @@ impl MediaPlayer {
         let license_uri = license_uri.map(Url::parse).transpose()?;
         #[cfg(feature = "reqwest-http")]
         let client = shared(ReqwestClient::default());
-        #[cfg(not(feature = "reqwest-http"))]
+        #[cfg(all(target_arch = "wasm32", not(feature = "reqwest-http")))]
+        let client = shared(FetchClient::default());
+        #[cfg(all(not(target_arch = "wasm32"), not(feature = "reqwest-http")))]
         let client = shared(UnconfiguredHttpClient::default());
         Ok(Self {
             client: client.clone(),

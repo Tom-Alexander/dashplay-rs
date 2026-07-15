@@ -85,6 +85,8 @@ pub use cmcd::{
 pub use dash_mpd::SubtitleType;
 #[cfg(feature = "drm")]
 pub use drm::DrmError;
+#[cfg(target_arch = "wasm32")]
+pub use http::FetchClient;
 #[cfg(feature = "reqwest-http")]
 pub use http::ReqwestClient;
 pub use http::UnconfiguredHttpClient;

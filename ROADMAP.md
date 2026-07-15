@@ -118,7 +118,13 @@ These close the largest gaps between "delivers some streams" and "handles confor
   (`urn:mpeg:dash:mpd-patch`) updates are done; remaining: `PatchLocation@ttl`, multiple
   patch locations, patch failure surfacing, conditional GET, DCSM TTL-driven reload,
   steering beyond BaseURL reorder.
-- [ ] **CMCD / CMSD.** Common Media Client/Server Data request and response hints.
+- [~] **CMCD / CMSD.** Header-mode CTA-5004 (`CMCD-*` via `with_cmcd`) and CTA-5006
+  parse/expose (`CMSD-Static`/`CMSD-Dynamic`, metrics + `PlayerEvent::CmsdUpdated`) are
+  done for v1 keys (`sid`, `cid`, `sf`, `st`, `ot`, `br`, `d`, `bl`, `mtp`, `su`, `bs`).
+  Remaining: query-string `CMCD=` mode; wire `nor`/`nrr` from the next scheduled request;
+  additional keys (`pr`, `dl`, `rtp`, `tb`, custom reverse-DNS); CMCD on license /
+  UTCTiming / xlink fetches; drive ABR/scheduling from CMSD hints (e.g. `etp`, max
+  suggested bitrate).
 
 ## P5 — Conformance and quality
 

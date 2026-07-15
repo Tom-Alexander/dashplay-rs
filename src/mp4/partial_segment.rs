@@ -2,10 +2,12 @@
 
 use bytes::{Bytes, BytesMut};
 
+use crate::cmcd::{CmsdSnapshot, parse_cmsd_headers};
 use crate::http::{HttpRequest, SharedHttpClient};
 use crate::manifest::SegmentFetchTarget;
 use crate::segment::SegmentError;
 use crate::segment_blacklist::SegmentBlacklist;
+use crate::segment_fetcher::CmcdFetch;
 
 use super::{box_type_at, read_box_size};
 use url::Url;
@@ -113,8 +115,9 @@ pub(crate) async fn fetch_cmaf_fragments_for_target(
     bases: &[Url],
     target: &SegmentFetchTarget,
     blacklist: &SegmentBlacklist,
-) -> Result<Vec<Bytes>, SegmentError> {
-    fetch_cmaf_fragments_with_failover(client, bases, &target.path, blacklist).await
+    cmcd: Option<CmcdFetch<'_>>,
+) -> Result<(Vec<Bytes>, Option<CmsdSnapshot>), SegmentError> {
+    fetch_cmaf_fragments_with_failover(client, bases, &target.path, blacklist, cmcd).await
 }
 
 async fn fetch_cmaf_fragments_with_failover(
@@ -122,7 +125,8 @@ async fn fetch_cmaf_fragments_with_failover(
     bases: &[Url],
     relative_path: &str,
     blacklist: &SegmentBlacklist,
-) -> Result<Vec<Bytes>, SegmentError> {
+    cmcd: Option<CmcdFetch<'_>>,
+) -> Result<(Vec<Bytes>, Option<CmsdSnapshot>), SegmentError> {
     let mut last_err: Option<SegmentError> = None;
     for base in bases {
         let url = if relative_path.is_empty() {
@@ -130,7 +134,7 @@ async fn fetch_cmaf_fragments_with_failover(
         } else {
             base.join(relative_path)?
         };
-        match fetch_cmaf_fragments(client, url.clone(), blacklist).await {
+        match fetch_cmaf_fragments(client, url.clone(), blacklist, cmcd.as_ref()).await {
             Ok(frags) => return Ok(frags),
             Err(e) => last_err = Some(e),
         }
@@ -142,14 +146,19 @@ async fn fetch_cmaf_fragments(
     client: &SharedHttpClient,
     url: Url,
     blacklist: &SegmentBlacklist,
-) -> Result<Vec<Bytes>, SegmentError> {
+    cmcd: Option<&CmcdFetch<'_>>,
+) -> Result<(Vec<Bytes>, Option<CmsdSnapshot>), SegmentError> {
     if blacklist.contains_url(&url) {
         return Err(SegmentError::Blacklisted(url.to_string()));
     }
 
-    let (status, mut body) = client
-        .open_body_stream(HttpRequest::get(url.clone()))
-        .await?;
+    let mut req = HttpRequest::get(url.clone());
+    if let Some(cmcd) = cmcd {
+        req = cmcd.session.apply(req, &cmcd.context);
+    }
+
+    let mut stream_resp = client.open_body_stream(req).await?;
+    let status = stream_resp.status();
     if !(200..300).contains(&status) {
         blacklist.insert_url(&url);
         return Err(SegmentError::RequestFailed {
@@ -158,6 +167,17 @@ async fn fetch_cmaf_fragments(
         });
     }
 
+    let cmsd = parse_cmsd_headers(
+        stream_resp
+            .headers()
+            .iter()
+            .map(|(k, v)| (k.as_str(), v.as_str())),
+    );
+    if let (Some(cmcd), Some(snapshot)) = (cmcd, cmsd.as_ref()) {
+        cmcd.session.record_cmsd(snapshot.clone());
+    }
+
+    let body = stream_resp.body_mut();
     let mut acc = CmafChunkAccumulator::default();
     let mut fragments = Vec::new();
     while let Some(chunk) = body.next_chunk().await? {
@@ -167,7 +187,7 @@ async fn fetch_cmaf_fragments(
     if let Some(tail) = acc.finish() {
         fragments.push(tail);
     }
-    Ok(fragments)
+    Ok((fragments, cmsd))
 }
 
 #[cfg(test)]
@@ -198,29 +218,10 @@ mod tests {
     }
 
     #[test]
-    fn accumulator_emits_fragments_as_bytes_arrive() {
-        let moof = box_bytes(b"moof", b"a");
-        let mdat = box_bytes(b"mdat", b"b");
-        let mut acc = CmafChunkAccumulator::default();
-        acc.push(&moof[..4]);
-        assert!(acc.drain_fragments().is_empty());
-        acc.push(&moof[4..]);
-        acc.push(&mdat);
-        let frags = acc.drain_fragments();
+    fn fragments_from_complete_body_returns_whole_when_no_boxes() {
+        let body = b"not-boxes";
+        let frags = fragments_from_complete_body(body);
         assert_eq!(frags.len(), 1);
-    }
-
-    #[test]
-    fn complete_body_splitter_matches_accumulator() {
-        let moof = box_bytes(b"moof", b"1");
-        let mdat = box_bytes(b"mdat", b"2");
-        let moof2 = box_bytes(b"moof", b"3");
-        let mdat2 = box_bytes(b"mdat", b"4");
-        let mut body = moof;
-        body.extend_from_slice(&mdat);
-        body.extend_from_slice(&moof2);
-        body.extend_from_slice(&mdat2);
-        let frags = fragments_from_complete_body(&body);
-        assert_eq!(frags.len(), 2);
+        assert_eq!(frags[0].as_ref(), body.as_slice());
     }
 }

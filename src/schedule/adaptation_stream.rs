@@ -13,6 +13,7 @@ use tokio::sync::{broadcast, watch};
 
 use crate::PlayerError;
 use crate::abr::SharedAbrFactory;
+use crate::cmcd::CmcdSession;
 use crate::drm::DrmSessionCoordinator;
 use crate::http::SharedHttpClient;
 use crate::manifest::{self, TimelineBuildContext};
@@ -104,6 +105,10 @@ pub(crate) struct AdaptationStreamContext {
     /// `OperatingBandwidth` / `OperatingQuality` constraints for this adaptation set.
     pub operating_constraints:
         Option<crate::clock::service_description::ResolvedOperatingConstraints>,
+    /// Shared CMCD/CMSD session when enabled on the player.
+    pub cmcd: Option<CmcdSession>,
+    /// Kind of the selected track (for CMCD `ot`).
+    pub track_kind: crate::track_selection::TrackKind,
 }
 
 /// Run the fragment loop for one adaptation set until segments are exhausted for this manifest snapshot.
@@ -133,6 +138,8 @@ pub(crate) async fn run_adaptation_stream(ctx: AdaptationStreamContext) -> Resul
         abr_factory,
         prt_reference_id,
         operating_constraints,
+        cmcd,
+        track_kind,
     } = ctx;
 
     let seek_generation_at_start = playback.seek_generation();
@@ -318,6 +325,9 @@ pub(crate) async fn run_adaptation_stream(ctx: AdaptationStreamContext) -> Resul
         blacklist: &blacklist,
         drm: &drm,
         tx: &tx,
+        metrics: &metrics,
+        track_kind,
+        cmcd: cmcd.as_ref(),
     };
     if init_taken {
         let init_plan = plan_init(abr.as_mut(), latest_buffer_s(&buffer_rx));

@@ -144,6 +144,8 @@ pub enum PlayerEvent {
     Error(PlayerEventError),
     /// MPD `EventStream` or in-band `emsg` timed event (including SCTE-35 ad markers).
     MediaEvent(super::media_events::MediaEvent),
+    /// CMSD response hints observed on a segment request (CTA-5006; informational only).
+    CmsdUpdated { cmsd: super::cmcd::CmsdSnapshot },
     /// Initialization segment when the addressing mode provides one.
     ///
     /// For ISOBMFF/CMAF this is typically `ftyp` + `moov`. MPEG-2 TS (`video/mp2t` /
@@ -270,6 +272,16 @@ pub struct PlayerOutputs {
 }
 
 impl PlayerOutputs {
+    /// Latest CMSD snapshot from any request in this session, when CMCD is enabled.
+    ///
+    /// CMSD is observational and does not influence ABR or scheduling.
+    pub fn last_cmsd(&self) -> Option<super::cmcd::CmsdSnapshot> {
+        self.loop_state
+            .cmcd
+            .as_ref()
+            .and_then(|session| session.last_cmsd())
+    }
+
     /// Run the stream controller loop on the current async task.
     ///
     /// Audio and video adaptation sets are fetched concurrently within this task via

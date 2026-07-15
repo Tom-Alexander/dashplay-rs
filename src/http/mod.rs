@@ -12,6 +12,7 @@ mod request;
 #[cfg(feature = "reqwest-http")]
 mod reqwest;
 mod response;
+mod stream_response;
 mod unconfigured;
 
 pub(crate) use body_stream::HttpBodyStream;
@@ -21,6 +22,7 @@ pub use request::HttpRequest;
 #[cfg(feature = "reqwest-http")]
 pub use reqwest::ReqwestClient;
 pub use response::HttpResponse;
+pub use stream_response::HttpStreamResponse;
 pub use unconfigured::UnconfiguredHttpClient;
 
 /// HTTP method supported by [`HttpClient`].
@@ -37,7 +39,7 @@ pub type SharedHttpClient = Arc<dyn HttpClient>;
 /// Boxed HTTP future with platform-appropriate `Send` bounds.
 pub type HttpFuture<'a, T> = crate::platform::BoxedFuture<'a, T>;
 
-type OpenBodyFuture<'a> = HttpFuture<'a, Result<(u16, HttpBodyStream), HttpError>>;
+type OpenBodyFuture<'a> = HttpFuture<'a, Result<HttpStreamResponse, HttpError>>;
 
 /// Async HTTP transport used throughout the playback pipeline.
 pub trait HttpClient: crate::platform::HttpClientBounds {
@@ -46,11 +48,17 @@ pub trait HttpClient: crate::platform::HttpClientBounds {
 
     /// Open a response body for progressive reads (Low-Latency DASH partial segments).
     ///
-    /// The default implementation buffers via [`Self::send`].
+    /// The default implementation buffers via [`Self::send`] and preserves response headers
+    /// (needed for CMSD).
     fn open_body_stream<'a>(&'a self, request: HttpRequest) -> OpenBodyFuture<'a> {
         Box::pin(async move {
             let resp = self.send(request).await?;
-            Ok((resp.status(), HttpBodyStream::from_bytes(resp.into_bytes())))
+            let (status, headers, body) = resp.into_parts();
+            Ok(HttpStreamResponse::new(
+                status,
+                headers,
+                HttpBodyStream::from_bytes(body),
+            ))
         })
     }
 }

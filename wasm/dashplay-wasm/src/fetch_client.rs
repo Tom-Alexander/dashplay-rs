@@ -55,8 +55,10 @@ impl FetchClient {
             .map_err(|_| HttpError::Transport("fetch response was not a Response".into()))?;
 
         let status = response.status() as u16;
+        let response_headers = collect_response_headers(&response);
+
         if request.method() == HttpMethod::Head {
-            return Ok(HttpResponse::new(status, Vec::new(), Bytes::new()));
+            return Ok(HttpResponse::new(status, response_headers, Bytes::new()));
         }
 
         let buffer_value = JsFuture::from(
@@ -68,8 +70,39 @@ impl FetchClient {
         .map_err(|err| HttpError::Transport(format_js_error("body read failed", err)))?;
 
         let bytes = js_value_to_bytes(&buffer_value)?;
-        Ok(HttpResponse::new(status, Vec::new(), bytes))
+        Ok(HttpResponse::new(status, response_headers, bytes))
     }
+}
+
+fn collect_response_headers(response: &Response) -> Vec<(String, String)> {
+    let headers = response.headers();
+    let Ok(Some(iter)) = js_sys::try_iter(headers.entries().as_ref()) else {
+        // Fall back to CMSD header names when the iterator is unavailable.
+        let mut out = Vec::new();
+        for name in ["CMSD-Static", "CMSD-Dynamic"] {
+            if let Ok(Some(value)) = headers.get(name) {
+                out.push((name.to_string(), value));
+            }
+        }
+        return out;
+    };
+    let mut out = Vec::new();
+    for entry in iter.flatten() {
+        let Ok(arr) = entry.dyn_into::<js_sys::Array>() else {
+            continue;
+        };
+        if arr.length() < 2 {
+            continue;
+        }
+        let Some(name) = arr.get(0).as_string() else {
+            continue;
+        };
+        let Some(value) = arr.get(1).as_string() else {
+            continue;
+        };
+        out.push((name, value));
+    }
+    out
 }
 
 fn js_value_to_bytes(value: &wasm_bindgen::JsValue) -> Result<Bytes, HttpError> {

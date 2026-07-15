@@ -3,6 +3,7 @@ use reqwest::Client;
 
 use super::{
     HttpBodyStream, HttpClient, HttpError, HttpFuture, HttpMethod, HttpRequest, HttpResponse,
+    HttpStreamResponse,
 };
 
 /// Default [`HttpClient`] backed by [`reqwest`](https://docs.rs/reqwest).
@@ -88,10 +89,21 @@ impl HttpClient for ReqwestClient {
                 .await
                 .map_err(|err| HttpError::Transport(err.to_string()))?;
             let status = resp.status().as_u16();
+            let headers = resp
+                .headers()
+                .iter()
+                .filter_map(|(name, value)| {
+                    Some((name.as_str().to_string(), value.to_str().ok()?.to_string()))
+                })
+                .collect();
             let stream = resp
                 .bytes_stream()
                 .map(|result| result.map_err(|err| HttpError::Transport(err.to_string())));
-            Ok((status, HttpBodyStream::from_stream(Box::pin(stream))))
+            Ok(HttpStreamResponse::new(
+                status,
+                headers,
+                HttpBodyStream::from_stream(Box::pin(stream)),
+            ))
         })
     }
 }

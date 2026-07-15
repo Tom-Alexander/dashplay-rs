@@ -8,6 +8,7 @@ use std::time::Duration;
 
 use tokio::sync::watch;
 
+use crate::cmcd::CmsdSnapshot;
 use crate::platform::Instant;
 
 /// Maximum number of historical samples retained per series.
@@ -75,6 +76,8 @@ pub struct TrackMetricsSnapshot {
     pub buffer_history: Vec<BufferSample>,
     pub bitrate_switch_history: Vec<BitrateSwitch>,
     pub rebuffer_events: Vec<RebufferEvent>,
+    /// Latest CMSD snapshot observed on a segment request for this track (informational).
+    pub last_cmsd: Option<CmsdSnapshot>,
 }
 
 /// Collects and exposes playback metrics for a single adaptation-set track.
@@ -98,6 +101,9 @@ struct TrackMetricsInner {
     buffer_history: Vec<BufferSample>,
     bitrate_switch_history: Vec<BitrateSwitch>,
     rebuffer_events: Vec<RebufferEvent>,
+    last_cmsd: Option<CmsdSnapshot>,
+    /// Number of rebuffer events already reported via CMCD `bs`.
+    cmcd_rebuffer_cursor: usize,
     snapshot_tx: watch::Sender<TrackMetricsSnapshot>,
 }
 
@@ -118,6 +124,8 @@ impl TrackMetrics {
                 buffer_history: Vec::new(),
                 bitrate_switch_history: Vec::new(),
                 rebuffer_events: Vec::new(),
+                last_cmsd: None,
+                cmcd_rebuffer_cursor: 0,
                 snapshot_tx,
             })),
         }
@@ -234,6 +242,30 @@ impl TrackMetrics {
         self.with_inner(|inner| inner.last_quality_index)
     }
 
+    /// Whether startup (`su`) should be reported on the next CMCD request.
+    pub(crate) fn cmcd_startup(&self) -> bool {
+        self.with_inner(|inner| !inner.has_delivered_segment)
+    }
+
+    /// Consume pending buffer-starvation reports for CMCD `bs` (once per rebuffer event).
+    pub(crate) fn take_cmcd_buffer_starvation(&self) -> bool {
+        self.with_inner_mut(|inner| {
+            let pending = inner.rebuffer_events.len() > inner.cmcd_rebuffer_cursor;
+            if pending {
+                inner.cmcd_rebuffer_cursor = inner.rebuffer_events.len();
+            }
+            pending
+        })
+    }
+
+    /// Record CMSD response data observed on a segment fetch (does not affect ABR).
+    pub(crate) fn record_cmsd(&self, cmsd: CmsdSnapshot) {
+        self.with_inner_mut(|inner| {
+            inner.last_cmsd = Some(cmsd);
+            inner.publish_snapshot();
+        });
+    }
+
     fn with_inner<T>(&self, f: impl FnOnce(&TrackMetricsInner) -> T) -> T {
         let guard = self.inner.lock().unwrap_or_else(|e| e.into_inner());
         f(&guard)
@@ -264,6 +296,7 @@ impl TrackMetricsInner {
             buffer_history: self.buffer_history.clone(),
             bitrate_switch_history: self.bitrate_switch_history.clone(),
             rebuffer_events: self.rebuffer_events.clone(),
+            last_cmsd: self.last_cmsd.clone(),
         }
     }
 
@@ -349,5 +382,23 @@ mod tests {
         assert_eq!(rx.borrow().buffer_s, 0.0);
         metrics.record_buffer(5.0);
         assert_eq!(rx.borrow_and_update().buffer_s, 5.0);
+    }
+
+    #[test]
+    fn records_cmsd_and_buffer_starvation_flag() {
+        let metrics = TrackMetrics::new();
+        assert!(metrics.cmcd_startup());
+        metrics.record_segment_delivered();
+        assert!(!metrics.cmcd_startup());
+        metrics.record_buffer(10.0);
+        metrics.record_buffer(1.0);
+        assert!(metrics.take_cmcd_buffer_starvation());
+        assert!(!metrics.take_cmcd_buffer_starvation());
+
+        metrics.record_cmsd(CmsdSnapshot {
+            static_keys: vec![("ot".into(), crate::cmcd::CmsdValue::String("v".into()))],
+            dynamic_hops: Vec::new(),
+        });
+        assert!(metrics.snapshot().last_cmsd.is_some());
     }
 }

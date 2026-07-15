@@ -6,6 +6,7 @@ use url::Url;
 
 use super::PlayerError;
 use super::abr::{BolaAbrFactory, SharedAbrFactory, shared as shared_abr_factory};
+use super::cmcd::{CmcdConfig, CmcdObjectType, CmcdSession, CmcdStreamType, parse_cmsd_headers};
 #[cfg(feature = "reqwest-http")]
 use super::http::ReqwestClient;
 #[cfg(not(feature = "reqwest-http"))]
@@ -32,6 +33,7 @@ pub struct MediaPlayer {
     drm: DrmSessionCoordinator,
     track_selection: TrackSelection,
     abr_factory: SharedAbrFactory,
+    cmcd: Option<CmcdSession>,
 }
 
 impl MediaPlayer {
@@ -51,6 +53,7 @@ impl MediaPlayer {
             drm: DrmSessionCoordinator::new(client, license_uri, None),
             track_selection: TrackSelection::default(),
             abr_factory: shared_abr_factory(BolaAbrFactory::default()),
+            cmcd: None,
         })
     }
 
@@ -90,11 +93,29 @@ impl MediaPlayer {
         self
     }
 
+    /// Enable CTA-5004 CMCD request headers and CTA-5006 CMSD response parsing.
+    ///
+    /// CMCD keys are sent on the four `CMCD-*` headers (header mode only). Parsed CMSD
+    /// is exposed via metrics and [`crate::PlayerEvent::CmsdUpdated`] and does not drive ABR.
+    pub fn with_cmcd(mut self, config: CmcdConfig) -> Self {
+        self.cmcd = Some(CmcdSession::new(config));
+        self
+    }
+
     pub async fn fetch_manifest(&mut self) -> Result<(), PlayerError> {
-        let resp = self
-            .client
-            .send(HttpRequest::get(self.manifest_uri.clone()))
-            .await?;
+        let mut req = HttpRequest::get(self.manifest_uri.clone());
+        if let Some(session) = self.cmcd.as_ref() {
+            let ctx = session.context_for(CmcdObjectType::Manifest, None, None, None, None, None);
+            req = session.apply(req, &ctx);
+        }
+        let resp = self.client.send(req).await?;
+        if let Some(cmsd) =
+            parse_cmsd_headers(resp.headers().iter().map(|(k, v)| (k.as_str(), v.as_str())))
+        {
+            if let Some(session) = self.cmcd.as_ref() {
+                session.record_cmsd(cmsd);
+            }
+        }
         let text = resp.text()?;
         let resolved = crate::manifest_lifecycle::resolve_period_xlinks(
             &self.client,
@@ -104,6 +125,9 @@ impl MediaPlayer {
         .await
         .map_err(|e| ManifestError::Xlink(e.to_string()))?;
         let mpd = dash_mpd::parse(&resolved)?;
+        if let Some(session) = self.cmcd.as_ref() {
+            session.set_stream_type(CmcdStreamType::from_dynamic(manifest::is_dynamic_mpd(&mpd)));
+        }
         self.manifest = Some(mpd);
         self.mpd_xml = Some(resolved);
         Ok(())
@@ -162,6 +186,7 @@ impl MediaPlayer {
             playback: playback.clone(),
             track_selection: self.track_selection,
             abr_factory: self.abr_factory,
+            cmcd: self.cmcd,
         };
 
         Ok(PlayerOutputs {

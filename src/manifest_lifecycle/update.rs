@@ -4,6 +4,7 @@ use dash_mpd::MPD;
 use url::Url;
 
 use crate::PlayerError;
+use crate::cmcd::{CmcdObjectType, CmcdSession, parse_cmsd_headers};
 use crate::http::{HttpRequest, SharedHttpClient};
 use crate::manifest::ManifestError;
 use crate::manifest::merge_base_url;
@@ -30,9 +31,15 @@ impl ManifestSession {
         &mut self,
         client: &SharedHttpClient,
         initial_uri: &Url,
+        cmcd: Option<&CmcdSession>,
     ) -> Result<(), PlayerError> {
         let fetch_uri = self.resolve_fetch_uri(initial_uri)?;
-        let (xml, parsed) = self.fetch_manifest_body(client, &fetch_uri).await?;
+        let (xml, parsed) = self.fetch_manifest_body(client, &fetch_uri, cmcd).await?;
+        if let Some(session) = cmcd {
+            session.set_stream_type(crate::cmcd::CmcdStreamType::from_dynamic(
+                crate::manifest::is_dynamic_mpd(&parsed),
+            ));
+        }
         self.current_uri = Some(resolve_location_uri(&parsed, &fetch_uri)?);
         self.mpd_xml = Some(xml);
         self.parsed = Some(parsed);
@@ -71,15 +78,27 @@ impl ManifestSession {
         &mut self,
         client: &SharedHttpClient,
         fetch_uri: &Url,
+        cmcd: Option<&CmcdSession>,
     ) -> Result<(String, MPD), PlayerError> {
         if let Some(patch_uri) = self.patch_fetch_uri(fetch_uri)? {
-            match self.try_fetch_patch(client, fetch_uri, &patch_uri).await {
+            match self
+                .try_fetch_patch(client, fetch_uri, &patch_uri, cmcd)
+                .await
+            {
                 Ok(result) => return Ok(result),
                 Err(_err) => {}
             }
         }
 
-        let resp = client.send(HttpRequest::get(fetch_uri.clone())).await?;
+        let req = manifest_http_request(fetch_uri.clone(), cmcd);
+        let resp = client.send(req).await?;
+        if let Some(cmsd) =
+            parse_cmsd_headers(resp.headers().iter().map(|(k, v)| (k.as_str(), v.as_str())))
+        {
+            if let Some(session) = cmcd {
+                session.record_cmsd(cmsd);
+            }
+        }
         let text = resp.text()?;
         let resolved = xlink::resolve_period_xlinks(client, fetch_uri, &text)
             .await
@@ -111,9 +130,19 @@ impl ManifestSession {
         client: &SharedHttpClient,
         manifest_uri: &Url,
         patch_uri: &Url,
+        cmcd: Option<&CmcdSession>,
     ) -> Result<(String, MPD), PlayerError> {
         let base_xml = self.mpd_xml.as_deref().ok_or(ManifestError::NotLoaded)?;
-        let resp = client.send(HttpRequest::get(patch_uri.clone())).await?;
+        let resp = client
+            .send(manifest_http_request(patch_uri.clone(), cmcd))
+            .await?;
+        if let Some(cmsd) =
+            parse_cmsd_headers(resp.headers().iter().map(|(k, v)| (k.as_str(), v.as_str())))
+        {
+            if let Some(session) = cmcd {
+                session.record_cmsd(cmsd);
+            }
+        }
         let patch_xml = resp.text()?;
         let updated = patch::apply_mpd_patch(base_xml, &patch_xml).map_err(map_patch_error)?;
         let resolved = xlink::resolve_period_xlinks(client, manifest_uri, &updated)
@@ -130,6 +159,15 @@ fn map_patch_error(err: MpdPatchError) -> ManifestError {
 
 fn map_xlink_error(err: XlinkError) -> ManifestError {
     ManifestError::Xlink(err.to_string())
+}
+
+fn manifest_http_request(uri: Url, cmcd: Option<&CmcdSession>) -> HttpRequest {
+    let mut req = HttpRequest::get(uri);
+    if let Some(session) = cmcd {
+        let ctx = session.context_for(CmcdObjectType::Manifest, None, None, None, None, None);
+        req = session.apply(req, &ctx);
+    }
+    req
 }
 
 /// Resolve the manifest URI for the next refresh from the latest `Location` element.

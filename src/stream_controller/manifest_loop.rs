@@ -30,8 +30,9 @@ pub(crate) async fn refresh_manifest(
     session: &mut ManifestSession,
     client: &SharedHttpClient,
     manifest_uri: &Url,
+    cmcd: Option<&crate::cmcd::CmcdSession>,
 ) -> Result<(), PlayerError> {
-    session.refresh(client, manifest_uri).await?;
+    session.refresh(client, manifest_uri, cmcd).await?;
     session.sync_steering(client).await
 }
 

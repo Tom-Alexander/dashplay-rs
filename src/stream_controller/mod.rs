@@ -40,6 +40,7 @@ pub(crate) struct PlaybackLoopState {
     pub playback: PlaybackController,
     pub track_selection: TrackSelection,
     pub abr_factory: SharedAbrFactory,
+    pub cmcd: Option<crate::cmcd::CmcdSession>,
 }
 
 impl PlaybackLoopState {
@@ -51,6 +52,7 @@ impl PlaybackLoopState {
             playback,
             mut track_selection,
             abr_factory,
+            cmcd,
         } = self;
 
         let mut manifest_session = ManifestSession::default();
@@ -78,7 +80,8 @@ impl PlaybackLoopState {
 
                 playback.set_state(PlaybackState::LoadingManifest);
 
-                refresh_manifest(&mut manifest_session, &client, &manifest_uri).await?;
+                refresh_manifest(&mut manifest_session, &client, &manifest_uri, cmcd.as_ref())
+                    .await?;
                 let tick = manifest_tick(&manifest_session, &client).await?;
                 broadcast_manifest_loaded(&tracks, tick.mpd);
 
@@ -171,8 +174,10 @@ impl PlaybackLoopState {
                         let drm = drm.clone();
                         let buffer_rx = tracks[track_idx].buffer_rx.clone();
                         let metrics = tracks[track_idx].metrics.clone();
+                        let track_kind = tracks[track_idx].info().kind;
                         let playback = playback.clone();
                         let abr_factory = abr_factory.clone();
+                        let cmcd_for_track = cmcd.clone();
                         let prt_reference_id = period_ctx.prt_reference_id.clone();
                         let operating =
                             crate::clock::service_description::OperatingConstraints::from_mpd(
@@ -219,6 +224,8 @@ impl PlaybackLoopState {
                                 abr_factory,
                                 prt_reference_id,
                                 operating_constraints,
+                                cmcd: cmcd_for_track,
+                                track_kind,
                             })
                             .await
                         });

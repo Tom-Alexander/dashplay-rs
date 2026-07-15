@@ -32,16 +32,25 @@ impl HttpResponse {
 
     /// Case-insensitive header lookup.
     pub fn header(&self, name: &str) -> Option<&str> {
-        let name = name.to_ascii_lowercase();
         self.headers
             .iter()
-            .find(|(k, _)| k.eq_ignore_ascii_case(&name))
+            .find(|(k, _)| k.eq_ignore_ascii_case(name))
             .map(|(_, v)| v.as_str())
+    }
+
+    /// All response headers as `(name, value)` pairs.
+    pub fn headers(&self) -> &[(String, String)] {
+        &self.headers
     }
 
     /// Response body bytes.
     pub fn bytes(&self) -> &Bytes {
         &self.body
+    }
+
+    /// Consume the response into status, headers, and body.
+    pub fn into_parts(self) -> (u16, Vec<(String, String)>, Bytes) {
+        (self.status, self.headers, self.body)
     }
 
     /// Consume the response and return the body.

@@ -10,17 +10,21 @@ use tokio::sync::broadcast;
 
 use crate::PlayerError;
 use crate::abr::{AbrController, quality_indices_for_fallback};
+use crate::cmcd::{CmcdObjectType, CmcdSession, CmsdSnapshot};
 use crate::drm::DrmSessionCoordinator;
 #[cfg(feature = "drm")]
 use crate::drm::{DrmError, License};
 use crate::http::SharedHttpClient;
 use crate::manifest::{self, ManifestError};
+use crate::metrics::TrackMetrics;
 use crate::mp4::partial_segment;
 use crate::segment::SegmentError;
 use crate::segment_blacklist::SegmentBlacklist;
 use crate::segment_fetcher::{
-    fetch_bytes_with_base_failover, fetch_bytes_with_base_failover_and_range,
+    CmcdFetch, FetchedBytes, fetch_bytes_with_base_failover,
+    fetch_bytes_with_base_failover_and_range,
 };
+use crate::track_selection::TrackKind;
 use crate::types::PlayerEvent;
 
 use super::segment_plan::SegmentPlan;
@@ -37,6 +41,9 @@ pub(super) struct RepFetchEnv<'a> {
     pub(super) blacklist: &'a SegmentBlacklist,
     pub(super) drm: &'a Arc<AsyncMutex<DrmSessionCoordinator>>,
     pub(super) tx: &'a broadcast::Sender<PlayerEvent>,
+    pub(super) metrics: &'a TrackMetrics,
+    pub(super) track_kind: TrackKind,
+    pub(super) cmcd: Option<&'a CmcdSession>,
 }
 
 impl RepFetchEnv<'_> {
@@ -70,6 +77,36 @@ impl RepFetchEnv<'_> {
             .get(&period_adaptation_index)
             .copied()
             .unwrap_or(false)
+    }
+
+    fn cmcd_fetch(
+        &self,
+        object_type: CmcdObjectType,
+        encoded_bitrate_bps: Option<f64>,
+        object_duration_ms: Option<u64>,
+    ) -> Option<CmcdFetch<'_>> {
+        self.cmcd.map(|session| {
+            let context = session.context_for(
+                object_type,
+                Some(self.metrics),
+                encoded_bitrate_bps,
+                object_duration_ms,
+                None,
+                None,
+            );
+            CmcdFetch { session, context }
+        })
+    }
+
+    fn report_cmsd(&self, cmsd: Option<CmsdSnapshot>) {
+        if let Some(cmsd) = cmsd {
+            self.metrics.record_cmsd(cmsd.clone());
+            let _ = self.tx.send(PlayerEvent::CmsdUpdated { cmsd });
+        }
+    }
+
+    fn media_object_type(&self) -> CmcdObjectType {
+        CmcdObjectType::from_track_kind(self.track_kind)
     }
 }
 
@@ -207,8 +244,14 @@ pub(super) async fn fetch_media_with_rep_fallback(
             plan.list_index,
             &template_vars,
         )?;
-        match fetch_segment_target(env.client, &bases, &seg_target, env.blacklist).await {
-            Ok(bytes) => return Ok((bytes, quality_index, seg_for_fetch)),
+        let br_bps = rep.bandwidth.map(|b| b as f64);
+        let d_ms = object_duration_ms(&seg_for_fetch);
+        let cmcd = env.cmcd_fetch(env.media_object_type(), br_bps, d_ms);
+        match fetch_segment_target(env.client, &bases, &seg_target, env.blacklist, cmcd).await {
+            Ok(fetched) => {
+                env.report_cmsd(fetched.cmsd.clone());
+                return Ok((fetched.data, quality_index, seg_for_fetch));
+            }
             Err(e) => last_err = e,
         }
     }
@@ -262,15 +305,20 @@ pub(super) async fn fetch_cmaf_media_with_rep_fallback(
             plan.list_index,
             &template_vars,
         )?;
+        let br_bps = rep.bandwidth.map(|b| b as f64);
+        let d_ms = object_duration_ms(&seg_for_fetch);
+        let cmcd = env.cmcd_fetch(env.media_object_type(), br_bps, d_ms);
         match partial_segment::fetch_cmaf_fragments_for_target(
             env.client,
             &bases,
             &seg_target,
             env.blacklist,
+            cmcd,
         )
         .await
         {
-            Ok(fragments) if !fragments.is_empty() => {
+            Ok((fragments, cmsd)) if !fragments.is_empty() => {
+                env.report_cmsd(cmsd);
                 return Ok((fragments, quality_index, seg_for_fetch));
             }
             Ok(_) => last_err = PlayerError::from(SegmentError::ExhaustedRepresentations),
@@ -315,8 +363,12 @@ async fn ensure_init_for_rep(
         encrypted_init_by_rep.insert(cache_key, Bytes::new());
         return Ok(Bytes::new());
     };
-    let bytes = fetch_segment_target(env.client, &bases, &init_target, env.blacklist).await?;
-    let init_bytes = Bytes::from(bytes);
+    let br_bps = rep.bandwidth.map(|b| b as f64);
+    let cmcd = env.cmcd_fetch(CmcdObjectType::Init, br_bps, None);
+    let fetched =
+        fetch_segment_target(env.client, &bases, &init_target, env.blacklist, cmcd).await?;
+    env.report_cmsd(fetched.cmsd.clone());
+    let init_bytes = Bytes::from(fetched.data);
     encrypted_init_by_rep.insert(cache_key, init_bytes.clone());
 
     #[cfg(feature = "drm")]
@@ -423,7 +475,8 @@ pub(super) async fn fetch_segment_target(
     bases: &[url::Url],
     target: &manifest::SegmentFetchTarget,
     blacklist: &SegmentBlacklist,
-) -> Result<Vec<u8>, PlayerError> {
+    cmcd: Option<CmcdFetch<'_>>,
+) -> Result<FetchedBytes, PlayerError> {
     if target.range.is_some() {
         return fetch_bytes_with_base_failover_and_range(
             client,
@@ -431,13 +484,22 @@ pub(super) async fn fetch_segment_target(
             &target.path,
             target.range,
             blacklist,
+            cmcd,
         )
         .await
         .map_err(Into::into);
     }
-    fetch_bytes_with_base_failover(client, bases, &target.path, blacklist)
+    fetch_bytes_with_base_failover(client, bases, &target.path, blacklist, cmcd)
         .await
         .map_err(Into::into)
+}
+
+fn object_duration_ms(seg: &manifest::TimelineSegment) -> Option<u64> {
+    if seg.duration_s > 0.0 {
+        Some((seg.duration_s * 1000.0).round() as u64)
+    } else {
+        None
+    }
 }
 
 async fn sidx_segments_for_rep_template<'a>(
@@ -567,8 +629,9 @@ pub(super) async fn fetch_and_parse_segment_base_index(
             ));
         };
         let mut index_bytes =
-            fetch_bytes_with_base_failover_and_range(client, bases, "", Some(br), blacklist)
-                .await?;
+            fetch_bytes_with_base_failover_and_range(client, bases, "", Some(br), blacklist, None)
+                .await?
+                .into_data();
         loop {
             match manifest::parse_sidx_index_for_segment_base(sb, &index_bytes) {
                 Ok(segs) => return Ok(segs),
@@ -583,8 +646,10 @@ pub(super) async fn fetch_and_parse_segment_base_index(
                         "",
                         Some(extend),
                         blacklist,
+                        None,
                     )
-                    .await?;
+                    .await?
+                    .into_data();
                     index_bytes.extend_from_slice(&more);
                     br.end = need_end;
                 }
@@ -593,7 +658,9 @@ pub(super) async fn fetch_and_parse_segment_base_index(
         }
     }
 
-    let index_bytes = fetch_segment_target(client, bases, &index_target, blacklist).await?;
+    let index_bytes = fetch_segment_target(client, bases, &index_target, blacklist, None)
+        .await?
+        .into_data();
     Ok(manifest::parse_sidx_index_for_segment_base(
         sb,
         &index_bytes,
@@ -628,7 +695,11 @@ async fn fetch_complete_template_index_bytes(
     blacklist: &SegmentBlacklist,
 ) -> Result<Vec<u8>, PlayerError> {
     let Some(mut br) = index_target.range else {
-        return fetch_segment_target(client, bases, index_target, blacklist).await;
+        return Ok(
+            fetch_segment_target(client, bases, index_target, blacklist, None)
+                .await?
+                .into_data(),
+        );
     };
     let mut index_bytes = fetch_bytes_with_base_failover_and_range(
         client,
@@ -636,8 +707,10 @@ async fn fetch_complete_template_index_bytes(
         &index_target.path,
         Some(br),
         blacklist,
+        None,
     )
-    .await?;
+    .await?
+    .into_data();
     loop {
         match manifest::parse_sidx_index_from_template(st, &index_bytes) {
             Ok(_) => return Ok(index_bytes),
@@ -652,8 +725,10 @@ async fn fetch_complete_template_index_bytes(
                     &index_target.path,
                     Some(extend),
                     blacklist,
+                    None,
                 )
-                .await?;
+                .await?
+                .into_data();
                 index_bytes.extend_from_slice(&more);
                 br.end = need_end;
             }

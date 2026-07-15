@@ -28,7 +28,8 @@
 //!             | PlayerEvent::PlayheadUpdated { .. }
 //!             | PlayerEvent::PlaybackRateSuggested { .. }
 //!             | PlayerEvent::TrackChanged { .. }
-//!             | PlayerEvent::MediaEvent(_) => {}
+//!             | PlayerEvent::MediaEvent(_)
+//!             | PlayerEvent::CmsdUpdated { .. } => {}
 //!             PlayerEvent::End | PlayerEvent::PlaybackEnded | PlayerEvent::Error(_) => break,
 //!         }
 //!     }
@@ -48,6 +49,7 @@ pub mod abr;
 pub use abr::bola::{Bola, BolaDecision, QualityLevel};
 pub use abr::lol_plus::{LolPlus, LolPlusDecision};
 mod clock;
+pub mod cmcd;
 mod delivered_segments;
 pub mod drm;
 pub mod http;
@@ -75,6 +77,10 @@ pub use abr::{
     QualityRung, SharedAbrFactory, quality_ladder_from_adaptation_set,
     quality_ladder_from_adaptation_sets, shared as shared_abr_factory,
 };
+pub use cmcd::{
+    CmcdConfig, CmcdHeaders, CmcdObjectType, CmcdRequestContext, CmcdStreamType, CmsdHop,
+    CmsdSnapshot, CmsdValue, apply_cmcd, encode_headers, parse_cmsd_headers,
+};
 pub use dash_mpd::SubtitleType;
 #[cfg(feature = "drm")]
 pub use drm::DrmError;
@@ -82,8 +88,8 @@ pub use drm::DrmError;
 pub use http::ReqwestClient;
 pub use http::UnconfiguredHttpClient;
 pub use http::{
-    HttpClient, HttpError, HttpFuture, HttpMethod, HttpRequest, HttpResponse, SharedHttpClient,
-    shared,
+    HttpClient, HttpError, HttpFuture, HttpMethod, HttpRequest, HttpResponse, HttpStreamResponse,
+    SharedHttpClient, shared,
 };
 pub use manifest::ManifestError;
 pub use media_events::{MediaEvent, MediaEventSource, Scte35Cue};

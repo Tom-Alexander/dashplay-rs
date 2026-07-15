@@ -8,6 +8,7 @@ use tokio_stream::Stream;
 use tokio_stream::wrappers::ReceiverStream;
 
 use super::abr::SharedAbrFactory;
+use super::cmcd::CmcdConfig;
 use super::http::SharedHttpClient;
 use super::media_player::{MediaPlayer, WidevineLicenseFetcher};
 use super::metrics::TrackMetrics;
@@ -54,6 +55,13 @@ impl Player {
     pub fn with_abr_factory(self, factory: SharedAbrFactory) -> Self {
         Self {
             media_player: self.media_player.with_abr_factory(factory),
+        }
+    }
+
+    /// Enable CTA-5004 CMCD request headers and CTA-5006 CMSD response parsing.
+    pub fn with_cmcd(self, config: CmcdConfig) -> Self {
+        Self {
+            media_player: self.media_player.with_cmcd(config),
         }
     }
 
@@ -127,6 +135,7 @@ impl Player {
         let outputs = self.media_player.start().await?;
         let tracks = outputs.tracks.clone();
         let playback = outputs.playback.clone();
+        let cmcd = outputs.loop_state.cmcd.clone();
         let join = outputs.spawn();
 
         let mut outs = Vec::with_capacity(tracks.len());
@@ -147,6 +156,7 @@ impl Player {
             join,
             playback,
             senders,
+            cmcd,
         })
     }
 }
@@ -189,9 +199,17 @@ pub struct PlayerTrackOutputs {
     /// Seek, pause, resume, stop, and lifecycle state for this session.
     pub playback: PlaybackController,
     senders: Vec<PlayerTrack>,
+    cmcd: Option<crate::cmcd::CmcdSession>,
 }
 
 impl PlayerTrackOutputs {
+    /// Latest CMSD snapshot from any request in this session, when CMCD is enabled.
+    ///
+    /// CMSD is observational and does not influence ABR or scheduling.
+    pub fn last_cmsd(&self) -> Option<crate::cmcd::CmsdSnapshot> {
+        self.cmcd.as_ref().and_then(|session| session.last_cmsd())
+    }
+
     /// Current playback lifecycle state.
     pub fn playback_state(&self) -> PlaybackState {
         self.playback.state()
@@ -292,6 +310,7 @@ impl PlayerTrackOutputs {
             join,
             playback: _playback,
             senders,
+            cmcd: _,
         } = self;
         (tracks, senders, join)
     }

@@ -1,9 +1,29 @@
 use url::Url;
 
+use super::cmcd::{CmcdRequestContext, CmcdSession, CmsdSnapshot, parse_cmsd_headers};
 use super::http::{HttpRequest, SharedHttpClient};
 use super::manifest::ByteRange;
 use super::segment_blacklist::SegmentBlacklist;
 use crate::segment::SegmentError;
+
+/// Result of a segment byte fetch, including optional CMSD response hints.
+#[derive(Debug)]
+pub(crate) struct FetchedBytes {
+    pub data: Vec<u8>,
+    pub cmsd: Option<CmsdSnapshot>,
+}
+
+impl FetchedBytes {
+    pub fn into_data(self) -> Vec<u8> {
+        self.data
+    }
+}
+
+/// Optional CMCD attachment for an outbound segment/manifest request.
+pub(crate) struct CmcdFetch<'a> {
+    pub session: &'a CmcdSession,
+    pub context: CmcdRequestContext,
+}
 
 /// Try each resolved absolute base with the same relative segment path (multi-CDN / redundant hosts).
 pub(crate) async fn fetch_bytes_with_base_failover(
@@ -11,8 +31,10 @@ pub(crate) async fn fetch_bytes_with_base_failover(
     bases: &[Url],
     relative_path: &str,
     blacklist: &SegmentBlacklist,
-) -> Result<Vec<u8>, SegmentError> {
-    fetch_bytes_with_base_failover_and_range(client, bases, relative_path, None, blacklist).await
+    cmcd: Option<CmcdFetch<'_>>,
+) -> Result<FetchedBytes, SegmentError> {
+    fetch_bytes_with_base_failover_and_range(client, bases, relative_path, None, blacklist, cmcd)
+        .await
 }
 
 /// Like [`fetch_bytes_with_base_failover`], but sends an HTTP `Range` header when `range` is set.
@@ -22,7 +44,8 @@ pub(crate) async fn fetch_bytes_with_base_failover_and_range(
     relative_path: &str,
     range: Option<ByteRange>,
     blacklist: &SegmentBlacklist,
-) -> Result<Vec<u8>, SegmentError> {
+    cmcd: Option<CmcdFetch<'_>>,
+) -> Result<FetchedBytes, SegmentError> {
     let mut last_err: Option<SegmentError> = None;
     for base in bases {
         let url = if relative_path.is_empty() {
@@ -30,7 +53,7 @@ pub(crate) async fn fetch_bytes_with_base_failover_and_range(
         } else {
             base.join(relative_path)?
         };
-        match fetch_bytes_range(client, url, range, blacklist).await {
+        match fetch_bytes_range(client, url, range, blacklist, cmcd.as_ref()).await {
             Ok(b) => return Ok(b),
             Err(e) => last_err = Some(e),
         }
@@ -43,7 +66,8 @@ async fn fetch_bytes_range(
     url: Url,
     range: Option<ByteRange>,
     blacklist: &SegmentBlacklist,
-) -> Result<Vec<u8>, SegmentError> {
+    cmcd: Option<&CmcdFetch<'_>>,
+) -> Result<FetchedBytes, SegmentError> {
     if blacklist.contains_url(&url) {
         return Err(SegmentError::Blacklisted(url.to_string()));
     }
@@ -51,6 +75,9 @@ async fn fetch_bytes_range(
     let mut req = HttpRequest::get(url.clone());
     if let Some(r) = range {
         req = req.byte_range(r.start, r.end);
+    }
+    if let Some(cmcd) = cmcd {
+        req = cmcd.session.apply(req, &cmcd.context);
     }
 
     let resp = client.send(req).await?;
@@ -61,7 +88,16 @@ async fn fetch_bytes_range(
             url: url.to_string(),
         });
     }
-    Ok(resp.into_bytes().to_vec())
+
+    let cmsd = parse_cmsd_headers(resp.headers().iter().map(|(k, v)| (k.as_str(), v.as_str())));
+    if let (Some(cmcd), Some(snapshot)) = (cmcd, cmsd.as_ref()) {
+        cmcd.session.record_cmsd(snapshot.clone());
+    }
+
+    Ok(FetchedBytes {
+        data: resp.into_bytes().to_vec(),
+        cmsd,
+    })
 }
 
 #[cfg(test)]
@@ -104,6 +140,7 @@ mod tests {
             "",
             None,
             &blacklist,
+            None,
         )
         .await
         .expect_err("404");
@@ -118,6 +155,7 @@ mod tests {
             "",
             None,
             &blacklist,
+            None,
         )
         .await
         .expect_err("blacklisted");
@@ -158,10 +196,11 @@ mod tests {
         let client = crate::http::shared(ReqwestClient::default());
         let blacklist = SegmentBlacklist::new();
 
-        let bytes = fetch_bytes_with_base_failover(&client, &[bad, good], "seg.m4s", &blacklist)
-            .await
-            .expect("failover");
-        assert_eq!(bytes, b"good");
+        let fetched =
+            fetch_bytes_with_base_failover(&client, &[bad, good], "seg.m4s", &blacklist, None)
+                .await
+                .expect("failover");
+        assert_eq!(fetched.data, b"good");
         assert_eq!(HITS.load(Ordering::SeqCst), 2);
 
         let _ = shutdown_tx.send(());
@@ -174,7 +213,7 @@ mod tests {
         let blacklist = SegmentBlacklist::new();
         let bases = [base.join("a/").unwrap(), base.join("b/").unwrap()];
 
-        let err = fetch_bytes_with_base_failover(&client, &bases, "seg.m4s", &blacklist)
+        let err = fetch_bytes_with_base_failover(&client, &bases, "seg.m4s", &blacklist, None)
             .await
             .unwrap_err();
         assert!(matches!(

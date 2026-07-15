@@ -38,3 +38,50 @@ pub async fn sleep(duration: Duration) {
     let millis = duration.as_millis().min(u128::from(u32::MAX)) as u32;
     gloo_timers::future::TimeoutFuture::new(millis).await;
 }
+
+/// Fill `buf` with random bytes (Web Crypto when available).
+pub fn fill_random(buf: &mut [u8]) {
+    use std::collections::hash_map::DefaultHasher;
+    use std::hash::{Hash, Hasher};
+    use std::time::{SystemTime, UNIX_EPOCH};
+
+    // web-sys Crypto is optional in wasm/dashplay-wasm; keep a portable fallback here.
+    let mut seed = SystemTime::now()
+        .duration_since(UNIX_EPOCH)
+        .map(|d| d.as_nanos() as u64)
+        .unwrap_or(0);
+    for (i, byte) in buf.iter_mut().enumerate() {
+        let mut hasher = DefaultHasher::new();
+        seed.hash(&mut hasher);
+        i.hash(&mut hasher);
+        seed = hasher.finish().wrapping_mul(0x9e37_79b9_7f4a_7c15);
+        *byte = (seed & 0xff) as u8;
+    }
+}
+
+/// Generate an RFC 4122 version-4 UUID string (lowercase hex).
+pub fn random_uuid_v4() -> String {
+    let mut bytes = [0u8; 16];
+    fill_random(&mut bytes);
+    bytes[6] = (bytes[6] & 0x0f) | 0x40;
+    bytes[8] = (bytes[8] & 0x3f) | 0x80;
+    format!(
+        "{:02x}{:02x}{:02x}{:02x}-{:02x}{:02x}-{:02x}{:02x}-{:02x}{:02x}-{:02x}{:02x}{:02x}{:02x}{:02x}{:02x}",
+        bytes[0],
+        bytes[1],
+        bytes[2],
+        bytes[3],
+        bytes[4],
+        bytes[5],
+        bytes[6],
+        bytes[7],
+        bytes[8],
+        bytes[9],
+        bytes[10],
+        bytes[11],
+        bytes[12],
+        bytes[13],
+        bytes[14],
+        bytes[15]
+    )
+}

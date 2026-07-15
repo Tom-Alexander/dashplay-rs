@@ -4,6 +4,7 @@
 mod manifest_loop;
 mod mpd_events;
 mod period_context;
+mod sync_prefetch;
 
 use std::sync::Arc;
 
@@ -19,13 +20,14 @@ use super::PlayerError;
 use super::abr::SharedAbrFactory;
 use super::clock::latency_control::LatencyPolicy;
 use super::http::SharedHttpClient;
+use super::manifest::{self, PeriodLink};
 use super::manifest_lifecycle::ManifestSession;
 use super::playback_control::{PlaybackController, PlaybackState};
 use super::schedule::{AdaptationStreamContext, BufferTarget, run_adaptation_stream};
 use super::segment_blacklist::SegmentBlacklist;
 use super::track_selection::{SelectedAdaptationSet, TrackSelection};
 use super::track_session::TrackSessionState;
-use super::types::PlayerEvent;
+use super::types::{PeriodTransitionKind, PlayerEvent};
 
 use manifest_loop::{
     broadcast_manifest_loaded, manifest_tick, periods_to_play, refresh_manifest,
@@ -35,6 +37,7 @@ use mpd_events::MpdEventDedup;
 use period_context::{
     PeriodContextInputs, TimelineContextInputs, build_period_context, build_timeline_context,
 };
+use sync_prefetch::{SyncPrefetchInputs, build_sync_prefetch_plans};
 
 pub(crate) struct PlaybackLoopState {
     pub client: SharedHttpClient,
@@ -102,18 +105,46 @@ impl PlaybackLoopState {
                     }
                 }
 
-                let periods_to_play = periods_to_play(tick.mpd, tick.is_dynamic, tick.wall_now)?;
+                let buffer_target = BufferTarget::from_mpd(tick.mpd);
+                let periods_to_play = periods_to_play(
+                    tick.mpd,
+                    tick.is_dynamic,
+                    tick.wall_now,
+                    buffer_target.min_buffer_s,
+                )?;
                 let seek_generation_at_start = playback.seek_generation();
                 let mut seek_interrupted = false;
+                let mut held_prefetch: Vec<Vec<PlayerEvent>> =
+                    (0..tracks.len()).map(|_| Vec::new()).collect();
 
-                let buffer_target = BufferTarget::from_mpd(tick.mpd);
-
-                for current_window in periods_to_play {
+                for (window_pos, current_window) in periods_to_play.iter().copied().enumerate() {
                     if playback.is_stopped() {
                         break;
                     }
 
-                    on_period_change(&mut last_period_idx, current_window.idx, &track_sessions);
+                    let link = last_period_idx
+                        .map(|prev| manifest::period_link(tick.mpd, prev, current_window.idx))
+                        .unwrap_or(PeriodLink::Discontinuous);
+                    let transition = period_transition_kind(link);
+                    let entering_new_period = last_period_idx != Some(current_window.idx);
+
+                    if entering_new_period {
+                        emit_period_changed(&tracks, current_window, transition);
+                        on_period_change(
+                            &mut last_period_idx,
+                            current_window.idx,
+                            &track_sessions,
+                            link.allows_soft_transition(),
+                        );
+                        for (track_idx, events) in held_prefetch.iter_mut().enumerate() {
+                            if track_idx >= tracks.len() {
+                                break;
+                            }
+                            for event in events.drain(..) {
+                                let _ = tracks[track_idx].tx.send(event);
+                            }
+                        }
+                    }
 
                     drm.lock()
                         .await
@@ -143,6 +174,25 @@ impl PlaybackLoopState {
                     );
 
                     apply_track_selection_updates(&tracks, &adaptation_sets);
+
+                    let next_window = periods_to_play
+                        .get(window_pos + 1)
+                        .copied()
+                        .or_else(|| peek_next_period_window(tick.mpd, current_window.idx));
+                    let sync_plans = next_window.and_then(|next_win| {
+                        build_sync_prefetch_plans(SyncPrefetchInputs {
+                            mpd: tick.mpd,
+                            current_window,
+                            next_window: next_win,
+                            sync_depth_s: buffer_target.min_buffer_s,
+                            current_sets: &adaptation_sets,
+                            period_ctx: &period_ctx,
+                            wall_now: tick.wall_now,
+                            is_dynamic: tick.is_dynamic,
+                            template_end_numbers: tick.template_end_numbers.as_ref(),
+                            track_sessions: &track_sessions,
+                        })
+                    });
 
                     let mut streams = Vec::new();
                     for (track_idx, selected) in adaptation_sets.into_iter().enumerate() {
@@ -199,6 +249,9 @@ impl PlaybackLoopState {
                         let template_end_numbers = tick.template_end_numbers.clone();
                         let random_access = tick.random_access.clone();
                         let period_idx = current_window.idx;
+                        let sync_prefetch = sync_plans
+                            .as_ref()
+                            .and_then(|plans| plans.get(&track_idx).cloned());
 
                         let period = period.clone();
                         streams.push(async move {
@@ -229,13 +282,19 @@ impl PlaybackLoopState {
                                 operating_constraints,
                                 cmcd: cmcd_for_track,
                                 track_kind,
+                                sync_prefetch,
                             })
                             .await
                         });
                     }
 
                     for result in join_all(streams).await {
-                        result?;
+                        let prefetch = result?;
+                        if let Some((track_idx, events)) = prefetch
+                            && track_idx < held_prefetch.len()
+                        {
+                            held_prefetch[track_idx] = events;
+                        }
                     }
 
                     if playback.seek_generation() != seek_generation_at_start {
@@ -300,16 +359,54 @@ fn send_playback_ended(tracks: &[super::types::PlayerTrack]) {
     }
 }
 
+fn emit_period_changed(
+    tracks: &[super::types::PlayerTrack],
+    window: manifest::PeriodWindow,
+    transition: PeriodTransitionKind,
+) {
+    for t in tracks {
+        let _ = t.tx.send(PlayerEvent::PeriodChanged {
+            period_index: window.idx,
+            start: window.start,
+            end: window.end,
+            transition,
+        });
+    }
+}
+
+fn period_transition_kind(link: PeriodLink) -> PeriodTransitionKind {
+    match link {
+        PeriodLink::Continuous => PeriodTransitionKind::Continuous,
+        PeriodLink::Connected => PeriodTransitionKind::Connected,
+        PeriodLink::Discontinuous => PeriodTransitionKind::Discontinuous,
+    }
+}
+
+fn peek_next_period_window(
+    mpd: &dash_mpd::MPD,
+    current_idx: usize,
+) -> Option<manifest::PeriodWindow> {
+    let windows = manifest::period_windows(mpd).ok()?;
+    windows.into_iter().find(|w| w.idx == current_idx + 1)
+}
+
 fn on_period_change(
     last_period_idx: &mut Option<usize>,
     current_idx: usize,
     track_sessions: &Arc<Vec<Arc<TrackSessionState>>>,
+    soft: bool,
 ) {
     if *last_period_idx == Some(current_idx) {
         return;
     }
     *last_period_idx = Some(current_idx);
-    reset_track_sessions(track_sessions);
+    if soft {
+        for session in track_sessions.iter() {
+            session.soft_reset();
+        }
+    } else {
+        reset_track_sessions(track_sessions);
+    }
 }
 
 fn reset_track_sessions(track_sessions: &Arc<Vec<Arc<TrackSessionState>>>) {

@@ -96,7 +96,7 @@ pub(super) fn emit_segment(
     }
 }
 
-pub(super) fn segment_presentation_time(
+pub(crate) fn segment_presentation_time(
     period_start: Duration,
     seg: &manifest::TimelineSegment,
 ) -> Duration {

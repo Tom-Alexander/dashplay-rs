@@ -100,6 +100,10 @@ pub struct AssetIdentifier {
 pub struct PeriodMetadata {
     /// `Period@id`.
     pub id: Option<String>,
+    /// Presentation start of this Period (`PeriodStart`).
+    pub start: Duration,
+    /// Presentation end when known (`Period@duration`, next `@start`, or MPD duration).
+    pub end: Option<Duration>,
     /// `AssetIdentifier`, when present.
     pub asset_identifier: Option<AssetIdentifier>,
     /// Direct `Period/Label` children.
@@ -135,15 +139,21 @@ impl ManifestMetadata {
             .map(map_program_information)
             .collect();
         let metrics = mpd.Metrics.iter().map(map_reporting_metrics).collect();
+        let windows = super::period_windows(mpd).unwrap_or_default();
         let periods = mpd
             .periods
             .iter()
             .enumerate()
-            .map(|(idx, period)| PeriodMetadata {
-                id: period.id.clone(),
-                asset_identifier: period.asset_identifier.as_ref().map(map_asset_identifier),
-                labels: period_labels.get(idx).cloned().unwrap_or_default(),
-                group_labels: period.group_label.iter().map(map_label).collect(),
+            .map(|(idx, period)| {
+                let window = windows.get(idx);
+                PeriodMetadata {
+                    id: period.id.clone(),
+                    start: window.map(|w| w.start).unwrap_or(Duration::ZERO),
+                    end: window.and_then(|w| w.end),
+                    asset_identifier: period.asset_identifier.as_ref().map(map_asset_identifier),
+                    labels: period_labels.get(idx).cloned().unwrap_or_default(),
+                    group_labels: period.group_label.iter().map(map_label).collect(),
+                }
             })
             .collect();
 
@@ -321,6 +331,8 @@ mod tests {
         assert_eq!(meta.periods.len(), 1);
         let period = &meta.periods[0];
         assert_eq!(period.id.as_deref(), Some("p0"));
+        assert_eq!(period.start, Duration::ZERO);
+        assert_eq!(period.end, Some(Duration::from_secs(30)));
         let asset = period.asset_identifier.as_ref().expect("asset");
         assert_eq!(asset.scheme_id_uri, "urn:org:example:asset-id:2013");
         assert_eq!(asset.value.as_deref(), Some("asset-1"));

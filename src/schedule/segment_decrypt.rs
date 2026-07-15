@@ -12,7 +12,7 @@ use crate::drm::DrmSessionCoordinator;
 use crate::drm::License;
 
 #[cfg(feature = "drm")]
-pub(super) async fn decrypt_media_fragment(
+pub(crate) async fn decrypt_media_fragment(
     drm: &Arc<AsyncMutex<DrmSessionCoordinator>>,
     period_adaptation_index: usize,
     rep_id: &str,
@@ -60,7 +60,7 @@ pub(super) async fn decrypt_media_fragment(
 }
 
 #[cfg(not(feature = "drm"))]
-pub(super) async fn decrypt_media_fragment(
+pub(crate) async fn decrypt_media_fragment(
     _drm: &Arc<AsyncMutex<DrmSessionCoordinator>>,
     _period_adaptation_index: usize,
     _rep_id: &str,

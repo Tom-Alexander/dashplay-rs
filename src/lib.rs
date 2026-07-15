@@ -28,6 +28,7 @@
 //!             | PlayerEvent::PlayheadUpdated { .. }
 //!             | PlayerEvent::PlaybackRateSuggested { .. }
 //!             | PlayerEvent::TrackChanged { .. }
+//!             | PlayerEvent::PeriodChanged { .. }
 //!             | PlayerEvent::MediaEvent(_)
 //!             | PlayerEvent::CmsdUpdated { .. } => {}
 //!             PlayerEvent::End | PlayerEvent::PlaybackEnded | PlayerEvent::Error(_) => break,
@@ -110,8 +111,8 @@ pub use track_selection::{
     SubTrackInfo, TrackDescriptor, TrackInfo, TrackKind, TrackPreference, TrackSelection,
 };
 pub use types::{
-    BufferFeedback, BufferFeedbackError, PartialSegmentChunk, PlayerEvent, PlayerEventError,
-    PlayerOutputs, PlayerTrack,
+    BufferFeedback, BufferFeedbackError, PartialSegmentChunk, PeriodTransitionKind, PlayerEvent,
+    PlayerEventError, PlayerOutputs, PlayerTrack,
 };
 
 /// Top-level error for the playback pipeline.

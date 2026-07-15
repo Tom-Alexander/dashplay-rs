@@ -16,10 +16,21 @@ pub(crate) struct TrackSessionState {
 }
 
 impl TrackSessionState {
+    /// Hard period boundary: clear init, delivery bookkeeping, and PRT anchor.
     pub(crate) fn reset(&self) {
         self.have_init.store(false, Ordering::Release);
         if let Ok(mut delivered) = self.delivered.lock() {
             delivered.reset();
+        }
+        if let Ok(mut anchor) = self.inband_prt_anchor.lock() {
+            *anchor = None;
+        }
+    }
+
+    /// Soft period transition (continuity / connectivity): reuse Init and absolute delivery frontier.
+    pub(crate) fn soft_reset(&self) {
+        if let Ok(mut delivered) = self.delivered.lock() {
+            delivered.soft_reset();
         }
         if let Ok(mut anchor) = self.inband_prt_anchor.lock() {
             *anchor = None;
@@ -48,6 +59,10 @@ impl TrackSessionState {
     pub(crate) fn inband_anchor(&self) -> Option<ProducerReferenceAnchor> {
         self.inband_prt_anchor.lock().ok().and_then(|guard| *guard)
     }
+
+    pub(crate) fn last_abs_end_s(&self) -> f64 {
+        self.lock_delivered().last_abs_end_s()
+    }
 }
 
 #[cfg(test)]
@@ -60,17 +75,20 @@ mod tests {
         assert!(session.try_take_init());
         {
             let mut delivered = session.lock_delivered();
-            delivered.mark_delivered(&crate::manifest::TimelineSegment {
-                number: 1,
-                time: 0,
-                duration: 0,
-                duration_s: 4.0,
-                presentation_time_s: 0.0,
-                sub_number: None,
-                resync_start_chunk: None,
-                media_url: None,
-                media_range: None,
-            });
+            delivered.mark_delivered(
+                &crate::manifest::TimelineSegment {
+                    number: 1,
+                    time: 0,
+                    duration: 0,
+                    duration_s: 4.0,
+                    presentation_time_s: 0.0,
+                    sub_number: None,
+                    resync_start_chunk: None,
+                    media_url: None,
+                    media_range: None,
+                },
+                0.0,
+            );
         }
         if let Ok(mut anchor) = session.inband_prt_anchor().lock() {
             *anchor = Some(ProducerReferenceAnchor {
@@ -83,21 +101,48 @@ mod tests {
         session.reset();
 
         assert!(session.try_take_init());
-        assert!(
-            !session
-                .lock_delivered()
-                .is_delivered(&crate::manifest::TimelineSegment {
-                    number: 1,
+        assert!(!session.lock_delivered().is_delivered(
+            &crate::manifest::TimelineSegment {
+                number: 1,
+                time: 0,
+                duration: 0,
+                duration_s: 4.0,
+                presentation_time_s: 0.0,
+                sub_number: None,
+                resync_start_chunk: None,
+                media_url: None,
+                media_range: None,
+            },
+            0.0,
+        ));
+        assert!(session.inband_anchor().is_none());
+    }
+
+    #[test]
+    fn soft_reset_keeps_init_and_absolute_frontier() {
+        let session = TrackSessionState::default();
+        assert!(session.try_take_init());
+        {
+            let mut delivered = session.lock_delivered();
+            delivered.mark_delivered(
+                &crate::manifest::TimelineSegment {
+                    number: 2,
                     time: 0,
                     duration: 0,
                     duration_s: 4.0,
-                    presentation_time_s: 0.0,
+                    presentation_time_s: 4.0,
                     sub_number: None,
                     resync_start_chunk: None,
                     media_url: None,
                     media_range: None,
-                })
-        );
-        assert!(session.inband_anchor().is_none());
+                },
+                0.0,
+            );
+        }
+
+        session.soft_reset();
+
+        assert!(!session.try_take_init(), "init should remain taken");
+        assert!((session.last_abs_end_s() - 8.0).abs() < 1e-9);
     }
 }

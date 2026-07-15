@@ -20,6 +20,17 @@ struct TrackMeta {
     info: TrackInfo,
 }
 
+/// How the player treats a Period boundary (ISO/IEC 23009-1 §5.3.2.4).
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+pub enum PeriodTransitionKind {
+    /// Sample timelines are continuous; Initialization Segment may be reused.
+    Continuous,
+    /// Initialization Segment is equivalent; presentation times may jump (PTO-adjusted).
+    Connected,
+    /// Hard boundary: Initialization is re-emitted and delivery state is reset.
+    Discontinuous,
+}
+
 /// Playback failure delivered on a track event stream.
 ///
 /// The background task [`JoinHandle`] still returns the full [`PlayerError`] for
@@ -142,6 +153,21 @@ pub enum PlayerEvent {
     TrackChanged {
         /// Updated language, roles, codecs, and other track metadata.
         info: TrackInfo,
+    },
+    /// Playback entered a new Period (including the first Period of a presentation).
+    ///
+    /// `start` / `end` are presentation-timeline clip windows for this Period. Consumers
+    /// that map into MSE can use them as append-window bounds. Sample-level clipping is
+    /// not performed by the library.
+    PeriodChanged {
+        /// Zero-based Period index in the MPD.
+        period_index: usize,
+        /// `PeriodStart` on the Media Presentation timeline.
+        start: Duration,
+        /// Period end when known (`Period@duration`, next `@start`, or MPD duration).
+        end: Option<Duration>,
+        /// Continuity / connectivity relationship to the previous Period.
+        transition: PeriodTransitionKind,
     },
     /// The playback pipeline failed; see the background task join result for the full error.
     Error(PlayerEventError),

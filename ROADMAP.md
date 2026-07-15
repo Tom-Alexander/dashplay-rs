@@ -22,7 +22,7 @@ Status legend: `[ ]` not started · `[~]` partial · `[x]` done · `[—]` out o
 | MPD parse (`dash-mpd`) | `[x]` | Parsed; SegmentTemplate inheritance flattened at Period/AS/Rep |
 | Timeline / live edge | `[x]` | SegmentTemplate + SegmentTimeline, UTCTiming, TSBD filtering |
 | Segment fetch + BaseURL failover | `[x]` | Blacklisting on failure |
-| Multi-period (live + VOD) | `[x]` | Init re-emission on period transition |
+| Multi-period (live + VOD) | `[x]` | Continuity/connectivity, sync buffer, PeriodChanged |
 | ABR (BOLA / LoL+) | `[x]` | Default BOLA; optional [`LolPlusAbrFactory`]; consumer buffer + live latency/rate |
 | DRM | `[~]` | Widevine only; requires external CDM device |
 | Track selection | `[~]` | MIME type + language/role/codec/accessibility; text, trick-play, and image tracks opt-in |
@@ -253,7 +253,9 @@ without changing playback behaviour.
 - [~] **Live DVR seek.** Expand seek bounds and window handling beyond resolved timeline.
 - [x] **Dynamic MPD static-duration semantics.** `@type="dynamic"` with static presentation
   duration behaviour.
-- [ ] **Multi-period overlap / sync buffer.** Handling beyond init re-emission.
+- [x] **Multi-period overlap / sync buffer.** Continuity/connectivity soft transitions
+  (skip Init), boundary segment dedup, `PeriodChanged` clip windows, and sync-buffer
+  prefetch at `MPD@minBufferTime`.
 - [x] **LL-DASH target latency control.** Adjust consumption rate to chase
   `ServiceDescription/Latency@target`.
 

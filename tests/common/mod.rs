@@ -15,8 +15,10 @@ use axum::{
 use std::collections::{HashMap, HashSet};
 use std::path::{Path as FsPath, PathBuf};
 use std::sync::Arc;
+use std::sync::Mutex;
 use std::sync::atomic::{AtomicUsize, Ordering};
 use std::time::Duration as StdDuration;
+use std::time::Instant;
 use tokio::sync::oneshot;
 use tokio::task::JoinHandle;
 use url::Url;
@@ -113,6 +115,123 @@ impl Drop for FixtureServer {
         }
         self.handle.abort();
     }
+}
+
+#[derive(Clone)]
+struct SyncBufferState {
+    files: Arc<HashMap<String, Vec<u8>>>,
+    /// Monotonic times when specific media paths are requested.
+    p1_seg2_request: Arc<Mutex<Option<Instant>>>,
+    p2_seg1_request: Arc<Mutex<Option<Instant>>>,
+    request_log: Arc<Mutex<Vec<String>>>,
+}
+
+/// Fixture server that records when period-1 last seg and period-2 first seg are requested.
+pub struct SyncBufferServer {
+    pub manifest_url: Url,
+    p1_seg2_request: Arc<Mutex<Option<Instant>>>,
+    p2_seg1_request: Arc<Mutex<Option<Instant>>>,
+    request_log: Arc<Mutex<Vec<String>>>,
+    shutdown: Option<oneshot::Sender<()>>,
+    handle: JoinHandle<()>,
+}
+
+impl SyncBufferServer {
+    pub async fn spawn(fixture: &str) -> Self {
+        let root = fixture_dir(fixture);
+        let files = Arc::new(load_fixture_files(&root));
+        let p1_seg2_request = Arc::new(Mutex::new(None));
+        let p2_seg1_request = Arc::new(Mutex::new(None));
+        let request_log = Arc::new(Mutex::new(Vec::new()));
+        let state = SyncBufferState {
+            files,
+            p1_seg2_request: p1_seg2_request.clone(),
+            p2_seg1_request: p2_seg1_request.clone(),
+            request_log: request_log.clone(),
+        };
+
+        let app = Router::new()
+            .route("/{*path}", get(serve_sync_buffer_path))
+            .with_state(state);
+
+        let listener = tokio::net::TcpListener::bind("127.0.0.1:0")
+            .await
+            .expect("bind test server");
+        let addr = listener.local_addr().expect("local addr");
+        let (shutdown_tx, shutdown_rx) = oneshot::channel();
+        let handle = tokio::spawn(async move {
+            axum::serve(listener, app)
+                .with_graceful_shutdown(async move {
+                    let _ = shutdown_rx.await;
+                })
+                .await
+                .expect("serve");
+        });
+
+        Self {
+            manifest_url: Url::parse(&format!("http://{addr}/manifest.mpd")).expect("manifest url"),
+            p1_seg2_request,
+            p2_seg1_request,
+            request_log,
+            shutdown: Some(shutdown_tx),
+            handle,
+        }
+    }
+
+    /// True when the next-period segment HTTP request started before period-1's last segment request.
+    pub fn p2_fetch_started_before_p1_seg2_emit(&self) -> bool {
+        let p1 = self.p1_seg2_request.lock().ok().and_then(|g| *g);
+        let p2 = self.p2_seg1_request.lock().ok().and_then(|g| *g);
+        match (p1, p2) {
+            (Some(p1_t), Some(p2_t)) => p2_t < p1_t,
+            _ => false,
+        }
+    }
+
+    pub fn request_debug(&self) -> String {
+        let p1 = self.p1_seg2_request.lock().ok().and_then(|g| *g);
+        let p2 = self.p2_seg1_request.lock().ok().and_then(|g| *g);
+        let log = self
+            .request_log
+            .lock()
+            .map(|g| g.clone())
+            .unwrap_or_default();
+        format!("p1_seg2={p1:?} p2_seg1={p2:?} log={log:?}")
+    }
+}
+
+impl Drop for SyncBufferServer {
+    fn drop(&mut self) {
+        if let Some(tx) = self.shutdown.take() {
+            let _ = tx.send(());
+        }
+        self.handle.abort();
+    }
+}
+
+async fn serve_sync_buffer_path(
+    State(state): State<SyncBufferState>,
+    Path(path): Path<String>,
+    uri: Uri,
+    headers: axum::http::HeaderMap,
+) -> Response {
+    let url_path = uri.path().trim_end_matches('/').to_string();
+    if let Ok(mut log) = state.request_log.lock() {
+        log.push(url_path.clone());
+    }
+    if url_path.ends_with("p1-seg-2.m4s") {
+        // Slow last period-1 segment so prefetch of period-2 can start first.
+        if let Ok(mut guard) = state.p1_seg2_request.lock() {
+            *guard = Some(Instant::now());
+        }
+        tokio::time::sleep(StdDuration::from_millis(250)).await;
+    }
+    if url_path.ends_with("p2-seg-1.m4s")
+        && let Ok(mut guard) = state.p2_seg1_request.lock()
+    {
+        *guard = Some(Instant::now());
+    }
+    serve_static_path(&state.files, &path, &uri, &headers)
 }
 
 #[derive(Clone)]

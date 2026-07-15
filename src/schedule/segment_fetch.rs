@@ -29,21 +29,24 @@ use crate::types::PlayerEvent;
 
 use super::segment_plan::SegmentPlan;
 
-pub(super) struct RepFetchEnv<'a> {
-    pub(super) client: &'a SharedHttpClient,
-    pub(super) segment_base_ctx: &'a manifest::SegmentBaseContext,
-    pub(super) period: &'a Period,
+pub(crate) struct RepFetchEnv<'a> {
+    pub(crate) client: &'a SharedHttpClient,
+    pub(crate) segment_base_ctx: &'a manifest::SegmentBaseContext,
+    pub(crate) period: &'a Period,
     /// Primary and switch/fallback peers keyed by period adaptation index.
-    pub(super) adaptation_sets: &'a HashMap<usize, AdaptationSet>,
-    pub(super) primary_period_adaptation_index: usize,
+    pub(crate) adaptation_sets: &'a HashMap<usize, AdaptationSet>,
+    pub(crate) primary_period_adaptation_index: usize,
     /// `@bitstreamSwitching` (or equivalent) per period adaptation index.
-    pub(super) bitstream_switching: &'a HashMap<usize, bool>,
-    pub(super) blacklist: &'a SegmentBlacklist,
-    pub(super) drm: &'a Arc<AsyncMutex<DrmSessionCoordinator>>,
-    pub(super) tx: &'a broadcast::Sender<PlayerEvent>,
-    pub(super) metrics: &'a TrackMetrics,
-    pub(super) track_kind: TrackKind,
-    pub(super) cmcd: Option<&'a CmcdSession>,
+    pub(crate) bitstream_switching: &'a HashMap<usize, bool>,
+    pub(crate) blacklist: &'a SegmentBlacklist,
+    pub(crate) drm: &'a Arc<AsyncMutex<DrmSessionCoordinator>>,
+    pub(crate) tx: &'a broadcast::Sender<PlayerEvent>,
+    pub(crate) metrics: &'a TrackMetrics,
+    pub(crate) track_kind: TrackKind,
+    pub(crate) cmcd: Option<&'a CmcdSession>,
+    /// When false, Initialization Segment bytes are still fetched for decrypt but
+    /// [`PlayerEvent::Init`] is not emitted (period continuity / connectivity).
+    pub(crate) emit_init: bool,
 }
 
 impl RepFetchEnv<'_> {
@@ -57,7 +60,7 @@ impl RepFetchEnv<'_> {
             .expect("primary adaptation set present")
     }
 
-    pub(super) fn resolve_quality(
+    pub(crate) fn resolve_quality(
         &self,
         abr: &dyn AbrController,
         quality_index: usize,
@@ -110,7 +113,7 @@ impl RepFetchEnv<'_> {
     }
 }
 
-pub(super) async fn fetch_init_with_rep_fallback(
+pub(crate) async fn fetch_init_with_rep_fallback(
     env: &RepFetchEnv<'_>,
     abr: &dyn AbrController,
     start_quality_index: usize,
@@ -140,7 +143,7 @@ pub(super) async fn fetch_init_with_rep_fallback(
     Err(last_err)
 }
 
-pub(super) async fn fetch_media_with_rep_fallback(
+pub(crate) async fn fetch_media_with_rep_fallback(
     env: &RepFetchEnv<'_>,
     abr: &dyn AbrController,
     plan: &SegmentPlan,
@@ -413,7 +416,9 @@ async fn ensure_init_for_rep(
     };
     #[cfg(not(feature = "drm"))]
     let out = init_bytes.clone();
-    let _ = env.tx.send(PlayerEvent::Init(out));
+    if env.emit_init {
+        let _ = env.tx.send(PlayerEvent::Init(out));
+    }
     Ok(init_bytes)
 }
 

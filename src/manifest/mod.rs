@@ -11,6 +11,7 @@ mod fetch;
 mod inheritance;
 mod metadata;
 mod period;
+mod period_connectivity;
 mod sidx;
 mod switch_access;
 mod template;
@@ -49,6 +50,7 @@ pub(crate) use fetch::{
 pub(crate) use period::{
     current_period_window_at, is_dynamic_mpd, mpd, period_windows, since_availability_start_at,
 };
+pub(crate) use period_connectivity::{PeriodLink, adaptation_set_period_link, period_link};
 pub(crate) use sidx::{parse_sidx_index_for_segment_base, parse_sidx_index_from_template};
 pub(crate) use switch_access::{
     RandomAccessSupplements, SwitchingHint, bitstream_switch_opportunity, is_switch_opportunity,

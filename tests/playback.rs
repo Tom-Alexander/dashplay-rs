@@ -4,6 +4,7 @@ use common::{
     FixtureServer, has_end, init_payload, init_payloads, play_all_tracks, play_single_track,
     segment_payloads, trim_payload,
 };
+use dashplayrs::{PeriodTransitionKind, PlayerEvent};
 
 const TIMEOUT: std::time::Duration = std::time::Duration::from_secs(10);
 
@@ -454,6 +455,122 @@ async fn vod_multi_period_emits_inits_and_segments_in_order() {
         ]
     );
     assert!(has_end(&events));
+
+    let period_events: Vec<_> = events
+        .iter()
+        .filter_map(|ev| match ev {
+            PlayerEvent::PeriodChanged {
+                period_index,
+                transition,
+                ..
+            } => Some((*period_index, *transition)),
+            _ => None,
+        })
+        .collect();
+    assert_eq!(
+        period_events,
+        vec![
+            (0, PeriodTransitionKind::Discontinuous),
+            (1, PeriodTransitionKind::Discontinuous),
+        ]
+    );
+}
+
+#[tokio::test]
+async fn vod_period_continuity_skips_init_reemission() {
+    let server = FixtureServer::spawn("vod_period_continuity").await;
+    let events = play_single_track(&server.manifest_url, TIMEOUT)
+        .await
+        .expect("playback");
+
+    let inits = init_payloads(&events);
+    assert_eq!(
+        inits.len(),
+        1,
+        "continuous periods should reuse Init, got {inits:?}"
+    );
+    assert_eq!(inits[0], b"dashplay-shared-init".to_vec());
+    assert_eq!(
+        segment_payloads(&events),
+        vec![
+            b"dashplay-p1-seg-1".to_vec(),
+            b"dashplay-p1-seg-2".to_vec(),
+            b"dashplay-p2-seg-1".to_vec(),
+            b"dashplay-p2-seg-2".to_vec(),
+        ]
+    );
+    assert!(has_end(&events));
+
+    let transitions: Vec<_> = events
+        .iter()
+        .filter_map(|ev| match ev {
+            PlayerEvent::PeriodChanged { transition, .. } => Some(*transition),
+            _ => None,
+        })
+        .collect();
+    assert_eq!(
+        transitions,
+        vec![
+            PeriodTransitionKind::Discontinuous,
+            PeriodTransitionKind::Continuous,
+        ]
+    );
+}
+
+#[tokio::test]
+async fn vod_period_connectivity_dedups_boundary_segment() {
+    let server = FixtureServer::spawn("vod_period_connectivity").await;
+    let events = play_single_track(&server.manifest_url, TIMEOUT)
+        .await
+        .expect("playback");
+
+    let inits = init_payloads(&events);
+    assert_eq!(
+        inits.len(),
+        1,
+        "connected periods should reuse Init, got {inits:?}"
+    );
+    assert_eq!(
+        segment_payloads(&events),
+        vec![
+            b"dashplay-p1-seg-1".to_vec(),
+            b"dashplay-boundary".to_vec(),
+            b"dashplay-p2-seg-2".to_vec(),
+        ],
+        "boundary media should be emitted once"
+    );
+    assert!(has_end(&events));
+
+    let transitions: Vec<_> = events
+        .iter()
+        .filter_map(|ev| match ev {
+            PlayerEvent::PeriodChanged { transition, .. } => Some(*transition),
+            _ => None,
+        })
+        .collect();
+    assert_eq!(
+        transitions,
+        vec![
+            PeriodTransitionKind::Discontinuous,
+            PeriodTransitionKind::Connected,
+        ]
+    );
+}
+
+#[tokio::test]
+async fn vod_period_sync_buffer_prefetches_next_period_media() {
+    let server = common::SyncBufferServer::spawn("vod_period_sync_buffer").await;
+    let events = play_single_track(&server.manifest_url, TIMEOUT)
+        .await
+        .expect("playback");
+
+    assert_eq!(init_payloads(&events).len(), 1);
+    assert!(has_end(&events));
+    assert!(
+        server.p2_fetch_started_before_p1_seg2_emit(),
+        "next-period media fetch should begin before the last period-1 segment is emitted ({})",
+        server.request_debug()
+    );
 }
 
 #[tokio::test]

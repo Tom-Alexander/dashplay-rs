@@ -35,6 +35,7 @@ use super::segment_fetch::{
     fetch_media_with_rep_fallback,
 };
 use super::segment_plan::{SegmentPlanContext, plan_init, plan_segment};
+use super::sync_prefetch::{SyncPrefetchPlan, prefetch_next_period_first_segment};
 
 fn align_start_index_with_resync(
     segments: &[manifest::TimelineSegment],
@@ -109,10 +110,17 @@ pub(crate) struct AdaptationStreamContext {
     pub cmcd: Option<CmcdSession>,
     /// Kind of the selected track (for CMCD `ot`).
     pub track_kind: crate::track_selection::TrackKind,
+    /// Optional sync-buffer prefetch of the next Continuous/Connected Period.
+    pub sync_prefetch: Option<SyncPrefetchPlan>,
 }
 
 /// Run the fragment loop for one adaptation set until segments are exhausted for this manifest snapshot.
-pub(crate) async fn run_adaptation_stream(ctx: AdaptationStreamContext) -> Result<(), PlayerError> {
+///
+/// When sync-buffer prefetch runs, returns `(track_idx, held events)` to emit after the next
+/// [`PlayerEvent::PeriodChanged`].
+pub(crate) async fn run_adaptation_stream(
+    ctx: AdaptationStreamContext,
+) -> Result<Option<(usize, Vec<PlayerEvent>)>, PlayerError> {
     let AdaptationStreamContext {
         client,
         segment_base_ctx,
@@ -140,6 +148,7 @@ pub(crate) async fn run_adaptation_stream(ctx: AdaptationStreamContext) -> Resul
         operating_constraints,
         cmcd,
         track_kind,
+        sync_prefetch,
     } = ctx;
 
     let seek_generation_at_start = playback.seek_generation();
@@ -270,7 +279,7 @@ pub(crate) async fn run_adaptation_stream(ctx: AdaptationStreamContext) -> Resul
             } else {
                 start_idx
             };
-            let start_idx = delivered_tracker.advance_start_index(&segments_all, start_idx);
+            let start_idx = delivered_tracker.advance_start_index(&segments_all, start_idx, p0);
             let mut slice = segments_all[start_idx..].to_vec();
             if let Some(chunk) = resync_start_chunk {
                 if let Some(first) = slice.first_mut() {
@@ -291,7 +300,11 @@ pub(crate) async fn run_adaptation_stream(ctx: AdaptationStreamContext) -> Resul
             } else {
                 start_idx
             };
-            let start_idx = delivered_tracker.advance_start_index(&segments_all, start_idx);
+            let start_idx = delivered_tracker.advance_start_index(
+                &segments_all,
+                start_idx,
+                period_start.as_secs_f64(),
+            );
             (segments_all[start_idx..].to_vec(), start_idx)
         }
     };
@@ -304,7 +317,7 @@ pub(crate) async fn run_adaptation_stream(ctx: AdaptationStreamContext) -> Resul
             quality_ladder: Some(quality_ladder.as_slice()),
         },
     ) else {
-        return Ok(());
+        return Ok(None);
     };
 
     feed_abr_live_inputs(abr.as_mut(), &playback);
@@ -328,6 +341,8 @@ pub(crate) async fn run_adaptation_stream(ctx: AdaptationStreamContext) -> Resul
         metrics: &metrics,
         track_kind,
         cmcd: cmcd.as_ref(),
+        // Soft period transitions keep `have_init`; still fetch init bytes for decrypt without re-emitting.
+        emit_init: init_taken,
     };
     if init_taken {
         let init_plan = plan_init(abr.as_mut(), latest_buffer_s(&buffer_rx));
@@ -356,18 +371,36 @@ pub(crate) async fn run_adaptation_stream(ctx: AdaptationStreamContext) -> Resul
     let mut last_quality_index = metrics.last_quality_index();
     let mut playback_started_emitted = false;
     let mut media_segments_delivered = 0usize;
+    let mut held: Option<Vec<PlayerEvent>> = None;
 
     for (local_idx, seg) in segments.into_iter().enumerate() {
         playback.wait_while_paused().await;
         if playback.is_stopped() || playback.seek_generation() != seek_generation_at_start {
-            return Ok(());
+            return Ok(None);
         }
 
         {
             let delivered_tracker = session.lock_delivered();
-            if delivered_tracker.is_delivered(&seg) {
+            if delivered_tracker.is_delivered(&seg, period_start.as_secs_f64()) {
                 continue;
             }
+        }
+
+        if held.is_none()
+            && let Some(plan) = sync_prefetch.as_ref()
+            && session.last_abs_end_s() + 1e-9 >= plan.trigger_abs_s
+        {
+            // Start next-period HTTP before fetching remaining current segments.
+            held = prefetch_next_period_first_segment(
+                plan,
+                &client,
+                &session,
+                &blacklist,
+                &drm,
+                track_kind,
+                cmcd.as_ref(),
+            )
+            .await?;
         }
 
         wait_for_fetch_capacity(
@@ -379,7 +412,7 @@ pub(crate) async fn run_adaptation_stream(ctx: AdaptationStreamContext) -> Resul
         )
         .await;
         if playback.is_stopped() || playback.seek_generation() != seek_generation_at_start {
-            return Ok(());
+            return Ok(None);
         }
 
         feed_abr_live_inputs(abr.as_mut(), &playback);
@@ -446,7 +479,7 @@ pub(crate) async fn run_adaptation_stream(ctx: AdaptationStreamContext) -> Resul
                     continue;
                 }
                 if playback.is_stopped() || playback.seek_generation() != seek_generation_at_start {
-                    return Ok(());
+                    return Ok(None);
                 }
                 playback.wait_while_paused().await;
 
@@ -495,7 +528,7 @@ pub(crate) async fn run_adaptation_stream(ctx: AdaptationStreamContext) -> Resul
             }
 
             let mut delivered_tracker = session.lock_delivered();
-            delivered_tracker.mark_delivered(&seg_for_fetch);
+            delivered_tracker.mark_delivered(&seg_for_fetch, period_start.as_secs_f64());
             media_segments_delivered += 1;
             continue;
         }
@@ -552,7 +585,7 @@ pub(crate) async fn run_adaptation_stream(ctx: AdaptationStreamContext) -> Resul
         .await?;
 
         if playback.is_stopped() || playback.seek_generation() != seek_generation_at_start {
-            return Ok(());
+            return Ok(None);
         }
         if playback.is_paused() {
             continue;
@@ -576,9 +609,9 @@ pub(crate) async fn run_adaptation_stream(ctx: AdaptationStreamContext) -> Resul
         );
 
         let mut delivered_tracker = session.lock_delivered();
-        delivered_tracker.mark_delivered(&seg_for_fetch);
+        delivered_tracker.mark_delivered(&seg_for_fetch, period_start.as_secs_f64());
         media_segments_delivered += 1;
     }
 
-    Ok(())
+    Ok(held.map(|events| (track_idx, events)))
 }

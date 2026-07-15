@@ -66,13 +66,30 @@ pub(crate) fn periods_to_play(
     mpd: &MPD,
     is_dynamic: bool,
     wall_now: DateTime<Utc>,
+    sync_depth_s: f64,
 ) -> Result<Vec<manifest::PeriodWindow>, PlayerError> {
     let period_windows = manifest::period_windows(mpd)?;
-    if is_dynamic {
-        Ok(vec![manifest::current_period_window_at(mpd, wall_now)?])
-    } else {
-        Ok(period_windows)
+    if !is_dynamic {
+        return Ok(period_windows);
     }
+
+    let current = manifest::current_period_window_at(mpd, wall_now)?;
+    let mut out = vec![current];
+
+    // Include the upcoming Period when wall clock is within the sync-buffer depth of its start
+    // and it is Continuous/Connected with the current Period.
+    if let Some(since_ast) = manifest::since_availability_start_at(mpd, wall_now)? {
+        let since_s = since_ast.as_secs_f64();
+        if let Some(next) = period_windows.iter().find(|w| w.idx == current.idx + 1) {
+            let link = manifest::period_link(mpd, current.idx, next.idx);
+            let near_next = since_s + 1e-9 >= next.start.as_secs_f64() - sync_depth_s.max(0.0);
+            if link.allows_soft_transition() && near_next {
+                out.push(*next);
+            }
+        }
+    }
+
+    Ok(out)
 }
 
 /// Whether a dynamic presentation with known `@mediaPresentationDuration` has finished

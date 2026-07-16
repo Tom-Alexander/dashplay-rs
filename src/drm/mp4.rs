@@ -1,5 +1,6 @@
 //! Extract Widevine PSSH and default KIDs from fragmented MP4 init/media bytes.
 
+use super::cenc::CommonEncryptionScheme;
 use pssh_box::{PsshBox, ToBytes, WIDEVINE_SYSTEM_ID, from_bytes as pssh_from_bytes};
 use std::collections::HashSet;
 use thiserror::Error;
@@ -11,6 +12,8 @@ pub struct InBandDrmInfo {
     pub default_kids: Vec<[u8; 16]>,
     /// Widevine PSSH boxes carried in `emsg@message_data` (key-rotation events).
     pub emsg_widevine_pssh: Vec<PsshBox>,
+    /// Common Encryption schemes from ISOBMFF `schm.scheme_type`.
+    pub protection_schemes: Vec<CommonEncryptionScheme>,
 }
 
 impl InBandDrmInfo {
@@ -62,6 +65,10 @@ fn dedupe_in_band(info: &mut InBandDrmInfo) {
 
     let mut seen_kid: HashSet<[u8; 16]> = HashSet::new();
     info.default_kids.retain(|kid| seen_kid.insert(*kid));
+
+    let mut seen_scheme: HashSet<CommonEncryptionScheme> = HashSet::new();
+    info.protection_schemes
+        .retain(|scheme| seen_scheme.insert(*scheme));
 }
 
 fn scan_fragment(data: &[u8], out: &mut InBandDrmInfo) -> Result<(), Mp4DrmError> {
@@ -71,6 +78,15 @@ fn scan_fragment(data: &[u8], out: &mut InBandDrmInfo) -> Result<(), Mp4DrmError
         if full_box.len() > header_len {
             if let Some(kid) = parse_tenc_kid(&full_box[header_len..]) {
                 out.default_kids.push(kid);
+            }
+        }
+        Ok(())
+    })?;
+    scan_typed_boxes(data, b"schm", |full_box| {
+        let header_len = box_header_len(full_box)?;
+        if full_box.len() > header_len {
+            if let Some(scheme) = parse_schm_scheme(&full_box[header_len..]) {
+                out.protection_schemes.push(scheme);
             }
         }
         Ok(())
@@ -150,13 +166,31 @@ fn collect_pssh_box(box_bytes: &[u8], out: &mut InBandDrmInfo) -> Result<(), Mp4
 }
 
 fn parse_tenc_kid(payload: &[u8]) -> Option<[u8; 16]> {
-    // FullBox header (version + flags) precedes the `tenc` payload.
-    if payload.len() < 4 + 16 {
+    // FullBox header (version + flags) precedes the `tenc` body:
+    //   default_CryptByteBlock / reserved (1)
+    //   default_SkipByteBlock / reserved (1)
+    //   default_isProtected (1)
+    //   default_Per_Sample_IV_Size (1)
+    //   default_KID (16)
+    //   [optional constant IV when Per_Sample_IV_Size == 0]
+    // KID is always at a fixed offset; do not take the last 16 bytes (CBCS may
+    // append a constant IV after the KID).
+    if payload.len() < 8 + 16 {
         return None;
     }
     let mut kid = [0u8; 16];
-    kid.copy_from_slice(&payload[payload.len() - 16..]);
+    kid.copy_from_slice(&payload[8..24]);
     Some(kid)
+}
+
+/// Parse `schm` FullBox payload: version/flags (4) + scheme_type (4) + scheme_version (4).
+fn parse_schm_scheme(payload: &[u8]) -> Option<CommonEncryptionScheme> {
+    if payload.len() < 8 {
+        return None;
+    }
+    let mut fourcc = [0u8; 4];
+    fourcc.copy_from_slice(&payload[4..8]);
+    CommonEncryptionScheme::from_fourcc(&fourcc)
 }
 
 fn collect_emsg_pssh(payload: &[u8], out: &mut InBandDrmInfo) -> Result<(), Mp4DrmError> {
@@ -238,6 +272,7 @@ mod tests {
             hex::encode(info.default_kids[0]),
             "eb6769950da145d03ae4082255eb141a"
         );
+        assert_eq!(info.protection_schemes, vec![CommonEncryptionScheme::Cenc]);
     }
 
     #[test]
@@ -265,5 +300,60 @@ mod tests {
 
         let info = extract_in_band_drm(&[], Some(&emsg)).expect("parse emsg");
         assert_eq!(info.all_widevine_pssh().count(), 1);
+    }
+
+    #[test]
+    fn parse_cbcs_init_extracts_schm_scheme() {
+        let init = fixture_bytes("drm_cbcs", "init.mp4");
+        let info = extract_in_band_drm(&init, None).expect("parse init");
+        assert_eq!(info.protection_schemes, vec![CommonEncryptionScheme::Cbcs]);
+    }
+
+    /// Well-known Axinom / DASH-IF test content key used by local cenc/cbcs fixtures.
+    const TEST_KID_HEX: &str = "eb6769950da145d03ae4082255eb141a";
+    const TEST_KEY_HEX: &str = "100b6c20940f779a4589152b57d2dacb";
+
+    fn decrypt_fixture_segment(fixture: &str) {
+        use mp4decrypt::Ap4CencDecryptingProcessor;
+
+        let init = fixture_bytes(fixture, "init.mp4");
+        let segment = fixture_bytes(fixture, "segment-1.m4s");
+        assert!(
+            segment.windows(4).any(|w| w == b"senc"),
+            "{fixture}: encrypted segment should contain senc"
+        );
+
+        let processor = Ap4CencDecryptingProcessor::new()
+            .key(TEST_KID_HEX, TEST_KEY_HEX)
+            .expect("key")
+            .build()
+            .expect("processor");
+        let decrypted = processor
+            .decrypt(&segment, Some(&init))
+            .unwrap_or_else(|e| panic!("{fixture}: decrypt failed: {e}"));
+
+        assert_ne!(
+            decrypted.as_slice(),
+            segment.as_slice(),
+            "{fixture}: plaintext should differ from ciphertext"
+        );
+        assert!(
+            !decrypted.windows(4).any(|w| w == b"senc"),
+            "{fixture}: decrypted segment should not retain senc"
+        );
+        assert!(
+            decrypted.windows(4).any(|w| w == b"moof"),
+            "{fixture}: decrypted output should remain fragmented MP4"
+        );
+    }
+
+    #[test]
+    fn decrypts_cbcs_segment_with_known_key() {
+        decrypt_fixture_segment("drm_cbcs");
+    }
+
+    #[test]
+    fn decrypts_cenc_segment_with_known_key() {
+        decrypt_fixture_segment("drm_cenc");
     }
 }

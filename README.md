@@ -9,7 +9,7 @@ A pure Rust implementation of an MPEG-DASH player library.
 - **Multi-track output** — Separate audio, video, and text adaptation sets, or a single merged byte stream
 - **Track selection** — Ordered language, role, codec, and accessibility preferences with per-kind output limits (audio, video, and opt-in subtitles/captions)
 - **Adaptive bitrate** — pluggable [`AbrFactory`](#abr) with BOLA ([`BolaAbrFactory`](#abr)) as the default and optional LoL+ ([`LolPlusAbrFactory`](#abr)) for CMAF low-latency; automatic representation switching and init re-emission on quality changes
-- **Widevine DRM** — PSSH and license URL parsing from the MPD, license acquisition, and in-pipeline segment decryption
+- **Widevine DRM** — PSSH and license URL parsing from the MPD, license acquisition, and in-pipeline segment decryption for ISO Common Encryption schemes `cenc` / `cens` / `cbc1` / `cbcs` (scheme taken from media `schm`/`tenc` boxes; MPD `mp4protection` `@value` is parsed and exposed)
 - **Custom license handling** — Pluggable async license fetcher for custom headers, cookies, or proxies
 - **Pluggable HTTP client** — [`HttpClient`](#http-client) trait with default [`ReqwestClient`](#http-client) (native) and [`FetchClient`](#http-client) (WASM); swap in embedded stacks or custom TLS
 - **Resilient fetching** — BaseURL resolution and failover, fixed-delay HTTP retry for transient failures, representation fallback, and segment URL blacklisting after failures
@@ -828,12 +828,18 @@ let player = Player::new(url, None)?
 
 ### `drm`
 
-Widevine DRM support.
+Widevine DRM support. With the `drm` feature, segment decryption uses Bento4 and
+supports ISO Common Encryption schemes **`cenc`**, **`cens`**, **`cbc1`**, and **`cbcs`**.
+The active scheme is taken from the media (`schm` / `tenc` / `senc`); MPD
+`ContentProtection` with `schemeIdUri="urn:mpeg:dash:mp4protection:2011"` `@value` is
+parsed into `CommonEncryptionScheme` for diagnostics and does not select a separate
+decrypt path.
 
 **Re-exported at `dashplayrs::drm`:**
 
 | Type | Description |
 |------|-------------|
+| `CommonEncryptionScheme` | ISO CENC 4CC (`cenc` / `cbcs` / `cens` / `cbc1`) |
 | `License` | Widevine session with decrypt capability |
 | `LicenseError` | License acquisition or decryption error |
 | `WidevineLicenseManager` | Cache of ready license sessions |
@@ -845,7 +851,7 @@ Widevine DRM support.
 |-----------------|-------------|
 | `MpdDrmInfo` | Parsed DRM metadata for the full MPD |
 | `PeriodDrmInfo` / `AdaptationSetDrmInfo` / `RepresentationDrmInfo` | Per-level DRM with inheritance |
-| `LevelDrmInfo` | Effective PSSH boxes, default KIDs, and license URLs |
+| `LevelDrmInfo` | Effective PSSH boxes, default KIDs, license URLs, and protection schemes |
 | `parse_mpd_drm_info(xml)` | Parse DRM elements from raw MPD XML |
 
 **`dashplayrs::drm::decrypt`:**

@@ -38,7 +38,8 @@ Status: `[ ]` not started · `[~]` partial.
   *dash.js:* AS min/max attrs are modelled/metadata; ABR caps come from settings
   (`abr.minBitrate` / `maxBitrate`) and capability filters, not hard enforcement of AS
   range attrs against each Representation.
-- [~] **CBCS / pattern encryption.** Document and test non-CTR CENC modes.
+- [x] **CBCS / pattern encryption.** MPD `mp4protection` `@value` and in-band `schm`
+  parsed; decrypt covers `cenc`/`cens`/`cbc1`/`cbcs` via Bento4 (documented + fixtures).
   *dash.js:* Recognises `cenc`/`cbcs` in `ContentProtection`; decryption via EME/CDM.
 
 ## Scheduling & ABR

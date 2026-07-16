@@ -1,3 +1,4 @@
+use super::cenc::CommonEncryptionScheme;
 use pssh_box::{PsshBox, ToBytes, WIDEVINE_SYSTEM_ID, from_base64 as pssh_from_base64};
 use quick_xml::events::{BytesStart, BytesText, Event};
 use quick_xml::reader::Reader;
@@ -7,6 +8,9 @@ use url::Url;
 
 /// Widevine UUID (edef8ba9-79d6-4ace-a3c8-27dcd51d21ed), normalized.
 const WIDEVINE_SCHEME_ID_HEX: &str = "edef8ba979d64acea3c827dcd51d21ed";
+
+/// `ContentProtection@schemeIdUri` for ISO Common Encryption signalling.
+const MP4_PROTECTION_SCHEME_ID_URI: &str = "urn:mpeg:dash:mp4protection:2011";
 
 #[derive(Debug, Clone, Default)]
 pub struct MpdDrmInfo {
@@ -45,6 +49,8 @@ pub struct LevelDrmInfo {
     pub default_kids: Vec<String>,
     /// Best-effort license URL signaled in MPD (`ms:laurl`, `Laurl`, etc.).
     pub license_urls: Vec<String>,
+    /// ISO Common Encryption schemes from `urn:mpeg:dash:mp4protection:2011` `@value`.
+    pub protection_schemes: Vec<CommonEncryptionScheme>,
 }
 
 #[derive(Debug, Error)]
@@ -74,6 +80,29 @@ fn scheme_id_uri_is_widevine(value: &str) -> bool {
     }
     let hex: String = s.chars().filter(|c| *c != '-').collect();
     hex == WIDEVINE_SCHEME_ID_HEX
+}
+
+fn scheme_id_uri_is_mp4_protection(value: &str) -> bool {
+    value
+        .trim()
+        .eq_ignore_ascii_case(MP4_PROTECTION_SCHEME_ID_URI)
+}
+
+fn collect_protection_scheme(e: &BytesStart<'_>, out: &mut Vec<CommonEncryptionScheme>) {
+    let Some(scheme_uri) = attr_value(e, b"schemeIdUri") else {
+        return;
+    };
+    if !scheme_id_uri_is_mp4_protection(&scheme_uri) {
+        return;
+    }
+    let Some(value) = attr_value(e, b"value") else {
+        return;
+    };
+    if let Some(scheme) = CommonEncryptionScheme::parse(&value) {
+        if !out.contains(&scheme) {
+            out.push(scheme);
+        }
+    }
 }
 
 fn start_is(e: &BytesStart<'_>, local: &[u8]) -> bool {
@@ -178,6 +207,20 @@ fn merge_prefer_child(child: &LevelDrmInfo, parent: &LevelDrmInfo) -> LevelDrmIn
             &mut seen_url,
             u.to_string(),
             u.to_string(),
+        );
+    }
+
+    let mut seen_scheme: HashSet<CommonEncryptionScheme> = HashSet::new();
+    for scheme in child
+        .protection_schemes
+        .iter()
+        .chain(parent.protection_schemes.iter())
+    {
+        dedupe_push(
+            &mut out.protection_schemes,
+            &mut seen_scheme,
+            *scheme,
+            *scheme,
         );
     }
 
@@ -323,7 +366,7 @@ pub fn parse_mpd_drm_info(mpd_xml: &str) -> Result<MpdDrmInfo, MpdDrmError> {
                     CpTarget::Mpd
                 };
 
-                // Capture default_KID / licenseUrl at the correct level.
+                // Capture default_KID / licenseUrl / mp4protection at the correct level.
                 let target_level: &mut LevelDrmInfo = match cp_target {
                     CpTarget::Mpd => &mut mpd_level,
                     CpTarget::Period => &mut period_level,
@@ -332,6 +375,7 @@ pub fn parse_mpd_drm_info(mpd_xml: &str) -> Result<MpdDrmInfo, MpdDrmError> {
                 };
                 collect_default_kid(&e, &mut target_level.default_kids);
                 collect_license_url(&e, &mut target_level.license_urls);
+                collect_protection_scheme(&e, &mut target_level.protection_schemes);
 
                 // Determine widevine scheme
                 if let Some(scheme) = attr_value(&e, b"schemeIdUri") {
@@ -339,6 +383,27 @@ pub fn parse_mpd_drm_info(mpd_xml: &str) -> Result<MpdDrmInfo, MpdDrmError> {
                 } else {
                     cp_is_widevine = false;
                 }
+            }
+            Event::Empty(e) if start_is(&e, b"ContentProtection") => {
+                // Self-closing descriptors (typical for mp4protection @value).
+                let target = if in_representation {
+                    CpTarget::Representation
+                } else if in_adaptation_set {
+                    CpTarget::AdaptationSet
+                } else if in_period {
+                    CpTarget::Period
+                } else {
+                    CpTarget::Mpd
+                };
+                let target_level: &mut LevelDrmInfo = match target {
+                    CpTarget::Mpd => &mut mpd_level,
+                    CpTarget::Period => &mut period_level,
+                    CpTarget::AdaptationSet => &mut aset_level,
+                    CpTarget::Representation => &mut rep_level,
+                };
+                collect_default_kid(&e, &mut target_level.default_kids);
+                collect_license_url(&e, &mut target_level.license_urls);
+                collect_protection_scheme(&e, &mut target_level.protection_schemes);
             }
             Event::End(e) if e.name().local_name().as_ref() == b"ContentProtection" => {
                 cp_depth = cp_depth.saturating_sub(1);

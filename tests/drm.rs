@@ -260,3 +260,50 @@ async fn license_manager_reuses_session_on_unchanged_pssh() {
         "static VOD should acquire exactly one Widevine license"
     );
 }
+
+#[test]
+fn mpd_parses_cbcs_mp4protection_scheme() {
+    use dashplayrs::drm::CommonEncryptionScheme;
+
+    let xml = read_fixture("drm_cbcs", "manifest.mpd");
+    let info = parse_mpd_drm_info(&xml).expect("parse drm");
+    let schemes = &info.periods[0].adaptation_sets[0]
+        .effective
+        .protection_schemes;
+    assert_eq!(schemes, &vec![CommonEncryptionScheme::Cbcs]);
+    assert_eq!(
+        info.periods[0].adaptation_sets[0]
+            .effective
+            .default_kids
+            .len(),
+        1
+    );
+}
+
+#[test]
+fn mpd_parses_cenc_mp4protection_scheme() {
+    use dashplayrs::drm::CommonEncryptionScheme;
+
+    let xml = read_fixture("drm_cenc", "manifest.mpd");
+    let info = parse_mpd_drm_info(&xml).expect("parse drm");
+    assert_eq!(
+        info.periods[0].adaptation_sets[0]
+            .effective
+            .protection_schemes,
+        vec![CommonEncryptionScheme::Cenc]
+    );
+}
+
+#[test]
+fn in_band_schm_reports_cbcs() {
+    use dashplayrs::drm::CommonEncryptionScheme;
+    use dashplayrs::drm::mp4::extract_in_band_drm;
+
+    let init = common::read_fixture_bytes("drm_cbcs", "init.mp4");
+    let info = extract_in_band_drm(&init, None).expect("parse init");
+    assert_eq!(info.protection_schemes, vec![CommonEncryptionScheme::Cbcs]);
+    assert_eq!(
+        hex::encode(info.default_kids[0]),
+        "eb6769950da145d03ae4082255eb141a"
+    );
+}

@@ -1,6 +1,8 @@
 #[cfg(feature = "drm")]
 pub mod cdm;
 #[cfg(feature = "drm")]
+pub mod cenc;
+#[cfg(feature = "drm")]
 pub mod coordinator;
 #[cfg(feature = "drm")]
 pub mod decrypt;
@@ -18,6 +20,8 @@ pub mod widevine;
 #[cfg(not(feature = "drm"))]
 mod stub;
 
+#[cfg(feature = "drm")]
+pub use cenc::CommonEncryptionScheme;
 #[cfg(feature = "drm")]
 pub use coordinator::{DrmSessionCoordinator, WidevineLicenseFetcher};
 #[cfg(feature = "drm")]

@@ -586,6 +586,12 @@ fn dashif_encrypted_vector_mpd_parses_and_validates_iop() {
             .widevine_pssh
             .is_empty()
     );
+    assert_eq!(
+        info.periods[0].adaptation_sets[0]
+            .effective
+            .protection_schemes,
+        vec![dashplayrs::drm::CommonEncryptionScheme::Cenc]
+    );
 }
 
 /// Full Widevine decrypt playback when `DEVICE_PATH` and a captured `license-response.bin` exist.

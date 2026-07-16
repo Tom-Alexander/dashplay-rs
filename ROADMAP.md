@@ -44,7 +44,7 @@ Status: `[ ]` not started · `[~]` partial.
 
 ## Scheduling & ABR
 
-- [ ] **Manifest-derived BOLA parameters.** Segment duration and buffer limits from MPD
+- [x] **Manifest-derived BOLA parameters.** Segment duration and buffer limits from MPD
   instead of hardcoded 4 s / 25 s.
   *dash.js:* `bolaRule` uses measured buffer / fragment timing rather than fixed 4 s /
   25 s constants.

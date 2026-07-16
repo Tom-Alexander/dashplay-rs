@@ -2,22 +2,35 @@
 
 use dash_mpd::AdaptationSet;
 
-use super::algorithm::{Bola, QualityLevel};
+use super::algorithm::{
+    Bola, BolaParams, DEFAULT_BUFFER_MAX_S, DEFAULT_SEGMENT_DURATION_S, QualityLevel,
+};
 use crate::abr::{
     AbrController, AbrCreateContext, AbrDecision, AbrFactory, QualityRung,
     apply_operating_constraints, preferred_quality_index, resolve_quality_ladder,
 };
 
 /// Default [`AbrFactory`] using BOLA (Buffer Occupancy based Lyapunov Algorithm).
+///
+/// Segment duration and buffer ceiling are taken from [`AbrCreateContext`] when
+/// present (timeline / `BufferTarget`); otherwise the factory fallbacks below are used.
 #[derive(Debug, Clone)]
 pub struct BolaAbrFactory {
     /// EWMA smoothing factor for throughput estimates.
     pub ewma_alpha: f64,
+    /// Fallback segment duration (seconds) when `AbrCreateContext` has none.
+    pub segment_duration_s: f64,
+    /// Fallback buffer ceiling (seconds) when `AbrCreateContext` has none.
+    pub buffer_max_s: f64,
 }
 
 impl Default for BolaAbrFactory {
     fn default() -> Self {
-        Self { ewma_alpha: 0.3 }
+        Self {
+            ewma_alpha: 0.3,
+            segment_duration_s: DEFAULT_SEGMENT_DURATION_S,
+            buffer_max_s: DEFAULT_BUFFER_MAX_S,
+        }
     }
 }
 
@@ -27,7 +40,7 @@ impl AbrFactory for BolaAbrFactory {
         adaptation_set: &AdaptationSet,
         ctx: &AbrCreateContext<'_>,
     ) -> Option<Box<dyn AbrController>> {
-        BolaAbrController::from_adaptation_set(adaptation_set, self.ewma_alpha, ctx)
+        BolaAbrController::from_adaptation_set(adaptation_set, self, ctx)
             .map(|controller| Box::new(controller) as Box<dyn AbrController>)
     }
 }
@@ -43,7 +56,7 @@ struct BolaAbrController {
 impl BolaAbrController {
     fn from_adaptation_set(
         adaptation_set: &AdaptationSet,
-        ewma_alpha: f64,
+        factory: &BolaAbrFactory,
         ctx: &AbrCreateContext<'_>,
     ) -> Option<Self> {
         let mut rungs = resolve_quality_ladder(adaptation_set, ctx);
@@ -66,8 +79,24 @@ impl BolaAbrController {
             })
             .collect();
 
+        let segment_duration_s = ctx
+            .segment_duration_s
+            .filter(|d| d.is_finite() && *d > 0.0)
+            .unwrap_or(factory.segment_duration_s);
+        let buffer_max_s = ctx
+            .buffer_max_s
+            .filter(|d| d.is_finite() && *d > 0.0)
+            .unwrap_or(factory.buffer_max_s);
+
         Some(Self {
-            bola: Bola::new(qualities, ewma_alpha),
+            bola: Bola::with_params(
+                qualities,
+                factory.ewma_alpha,
+                BolaParams {
+                    segment_duration_s,
+                    buffer_max_s,
+                },
+            ),
             rungs,
             preferred_quality_index: preferred,
             has_throughput_sample: false,

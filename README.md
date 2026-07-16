@@ -747,7 +747,7 @@ low-latency live, use [`LolPlusAbrFactory`](src/abr/lol_plus/) (LoL+ SOM).
 | `AbrFactory` | Creates a per-adaptation-set [`AbrController`] when a stream starts |
 | `AbrController` | Stateful controller: buffer/latency/rate updates, throughput observations, `decide()` |
 | `AbrDecision` | Chosen quality index and nominal bitrate |
-| `BolaAbrFactory` | Default BOLA backend; configure `ewma_alpha` on the struct |
+| `BolaAbrFactory` | Default BOLA backend; configure `ewma_alpha` / fallback timing on the struct |
 | `LolPlusAbrFactory` | LoL+ SOM backend for low-latency live; configure duration/latency/seed |
 | `SharedAbrFactory` | `Arc<dyn AbrFactory>` shared across playback tasks |
 | `shared_abr_factory(factory)` | Wrap a concrete factory for use with `with_abr_factory` |
@@ -796,14 +796,17 @@ by [`BolaAbrFactory`](#abr); also exposed for standalone or custom ABR integrati
 | `QualityLevel` | One rung on the bitrate ladder (`label`, `bitrate_bps`, `utility`) |
 | `Bola` | Stateful ABR decision engine |
 | `BolaDecision` | Chosen quality index, estimated segment size, and emergency flag |
+| `BolaParams` | `segment_duration_s` and `buffer_max_s` (defaults: 4 s / 25 s) |
+| `DEFAULT_SEGMENT_DURATION_S` / `DEFAULT_BUFFER_MAX_S` | Fallback timing constants |
 
 | Method | Description |
 |--------|-------------|
-| `Bola::new(qualities, ewma_alpha)` | Build from a quality ladder |
+| `Bola::new(qualities, ewma_alpha)` | Build from a quality ladder (default 4 s / 25 s buffer params) |
+| `Bola::with_params(qualities, ewma_alpha, params)` | Build with MPD-derived segment duration / buffer ceiling |
 | `Bola::observe_throughput(bps)` | Update throughput EWMA |
 | `Bola::update_buffer(seconds)` | Update buffer occupancy |
 | `Bola::decide()` | Select the next representation |
-| `Bola::buffer_s()` / `throughput_bps()` / `v()` / `qualities()` | Inspect state |
+| `Bola::buffer_s()` / `params()` / `throughput_bps()` / `v()` / `qualities()` | Inspect state |
 
 ---
 

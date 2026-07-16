@@ -19,6 +19,7 @@ use crate::track_selection::TrackKind;
 use crate::track_session::TrackSessionState;
 use crate::types::PlayerEvent;
 
+use super::buffer_target::BufferTarget;
 use super::segment_decrypt::decrypt_media_fragment;
 use super::segment_emit::segment_presentation_time;
 use super::segment_fetch::{
@@ -96,11 +97,15 @@ pub(crate) async fn prefetch_next_period_first_segment(
         ),
     );
 
+    let segment_duration_s = Some(seg.duration_s).filter(|d| *d > 0.0);
+    let buffer_target =
+        BufferTarget::from_min_buffer_time(None).with_segment_duration(segment_duration_s);
     let Some(mut abr) = BolaAbrFactory::default().create(
         &plan.next_adaptation_set,
         &AbrCreateContext {
             operating: None,
-            segment_duration_s: Some(seg.duration_s).filter(|d| *d > 0.0),
+            segment_duration_s,
+            buffer_max_s: Some(buffer_target.max_buffer_s),
             quality_ladder: None,
         },
     ) else {

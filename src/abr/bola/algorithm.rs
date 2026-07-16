@@ -6,24 +6,67 @@
 //! BOLA uses Lyapunov optimization to select video quality levels that
 //! maximize a utility function while keeping the playback buffer stable.
 
-// ─── Constants ───────────────────────────────────────────────────────────────
+// ─── Defaults ────────────────────────────────────────────────────────────────
 
-/// Segment duration in seconds (typical HLS/DASH default).
-const SEGMENT_DURATION_S: f64 = 4.0;
+/// Fallback segment duration when the timeline does not provide one (seconds).
+pub const DEFAULT_SEGMENT_DURATION_S: f64 = 4.0;
 
-/// Buffer size limit in seconds (prevents unbounded buffering).
-const BUFFER_MAX_S: f64 = 25.0;
+/// Fallback buffer ceiling when none is provided (seconds).
+///
+/// With [`DEFAULT_SEGMENT_DURATION_S`], this is ~6.25 segment durations.
+pub const DEFAULT_BUFFER_MAX_S: f64 = 25.0;
 
-/// Minimum buffer level that triggers downloads, in seconds.
-/// Usually set to one segment duration.
-const BUFFER_LOW_S: f64 = SEGMENT_DURATION_S;
-
-/// Safety factor γ·p from the paper. Controls how aggressively BOLA
+/// Safety factor γ from the paper. Controls how aggressively BOLA
 /// stays away from a stall (too low → stalls; too high → poor quality).
-/// Typical: 5 × segment_duration / buffer_max  ≈  0.8 for these defaults.
-const GAMMA_P: f64 = 5.0;
+const GAMMA: f64 = 5.0;
 
 // ─── Types ───────────────────────────────────────────────────────────────────
+
+/// Buffer / segment timing inputs for BOLA.
+///
+/// Prefer values derived from the MPD timeline (`segment_duration_s`) and the
+/// shared scheduling high-water mark (`buffer_max_s`).
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub struct BolaParams {
+    /// Nominal media segment duration (seconds). Also used as the emergency
+    /// low-water mark (one segment).
+    pub segment_duration_s: f64,
+    /// Buffer occupancy ceiling (seconds). Highest quality is only preferred
+    /// near this level.
+    pub buffer_max_s: f64,
+}
+
+impl Default for BolaParams {
+    fn default() -> Self {
+        Self {
+            segment_duration_s: DEFAULT_SEGMENT_DURATION_S,
+            buffer_max_s: DEFAULT_BUFFER_MAX_S,
+        }
+    }
+}
+
+impl BolaParams {
+    /// Sanitize caller-provided values, falling back to defaults when invalid.
+    pub fn sanitized(self) -> Self {
+        let segment_duration_s =
+            if self.segment_duration_s.is_finite() && self.segment_duration_s > 0.0 {
+                self.segment_duration_s
+            } else {
+                DEFAULT_SEGMENT_DURATION_S
+            };
+        let buffer_max_s = if self.buffer_max_s.is_finite() && self.buffer_max_s > 0.0 {
+            self.buffer_max_s
+        } else {
+            DEFAULT_BUFFER_MAX_S
+        };
+        // V requires buffer_max > buffer_low (= segment_duration).
+        let buffer_max_s = buffer_max_s.max(segment_duration_s * 2.0);
+        Self {
+            segment_duration_s,
+            buffer_max_s,
+        }
+    }
+}
 
 /// One entry in the ladder of available encoding qualities.
 #[allow(dead_code)]
@@ -49,6 +92,9 @@ pub struct Bola {
     /// Higher V → higher average quality at the cost of more stalls.
     v: f64,
 
+    /// Nominal segment duration and buffer ceiling used for V and size estimates.
+    params: BolaParams,
+
     /// Current playback buffer occupancy (seconds of video buffered ahead).
     buffer_s: f64,
 
@@ -72,21 +118,33 @@ pub struct BolaDecision {
     /// The raw Lyapunov score that won the election.
     pub score: f64,
     /// True when the algorithm fell back to the lowest quality because
-    /// the buffer is below BUFFER_LOW_S.
+    /// the buffer is below one segment duration.
     pub is_emergency: bool,
 }
 
 // ─── Implementation ───────────────────────────────────────────────────────────
 
 impl Bola {
-    /// Build a new BOLA instance from a quality ladder.
+    /// Build a new BOLA instance from a quality ladder with default buffer params.
     ///
     /// `qualities` must contain at least one entry, ordered lowest→highest
     /// bitrate. Pass them in any order; this constructor sorts them.
     ///
     /// With a single quality there is no adaptation; [`Self::decide`] always
     /// selects that representation (the highest and only rung).
-    pub fn new(mut qualities: Vec<QualityLevel>, ewma_alpha: f64) -> Self {
+    ///
+    /// Prefer [`Self::with_params`] when segment duration / buffer limits are
+    /// known from the MPD.
+    pub fn new(qualities: Vec<QualityLevel>, ewma_alpha: f64) -> Self {
+        Self::with_params(qualities, ewma_alpha, BolaParams::default())
+    }
+
+    /// Build a BOLA instance with explicit segment duration and buffer ceiling.
+    pub fn with_params(
+        mut qualities: Vec<QualityLevel>,
+        ewma_alpha: f64,
+        params: BolaParams,
+    ) -> Self {
         assert!(
             !qualities.is_empty(),
             "BOLA needs at least one quality level"
@@ -95,6 +153,8 @@ impl Bola {
             (0.0..=1.0).contains(&ewma_alpha),
             "ewma_alpha must be in (0,1]"
         );
+
+        let params = params.sanitized();
 
         // Sort ascending by bitrate.
         qualities.sort_by(|a, b| a.bitrate_bps.total_cmp(&b.bitrate_bps));
@@ -107,18 +167,20 @@ impl Bola {
 
         // Compute V from Equation (6) in the paper:
         //
-        //   V = (BUFFER_MAX_S - BUFFER_LOW_S)
-        //       / (utility_max + GAMMA_P)
+        //   V = (buffer_max - buffer_low)
+        //       / (utility_max + γ)
         //
-        // This ensures the highest quality can only be chosen when the buffer
-        // is close to full, providing a safety margin of γ·p seconds.
+        // buffer_low is one segment duration. This ensures the highest quality
+        // can only be chosen when the buffer is close to full.
         // With one quality, utility_max is 0 and V is still well-defined.
         let utility_max = qualities[qualities.len() - 1].utility;
-        let v = (BUFFER_MAX_S - BUFFER_LOW_S) / (utility_max + GAMMA_P);
+        let buffer_low_s = params.segment_duration_s;
+        let v = (params.buffer_max_s - buffer_low_s) / (utility_max + GAMMA);
 
         Bola {
             qualities,
             v,
+            params,
             buffer_s: 0.0,
             throughput_ewma_bps: 0.0,
             ewma_alpha,
@@ -162,13 +224,13 @@ impl Bola {
 
     /// Nominal media segment size (bytes) at a quality index for the configured segment duration.
     pub fn estimated_segment_bytes_for_quality(&self, quality_index: usize) -> f64 {
-        self.qualities[quality_index].bitrate_bps * SEGMENT_DURATION_S / 8.0
+        self.qualities[quality_index].bitrate_bps * self.params.segment_duration_s / 8.0
     }
 
     /// Notify BOLA that the buffer has changed (e.g. after a segment was
     /// appended or playback consumed some content).
     pub fn update_buffer(&mut self, buffer_s: f64) {
-        self.buffer_s = buffer_s.clamp(0.0, BUFFER_MAX_S);
+        self.buffer_s = buffer_s.clamp(0.0, self.params.buffer_max_s);
     }
 
     /// Choose the quality level for the next segment.
@@ -186,13 +248,15 @@ impl Bola {
     /// throughput feasibility check (no level whose bitrate would exceed
     /// the current estimated bandwidth is chosen).
     pub fn decide(&self) -> BolaDecision {
+        let segment_bytes = |bitrate_bps: f64| bitrate_bps * self.params.segment_duration_s / 8.0;
+
         if self.qualities.len() == 1 {
             let q = &self.qualities[0];
             let score = (self.v * (q.utility + 1.0) - self.buffer_s) / q.bitrate_bps;
             return BolaDecision {
                 quality_index: 0,
                 bitrate_bps: q.bitrate_bps,
-                estimated_segment_bytes: q.bitrate_bps * SEGMENT_DURATION_S / 8.0,
+                estimated_segment_bytes: segment_bytes(q.bitrate_bps),
                 score,
                 is_emergency: false,
             };
@@ -200,12 +264,12 @@ impl Bola {
 
         // Emergency: if the buffer is critically low, drop to the lowest quality
         // regardless of the Lyapunov score to avoid a stall.
-        if self.buffer_s < BUFFER_LOW_S {
+        if self.buffer_s < self.params.segment_duration_s {
             let q = &self.qualities[0];
             return BolaDecision {
                 quality_index: 0,
                 bitrate_bps: q.bitrate_bps,
-                estimated_segment_bytes: q.bitrate_bps * SEGMENT_DURATION_S / 8.0,
+                estimated_segment_bytes: segment_bytes(q.bitrate_bps),
                 score: f64::NEG_INFINITY,
                 is_emergency: true,
             };
@@ -237,7 +301,7 @@ impl Bola {
         BolaDecision {
             quality_index: best_idx,
             bitrate_bps: chosen.bitrate_bps,
-            estimated_segment_bytes: chosen.bitrate_bps * SEGMENT_DURATION_S / 8.0,
+            estimated_segment_bytes: segment_bytes(chosen.bitrate_bps),
             score: best_score,
             is_emergency: false,
         }
@@ -248,6 +312,11 @@ impl Bola {
     /// Current playback buffer level (seconds).
     pub fn buffer_s(&self) -> f64 {
         self.buffer_s
+    }
+
+    /// Configured segment duration and buffer ceiling.
+    pub fn params(&self) -> BolaParams {
+        self.params
     }
 
     /// Current throughput estimate (bps).
@@ -336,7 +405,7 @@ mod tests {
         let mut bola = Bola::new(ladder(), 0.3);
         // 200 kbps — below every level except the lowest.
         bola.observe_throughput(200_000.0);
-        bola.update_buffer(BUFFER_MAX_S * 0.9);
+        bola.update_buffer(DEFAULT_BUFFER_MAX_S * 0.9);
         let d = bola.decide();
         assert_eq!(d.quality_index, 0);
     }
@@ -345,7 +414,7 @@ mod tests {
     fn chooses_high_quality_with_full_buffer_and_good_bandwidth() {
         let mut bola = Bola::new(ladder(), 0.3);
         bola.observe_throughput(20_000_000.0); // 20 Mbps
-        bola.update_buffer(BUFFER_MAX_S);
+        bola.update_buffer(DEFAULT_BUFFER_MAX_S);
         let d = bola.decide();
         // Should select the highest feasible level (index 4 = 1080p).
         assert_eq!(d.quality_index, 4);
@@ -359,10 +428,11 @@ mod tests {
         let mut bola = Bola::new(ladder(), 0.3);
         bola.observe_throughput(20_000_000.0);
 
+        let buffer_low = DEFAULT_SEGMENT_DURATION_S;
         let mut prev_idx = 0;
         let steps = 20;
         for i in 0..=steps {
-            let buf = BUFFER_LOW_S + (BUFFER_MAX_S - BUFFER_LOW_S) * (i as f64 / steps as f64);
+            let buf = buffer_low + (DEFAULT_BUFFER_MAX_S - buffer_low) * (i as f64 / steps as f64);
             bola.update_buffer(buf);
             let d = bola.decide();
             assert!(
@@ -390,10 +460,10 @@ mod tests {
     fn segment_size_estimate_is_correct() {
         let mut bola = Bola::new(ladder(), 0.3);
         // 300 000 bps × 4 s / 8 = 150 000 bytes
-        let expected = 300_000.0 * SEGMENT_DURATION_S / 8.0;
-        bola.update_buffer(BUFFER_MAX_S);
+        let expected = 300_000.0 * DEFAULT_SEGMENT_DURATION_S / 8.0;
+        bola.update_buffer(DEFAULT_BUFFER_MAX_S);
         // Pick the lowest level manually.
-        let bytes = bola.qualities()[0].bitrate_bps * SEGMENT_DURATION_S / 8.0;
+        let bytes = bola.qualities()[0].bitrate_bps * DEFAULT_SEGMENT_DURATION_S / 8.0;
         assert!((bytes - expected).abs() < 1.0);
     }
 
@@ -418,7 +488,7 @@ mod tests {
     #[test]
     fn ignores_unrepresentative_throughput_sample() {
         let mut bola = Bola::new(ladder(), 0.3);
-        bola.update_buffer(BUFFER_MAX_S);
+        bola.update_buffer(DEFAULT_BUFFER_MAX_S);
 
         let estimated = bola.estimated_segment_bytes_for_quality(4);
         bola.observe_segment_download(100_000.0, 24, estimated);
@@ -430,5 +500,37 @@ mod tests {
         assert_eq!(bola.throughput_bps(), 100_000.0);
         let d = bola.decide();
         assert_eq!(d.quality_index, 0);
+    }
+
+    #[test]
+    fn with_params_uses_manifest_segment_duration() {
+        let params = BolaParams {
+            segment_duration_s: 2.0,
+            buffer_max_s: 12.5,
+        };
+        let mut bola = Bola::with_params(ladder(), 0.3, params);
+        assert!((bola.params().segment_duration_s - 2.0).abs() < 1e-9);
+        assert!((bola.params().buffer_max_s - 12.5).abs() < 1e-9);
+
+        // Emergency threshold is one segment (2 s), not the 4 s default.
+        bola.observe_throughput(20_000_000.0);
+        bola.update_buffer(1.5);
+        assert!(bola.decide().is_emergency);
+        bola.update_buffer(2.5);
+        assert!(!bola.decide().is_emergency);
+
+        let expected = 300_000.0 * 2.0 / 8.0;
+        assert!((bola.estimated_segment_bytes_for_quality(0) - expected).abs() < 1.0);
+    }
+
+    #[test]
+    fn sanitized_params_reject_non_positive() {
+        let params = BolaParams {
+            segment_duration_s: 0.0,
+            buffer_max_s: f64::NAN,
+        }
+        .sanitized();
+        assert_eq!(params.segment_duration_s, DEFAULT_SEGMENT_DURATION_S);
+        assert_eq!(params.buffer_max_s, DEFAULT_BUFFER_MAX_S);
     }
 }

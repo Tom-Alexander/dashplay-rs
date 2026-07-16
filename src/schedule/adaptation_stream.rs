@@ -208,7 +208,7 @@ pub(crate) struct AdaptationStreamContext {
     pub buffer_rx: watch::Receiver<f64>,
     /// Sender used to publish estimated buffer occupancy.
     pub buffer_tx: watch::Sender<f64>,
-    /// Prefetch thresholds from `MPD@minBufferTime` and the BOLA buffer ceiling.
+    /// Prefetch thresholds from `MPD@minBufferTime`; ceiling is scaled to segment duration.
     pub buffer_target: BufferTarget,
     pub metrics: TrackMetrics,
     pub playback: PlaybackController,
@@ -427,11 +427,15 @@ pub(crate) async fn run_adaptation_stream(
         }
     };
 
+    let segment_duration_s = nominal_segment_duration_s(&segments);
+    let buffer_target = buffer_target.with_segment_duration(segment_duration_s);
+
     let Some(mut abr) = abr_factory.create(
         &adaptation_set,
         &crate::abr::AbrCreateContext {
             operating: operating_constraints.as_ref(),
-            segment_duration_s: nominal_segment_duration_s(&segments),
+            segment_duration_s,
+            buffer_max_s: Some(buffer_target.max_buffer_s),
             quality_ladder: Some(quality_ladder.as_slice()),
         },
     ) else {

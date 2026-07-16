@@ -47,7 +47,9 @@
 use thiserror::Error;
 
 pub mod abr;
-pub use abr::bola::{Bola, BolaDecision, QualityLevel};
+pub use abr::bola::{
+    Bola, BolaDecision, BolaParams, DEFAULT_BUFFER_MAX_S, DEFAULT_SEGMENT_DURATION_S, QualityLevel,
+};
 pub use abr::lol_plus::{LolPlus, LolPlusDecision};
 mod clock;
 pub mod cmcd;

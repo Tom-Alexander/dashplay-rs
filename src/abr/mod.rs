@@ -48,6 +48,8 @@ pub struct AbrCreateContext<'a> {
     pub(crate) operating: Option<&'a ResolvedOperatingConstraints>,
     /// Nominal media segment duration (seconds) when known from the timeline.
     pub(crate) segment_duration_s: Option<f64>,
+    /// Prefetch / ABR buffer ceiling (seconds), typically from [`crate::schedule::BufferTarget`].
+    pub(crate) buffer_max_s: Option<f64>,
     /// Pre-resolved quality ladder (including cross-AS switch / fallback peers).
     ///
     /// When `Some`, factories should use this instead of building from the single adaptation set.
@@ -304,6 +306,30 @@ mod tests {
         assert_eq!(ladder.len(), 3);
         assert_eq!(ladder[0].bitrate_bps, 500_000.0);
         assert_eq!(ladder[2].bitrate_bps, 2_000_000.0);
+    }
+
+    #[test]
+    fn bola_factory_uses_manifest_timing_from_context() {
+        let set = adaptation_set_with_bandwidths(&[500_000, 1_000_000]);
+        let factory = BolaAbrFactory::default();
+        let mut controller = factory
+            .create(
+                &set,
+                &AbrCreateContext {
+                    segment_duration_s: Some(2.0),
+                    buffer_max_s: Some(12.5),
+                    ..Default::default()
+                },
+            )
+            .expect("controller");
+        // Emergency low-water is one segment (2 s), not the 4 s factory default.
+        controller.update_buffer(1.0);
+        controller.observe_segment_download(10_000_000.0, 250_000, 0);
+        let decision = controller.decide();
+        assert_eq!(decision.quality_index, 0);
+        controller.update_buffer(10.0);
+        let decision = controller.decide();
+        assert!(decision.quality_index <= 1);
     }
 
     #[test]

@@ -9,7 +9,7 @@ use tokio_stream::wrappers::ReceiverStream;
 
 use super::abr::SharedAbrFactory;
 use super::cmcd::CmcdConfig;
-use super::http::SharedHttpClient;
+use super::http::{HttpRetryConfig, SharedHttpClient};
 use super::manifest::ManifestMetadata;
 use super::media_player::{MediaPlayer, WidevineLicenseFetcher};
 use super::metrics::TrackMetrics;
@@ -63,6 +63,13 @@ impl Player {
     pub fn with_cmcd(self, config: CmcdConfig) -> Self {
         Self {
             media_player: self.media_player.with_cmcd(config),
+        }
+    }
+
+    /// Configure fixed-delay HTTP retry for transient failures (dash.js-style).
+    pub fn with_http_retry(self, config: HttpRetryConfig) -> Self {
+        Self {
+            media_player: self.media_player.with_http_retry(config),
         }
     }
 

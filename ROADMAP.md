@@ -66,7 +66,7 @@ Status: `[ ]` not started · `[~]` partial.
 
 ## Networking & platform
 
-- [ ] **HTTP retry with backoff.** Transient failures (failover only today).
+- [x] **HTTP retry with backoff.** Transient failures (failover only today).
   *dash.js:* Fixed per-type delay (`retryIntervals`), not exponential backoff; default
   ~3 attempts (`retryAttempts`), scaled in low-latency mode.
 - [ ] **Conditional manifest fetch.** `If-None-Match` / `304` on live refresh.

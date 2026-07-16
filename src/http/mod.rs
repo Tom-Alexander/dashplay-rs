@@ -14,10 +14,12 @@ mod request;
 #[cfg(feature = "reqwest-http")]
 mod reqwest;
 mod response;
+mod retry;
 mod stream_response;
 mod unconfigured;
 
 pub(crate) use body_stream::HttpBodyStream;
+pub(crate) use retry::{is_transient_status, with_retry};
 
 pub use error::HttpError;
 #[cfg(target_arch = "wasm32")]
@@ -26,8 +28,40 @@ pub use request::HttpRequest;
 #[cfg(feature = "reqwest-http")]
 pub use reqwest::ReqwestClient;
 pub use response::HttpResponse;
+pub use retry::{HttpRequestKind, HttpRetryConfig, HttpRetryPolicy};
 pub use stream_response::HttpStreamResponse;
 pub use unconfigured::UnconfiguredHttpClient;
+
+/// Execute `request` with fixed-delay retries for transport failures and transient HTTP statuses.
+pub(crate) async fn send_with_retry(
+    client: &SharedHttpClient,
+    request: HttpRequest,
+    config: &HttpRetryConfig,
+    kind: HttpRequestKind,
+    low_latency: bool,
+) -> Result<HttpResponse, HttpError> {
+    let policy = config.policy(kind, low_latency);
+    with_retry(
+        policy,
+        kind,
+        |_attempt| {
+            let client = client.clone();
+            let request = request.clone();
+            async move {
+                let resp = client.send(request).await?;
+                if is_transient_status(resp.status()) {
+                    return Err(HttpError::Transport(format!(
+                        "transient HTTP status {}",
+                        resp.status()
+                    )));
+                }
+                Ok(resp)
+            }
+        },
+        |_| true,
+    )
+    .await
+}
 
 /// HTTP method supported by [`HttpClient`].
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]

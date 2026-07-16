@@ -91,8 +91,8 @@ pub use http::FetchClient;
 pub use http::ReqwestClient;
 pub use http::UnconfiguredHttpClient;
 pub use http::{
-    HttpClient, HttpError, HttpFuture, HttpMethod, HttpRequest, HttpResponse, HttpStreamResponse,
-    SharedHttpClient, shared,
+    HttpClient, HttpError, HttpFuture, HttpMethod, HttpRequest, HttpRequestKind, HttpResponse,
+    HttpRetryConfig, HttpRetryPolicy, HttpStreamResponse, SharedHttpClient, shared,
 };
 pub use manifest::{
     AssetIdentifier, ContentLabel, ManifestError, ManifestMetadata, MetricsRange,

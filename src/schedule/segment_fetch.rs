@@ -14,14 +14,14 @@ use crate::cmcd::{CmcdObjectType, CmcdSession, CmsdSnapshot};
 use crate::drm::DrmSessionCoordinator;
 #[cfg(feature = "drm")]
 use crate::drm::{DrmError, License};
-use crate::http::SharedHttpClient;
+use crate::http::{HttpRetryConfig, SharedHttpClient};
 use crate::manifest::{self, ManifestError};
 use crate::metrics::TrackMetrics;
 use crate::mp4::partial_segment;
 use crate::segment::SegmentError;
 use crate::segment_blacklist::SegmentBlacklist;
 use crate::segment_fetcher::{
-    CmcdFetch, FetchedBytes, fetch_bytes_with_base_failover,
+    CmcdFetch, FetchedBytes, SegmentRetry, fetch_bytes_with_base_failover,
     fetch_bytes_with_base_failover_and_range,
 };
 use crate::track_selection::TrackKind;
@@ -79,6 +79,7 @@ pub(crate) struct RepFetchEnv<'a> {
     pub(crate) metrics: &'a TrackMetrics,
     pub(crate) track_kind: TrackKind,
     pub(crate) cmcd: Option<&'a CmcdSession>,
+    pub(crate) http_retry: &'a HttpRetryConfig,
     /// Retained for call-site clarity around period continuity; Init emission is owned by
     /// [`InitSignalState`].
     #[allow(dead_code)]
@@ -232,6 +233,7 @@ pub(crate) async fn download_prepared_media(
         &prepared.target,
         env.blacklist,
         cmcd,
+        SegmentRetry::media(env.http_retry),
     )
     .await?;
     env.report_cmsd(fetched.cmsd.clone());
@@ -318,6 +320,7 @@ async fn prepare_media_at_quality(
                 adaptation_set,
                 rep,
                 env.blacklist,
+                env.http_retry,
                 sidx_segments_by_rep,
             )
             .await?;
@@ -335,6 +338,7 @@ async fn prepare_media_at_quality(
                 adaptation_set,
                 rep,
                 env.blacklist,
+                env.http_retry,
                 sidx_segments_by_rep,
             )
             .await?;
@@ -442,6 +446,7 @@ pub(super) async fn fetch_cmaf_media_with_rep_fallback(
             &seg_target,
             env.blacklist,
             cmcd,
+            SegmentRetry::media_low_latency(env.http_retry),
         )
         .await
         {
@@ -487,8 +492,15 @@ async fn ensure_init_for_rep(
     };
     let br_bps = rep.bandwidth.map(|b| b as f64);
     let cmcd = env.cmcd_fetch(CmcdObjectType::Init, br_bps, None);
-    let fetched =
-        fetch_segment_target(env.client, &bases, &init_target, env.blacklist, cmcd).await?;
+    let fetched = fetch_segment_target(
+        env.client,
+        &bases,
+        &init_target,
+        env.blacklist,
+        cmcd,
+        SegmentRetry::init(env.http_retry),
+    )
+    .await?;
     env.report_cmsd(fetched.cmsd.clone());
     let init_bytes = Bytes::from(fetched.data);
     encrypted_init_by_rep.insert(cache_key, init_bytes.clone());
@@ -611,6 +623,7 @@ pub(super) async fn fetch_segment_target(
     target: &manifest::SegmentFetchTarget,
     blacklist: &SegmentBlacklist,
     cmcd: Option<CmcdFetch<'_>>,
+    retry: SegmentRetry<'_>,
 ) -> Result<FetchedBytes, PlayerError> {
     if target.range.is_some() {
         return fetch_bytes_with_base_failover_and_range(
@@ -620,11 +633,12 @@ pub(super) async fn fetch_segment_target(
             target.range,
             blacklist,
             cmcd,
+            retry,
         )
         .await
         .map_err(Into::into);
     }
-    fetch_bytes_with_base_failover(client, bases, &target.path, blacklist, cmcd)
+    fetch_bytes_with_base_failover(client, bases, &target.path, blacklist, cmcd, retry)
         .await
         .map_err(Into::into)
 }
@@ -637,6 +651,7 @@ fn object_duration_ms(seg: &manifest::TimelineSegment) -> Option<u64> {
     }
 }
 
+#[allow(clippy::too_many_arguments)]
 async fn sidx_segments_for_rep_template<'a>(
     client: &SharedHttpClient,
     segment_base_ctx: &manifest::SegmentBaseContext,
@@ -644,6 +659,7 @@ async fn sidx_segments_for_rep_template<'a>(
     adaptation_set: &AdaptationSet,
     rep: &Representation,
     blacklist: &SegmentBlacklist,
+    http_retry: &HttpRetryConfig,
     cache: &'a mut HashMap<String, Vec<manifest::TimelineSegment>>,
 ) -> Result<&'a [manifest::TimelineSegment], PlayerError> {
     let rep_id = rep.id.as_deref().unwrap_or_default().to_string();
@@ -661,6 +677,7 @@ async fn sidx_segments_for_rep_template<'a>(
                 rep,
                 adaptation_set,
                 blacklist,
+                http_retry,
             )
             .await?;
             e.insert(segs);
@@ -706,6 +723,7 @@ async fn media_range_for_per_segment_index(
         &merged_st,
         &index_target,
         env.blacklist,
+        env.http_retry,
     )
     .await?;
     let media_range = manifest::media_range_from_per_segment_index(&merged_st, &index_bytes)?;
@@ -713,6 +731,7 @@ async fn media_range_for_per_segment_index(
     Ok(Some(media_range))
 }
 
+#[allow(clippy::too_many_arguments)]
 async fn sidx_segments_for_rep<'a>(
     client: &SharedHttpClient,
     segment_base_ctx: &manifest::SegmentBaseContext,
@@ -720,6 +739,7 @@ async fn sidx_segments_for_rep<'a>(
     adaptation_set: &AdaptationSet,
     rep: &Representation,
     blacklist: &SegmentBlacklist,
+    http_retry: &HttpRetryConfig,
     cache: &'a mut HashMap<String, Vec<manifest::TimelineSegment>>,
 ) -> Result<&'a [manifest::TimelineSegment], PlayerError> {
     let rep_id = rep.id.as_deref().unwrap_or_default().to_string();
@@ -730,9 +750,16 @@ async fn sidx_segments_for_rep<'a>(
         }
         let bases =
             manifest::segment_bases_for_representation(segment_base_ctx, adaptation_set, rep)?;
-        let segs =
-            fetch_and_parse_segment_base_index(client, &bases, &sb, rep, adaptation_set, blacklist)
-                .await?;
+        let segs = fetch_and_parse_segment_base_index(
+            client,
+            &bases,
+            &sb,
+            rep,
+            adaptation_set,
+            blacklist,
+            http_retry,
+        )
+        .await?;
         e.insert(segs);
     }
     Ok(cache
@@ -752,9 +779,11 @@ pub(super) async fn fetch_and_parse_segment_base_index(
     rep: &Representation,
     adaptation_set: &AdaptationSet,
     blacklist: &SegmentBlacklist,
+    http_retry: &HttpRetryConfig,
 ) -> Result<Vec<manifest::TimelineSegment>, PlayerError> {
     let vars = manifest::template_vars_for_representation(rep, adaptation_set);
     let index_target = manifest::segment_base_index_target(sb, &vars)?;
+    let retry = SegmentRetry::index(http_retry);
 
     // Same-file `@indexRange`: extend when the Index Segment is incomplete.
     if index_target.range.is_some() && index_target.path.is_empty() {
@@ -763,10 +792,17 @@ pub(super) async fn fetch_and_parse_segment_base_index(
                 ManifestError::MissingSegmentBaseIndexRange,
             ));
         };
-        let mut index_bytes =
-            fetch_bytes_with_base_failover_and_range(client, bases, "", Some(br), blacklist, None)
-                .await?
-                .into_data();
+        let mut index_bytes = fetch_bytes_with_base_failover_and_range(
+            client,
+            bases,
+            "",
+            Some(br),
+            blacklist,
+            None,
+            retry,
+        )
+        .await?
+        .into_data();
         loop {
             match manifest::parse_sidx_index_for_segment_base(sb, &index_bytes) {
                 Ok(segs) => return Ok(segs),
@@ -782,6 +818,7 @@ pub(super) async fn fetch_and_parse_segment_base_index(
                         Some(extend),
                         blacklist,
                         None,
+                        retry,
                     )
                     .await?
                     .into_data();
@@ -793,7 +830,7 @@ pub(super) async fn fetch_and_parse_segment_base_index(
         }
     }
 
-    let index_bytes = fetch_segment_target(client, bases, &index_target, blacklist, None)
+    let index_bytes = fetch_segment_target(client, bases, &index_target, blacklist, None, retry)
         .await?
         .into_data();
     Ok(manifest::parse_sidx_index_for_segment_base(
@@ -813,11 +850,19 @@ pub(super) async fn fetch_and_parse_segment_template_index(
     rep: &Representation,
     adaptation_set: &AdaptationSet,
     blacklist: &SegmentBlacklist,
+    http_retry: &HttpRetryConfig,
 ) -> Result<Vec<manifest::TimelineSegment>, PlayerError> {
     let vars = manifest::template_vars_for_representation(rep, adaptation_set);
     let index_target = manifest::segment_template_index_target(st, &vars)?;
-    let index_bytes =
-        fetch_complete_template_index_bytes(client, bases, st, &index_target, blacklist).await?;
+    let index_bytes = fetch_complete_template_index_bytes(
+        client,
+        bases,
+        st,
+        &index_target,
+        blacklist,
+        http_retry,
+    )
+    .await?;
     Ok(manifest::parse_sidx_index_from_template(st, &index_bytes)?)
 }
 
@@ -828,10 +873,12 @@ async fn fetch_complete_template_index_bytes(
     st: &dash_mpd::SegmentTemplate,
     index_target: &manifest::SegmentFetchTarget,
     blacklist: &SegmentBlacklist,
+    http_retry: &HttpRetryConfig,
 ) -> Result<Vec<u8>, PlayerError> {
+    let retry = SegmentRetry::index(http_retry);
     let Some(mut br) = index_target.range else {
         return Ok(
-            fetch_segment_target(client, bases, index_target, blacklist, None)
+            fetch_segment_target(client, bases, index_target, blacklist, None, retry)
                 .await?
                 .into_data(),
         );
@@ -843,6 +890,7 @@ async fn fetch_complete_template_index_bytes(
         Some(br),
         blacklist,
         None,
+        retry,
     )
     .await?
     .into_data();
@@ -861,6 +909,7 @@ async fn fetch_complete_template_index_bytes(
                     Some(extend),
                     blacklist,
                     None,
+                    retry,
                 )
                 .await?
                 .into_data();

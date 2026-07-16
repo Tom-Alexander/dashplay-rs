@@ -3,11 +3,11 @@
 use bytes::{Bytes, BytesMut};
 
 use crate::cmcd::{CmsdSnapshot, parse_cmsd_headers};
-use crate::http::{HttpRequest, SharedHttpClient};
+use crate::http::{HttpRequest, SharedHttpClient, is_transient_status, with_retry};
 use crate::manifest::SegmentFetchTarget;
 use crate::segment::SegmentError;
 use crate::segment_blacklist::SegmentBlacklist;
-use crate::segment_fetcher::CmcdFetch;
+use crate::segment_fetcher::{CmcdFetch, SegmentRetry};
 
 use super::{box_type_at, read_box_size};
 use url::Url;
@@ -119,8 +119,9 @@ pub(crate) async fn fetch_cmaf_fragments_for_target(
     target: &SegmentFetchTarget,
     blacklist: &SegmentBlacklist,
     cmcd: Option<CmcdFetch<'_>>,
+    retry: SegmentRetry<'_>,
 ) -> Result<(Vec<Bytes>, Option<CmsdSnapshot>), SegmentError> {
-    fetch_cmaf_fragments_with_failover(client, bases, &target.path, blacklist, cmcd).await
+    fetch_cmaf_fragments_with_failover(client, bases, &target.path, blacklist, cmcd, retry).await
 }
 
 async fn fetch_cmaf_fragments_with_failover(
@@ -129,6 +130,7 @@ async fn fetch_cmaf_fragments_with_failover(
     relative_path: &str,
     blacklist: &SegmentBlacklist,
     cmcd: Option<CmcdFetch<'_>>,
+    retry: SegmentRetry<'_>,
 ) -> Result<(Vec<Bytes>, Option<CmsdSnapshot>), SegmentError> {
     let mut last_err: Option<SegmentError> = None;
     for base in bases {
@@ -137,7 +139,7 @@ async fn fetch_cmaf_fragments_with_failover(
         } else {
             base.join(relative_path)?
         };
-        match fetch_cmaf_fragments(client, url.clone(), blacklist, cmcd.as_ref()).await {
+        match fetch_cmaf_fragments(client, url.clone(), blacklist, cmcd.as_ref(), retry).await {
             Ok(frags) => return Ok(frags),
             Err(e) => last_err = Some(e),
         }
@@ -150,25 +152,48 @@ async fn fetch_cmaf_fragments(
     url: Url,
     blacklist: &SegmentBlacklist,
     cmcd: Option<&CmcdFetch<'_>>,
+    retry: SegmentRetry<'_>,
 ) -> Result<(Vec<Bytes>, Option<CmsdSnapshot>), SegmentError> {
     if blacklist.contains_url(&url) {
         return Err(SegmentError::Blacklisted(url.to_string()));
     }
 
-    let mut req = HttpRequest::get(url.clone());
-    if let Some(cmcd) = cmcd {
-        req = cmcd.session.apply(req, &cmcd.context);
-    }
+    let policy = retry.config.policy(retry.kind, retry.low_latency);
+    let mut stream_resp = with_retry(
+        policy,
+        retry.kind,
+        |_attempt| {
+            let url = url.clone();
+            let client = client.clone();
+            async move {
+                let mut req = HttpRequest::get(url.clone());
+                if let Some(cmcd) = cmcd {
+                    req = cmcd.session.apply(req, &cmcd.context);
+                }
 
-    let mut stream_resp = client.open_body_stream(req).await?;
-    let status = stream_resp.status();
-    if !(200..300).contains(&status) {
-        blacklist.insert_url(&url);
-        return Err(SegmentError::RequestFailed {
-            status,
-            url: url.to_string(),
-        });
-    }
+                let stream_resp = client.open_body_stream(req).await?;
+                let status = stream_resp.status();
+                if !(200..300).contains(&status) {
+                    return Err(SegmentError::RequestFailed {
+                        status,
+                        url: url.to_string(),
+                    });
+                }
+                Ok(stream_resp)
+            }
+        },
+        |err| match err {
+            SegmentError::Request(_) => true,
+            SegmentError::RequestFailed { status, .. } => is_transient_status(*status),
+            _ => false,
+        },
+    )
+    .await
+    .inspect_err(|err| {
+        if let SegmentError::RequestFailed { .. } = err {
+            blacklist.insert_url(&url);
+        }
+    })?;
 
     let cmsd = parse_cmsd_headers(
         stream_resp

@@ -9,7 +9,9 @@ use roxmltree::{Document, Node};
 use thiserror::Error;
 use url::Url;
 
-use crate::http::{HttpRequest, SharedHttpClient};
+use crate::http::{
+    HttpRequest, HttpRequestKind, HttpRetryConfig, SharedHttpClient, send_with_retry,
+};
 use crate::manifest::merge_base_url;
 
 const XLINK_NS: &str = "http://www.w3.org/1999/xlink";
@@ -46,10 +48,12 @@ pub(crate) async fn resolve_period_xlinks(
     client: &SharedHttpClient,
     manifest_uri: &Url,
     mpd_xml: &str,
+    http_retry: &HttpRetryConfig,
 ) -> Result<String, XlinkError> {
     let mut xml = mpd_xml.to_string();
     for _ in 0..MAX_RESOLUTION_PASSES {
-        let (next, changed) = resolve_period_xlinks_once(client, manifest_uri, &xml).await?;
+        let (next, changed) =
+            resolve_period_xlinks_once(client, manifest_uri, &xml, http_retry).await?;
         xml = next;
         if !changed {
             break;
@@ -64,6 +68,7 @@ async fn resolve_period_xlinks_once(
     client: &SharedHttpClient,
     manifest_uri: &Url,
     mpd_xml: &str,
+    http_retry: &HttpRetryConfig,
 ) -> Result<(String, bool), XlinkError> {
     let doc =
         Document::parse(mpd_xml).map_err(|e| XlinkError::Malformed(format!("MPD XML: {e}")))?;
@@ -84,7 +89,7 @@ async fn resolve_period_xlinks_once(
         let replacement = if is_resolve_to_zero(&target.href) {
             String::new()
         } else {
-            fetch_period_replacement(client, manifest_uri, &target.href).await?
+            fetch_period_replacement(client, manifest_uri, &target.href, http_retry).await?
         };
         xml = replace_range(&xml, target.range, &replacement);
     }
@@ -130,18 +135,22 @@ async fn fetch_period_replacement(
     client: &SharedHttpClient,
     manifest_uri: &Url,
     href: &str,
+    http_retry: &HttpRetryConfig,
 ) -> Result<String, XlinkError> {
     let url = resolve_xlink_url(manifest_uri, href)?;
-    let resp = client
-        .send(
-            HttpRequest::get(url.clone())
-                .header("Accept", "application/dash+xml,video/vnd.mpeg.dash.mpd,*/*"),
-        )
-        .await
-        .map_err(|source| XlinkError::Fetch {
-            url: url.to_string(),
-            source,
-        })?;
+    let resp = send_with_retry(
+        client,
+        HttpRequest::get(url.clone())
+            .header("Accept", "application/dash+xml,video/vnd.mpeg.dash.mpd,*/*"),
+        http_retry,
+        HttpRequestKind::Xlink,
+        false,
+    )
+    .await
+    .map_err(|source| XlinkError::Fetch {
+        url: url.to_string(),
+        source,
+    })?;
     if !resp.is_success() {
         return Err(XlinkError::HttpStatus {
             url: url.to_string(),
@@ -428,7 +437,7 @@ mod tests {
   <Period id="gone" xlink:href="urn:mpeg:dash:resolve-to-zero:2013" xlink:actuate="onLoad"/>
 </MPD>"#;
         let client = shared(MockClient::default());
-        let out = resolve_period_xlinks(&client, &base(), xml)
+        let out = resolve_period_xlinks(&client, &base(), xml, &HttpRetryConfig::disabled())
             .await
             .expect("resolve");
         let mpd = dash_mpd::parse(&out).expect("parse");
@@ -450,7 +459,7 @@ mod tests {
      type="static" mediaPresentationDuration="PT4S" minBufferTime="PT1S" profiles="urn:mpeg:dash:profile:isoff-on-demand:2011">
   <Period xlink:href="ad.mpd" xlink:actuate="onLoad"/>
 </MPD>"#;
-        let out = resolve_period_xlinks(&client, &base(), xml)
+        let out = resolve_period_xlinks(&client, &base(), xml, &HttpRetryConfig::disabled())
             .await
             .expect("resolve");
         let mpd = dash_mpd::parse(&out).expect("parse");
@@ -476,7 +485,7 @@ mod tests {
      type="static" mediaPresentationDuration="PT4S" minBufferTime="PT1S" profiles="urn:mpeg:dash:profile:isoff-on-demand:2011">
   <Period xlink:href="multi.mpd" xlink:actuate="onRequest"/>
 </MPD>"#;
-        let out = resolve_period_xlinks(&client, &base(), xml)
+        let out = resolve_period_xlinks(&client, &base(), xml, &HttpRetryConfig::disabled())
             .await
             .expect("resolve");
         let mpd = dash_mpd::parse(&out).expect("parse");
@@ -501,7 +510,7 @@ mod tests {
      type="static" mediaPresentationDuration="PT4S" minBufferTime="PT1S" profiles="urn:mpeg:dash:profile:isoff-on-demand:2011">
   <Period xlink:href="https://cdn.example/remote.mpd" xlink:actuate="onLoad"/>
 </MPD>"#;
-        let out = resolve_period_xlinks(&client, &base(), xml)
+        let out = resolve_period_xlinks(&client, &base(), xml, &HttpRetryConfig::disabled())
             .await
             .expect("resolve");
         let mpd = dash_mpd::parse(&out).expect("parse");
@@ -525,7 +534,7 @@ mod tests {
      type="static" mediaPresentationDuration="PT2S" minBufferTime="PT1S" profiles="urn:mpeg:dash:profile:isoff-on-demand:2011">
   <Period xlink:href="outer.mpd" xlink:actuate="onLoad"/>
 </MPD>"#;
-        let out = resolve_period_xlinks(&client, &base(), xml)
+        let out = resolve_period_xlinks(&client, &base(), xml, &HttpRetryConfig::disabled())
             .await
             .expect("resolve");
         let mpd = dash_mpd::parse(&out).expect("parse");

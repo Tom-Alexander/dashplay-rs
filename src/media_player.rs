@@ -13,7 +13,7 @@ use super::http::FetchClient;
 use super::http::ReqwestClient;
 #[cfg(all(not(target_arch = "wasm32"), not(feature = "reqwest-http")))]
 use super::http::UnconfiguredHttpClient;
-use super::http::{HttpRequest, SharedHttpClient, shared};
+use super::http::{HttpRequest, HttpRetryConfig, SharedHttpClient, shared};
 use super::manifest::{self, ManifestError};
 use super::playback_control::PlaybackController;
 use super::stream_controller::PlaybackLoopState;
@@ -36,6 +36,7 @@ pub struct MediaPlayer {
     track_selection: TrackSelection,
     abr_factory: SharedAbrFactory,
     cmcd: Option<CmcdSession>,
+    http_retry: HttpRetryConfig,
 }
 
 impl MediaPlayer {
@@ -58,6 +59,7 @@ impl MediaPlayer {
             track_selection: TrackSelection::default(),
             abr_factory: shared_abr_factory(BolaAbrFactory::default()),
             cmcd: None,
+            http_retry: HttpRetryConfig::default(),
         })
     }
 
@@ -106,13 +108,29 @@ impl MediaPlayer {
         self
     }
 
+    /// Configure fixed-delay HTTP retry for transient failures (dash.js-style).
+    ///
+    /// Retries apply per URL before BaseURL failover. Defaults match dash.js
+    /// (`~3` attempts, fixed intervals; scaled for low-latency CMAF fetches).
+    pub fn with_http_retry(mut self, config: HttpRetryConfig) -> Self {
+        self.http_retry = config;
+        self
+    }
+
     pub async fn fetch_manifest(&mut self) -> Result<(), PlayerError> {
         let mut req = HttpRequest::get(self.manifest_uri.clone());
         if let Some(session) = self.cmcd.as_ref() {
             let ctx = session.context_for(CmcdObjectType::Manifest, None, None, None, None, None);
             req = session.apply(req, &ctx);
         }
-        let resp = self.client.send(req).await?;
+        let resp = crate::http::send_with_retry(
+            &self.client,
+            req,
+            &self.http_retry,
+            crate::http::HttpRequestKind::Manifest,
+            false,
+        )
+        .await?;
         if let Some(cmsd) =
             parse_cmsd_headers(resp.headers().iter().map(|(k, v)| (k.as_str(), v.as_str())))
         {
@@ -125,6 +143,7 @@ impl MediaPlayer {
             &self.client,
             &self.manifest_uri,
             &text,
+            &self.http_retry,
         )
         .await
         .map_err(|e| ManifestError::Xlink(e.to_string()))?;
@@ -202,6 +221,7 @@ impl MediaPlayer {
             track_selection: self.track_selection,
             abr_factory: self.abr_factory,
             cmcd: self.cmcd,
+            http_retry: self.http_retry,
         };
 
         Ok(PlayerOutputs {

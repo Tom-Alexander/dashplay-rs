@@ -12,7 +12,7 @@ A pure Rust implementation of an MPEG-DASH player library.
 - **Widevine DRM** — PSSH and license URL parsing from the MPD, license acquisition, and in-pipeline segment decryption
 - **Custom license handling** — Pluggable async license fetcher for custom headers, cookies, or proxies
 - **Pluggable HTTP client** — [`HttpClient`](#http-client) trait with default [`ReqwestClient`](#http-client) (native) and [`FetchClient`](#http-client) (WASM); swap in embedded stacks or custom TLS
-- **Resilient fetching** — BaseURL resolution and failover, representation fallback, and segment URL blacklisting after failures
+- **Resilient fetching** — BaseURL resolution and failover, fixed-delay HTTP retry for transient failures, representation fallback, and segment URL blacklisting after failures
 - **Clock sync** — `UTCTiming` resolution for live edge calculation (HTTP, NTP/SNTP, and related schemes)
 - **Modular API** — High-level [`Player`](#player) wrapper or lower-level [`MediaPlayer`](#mediaplayer) for finer control
 - **Playback control** — `seek`, `pause`, `resume`, `stop`, and a [`PlaybackState`](#playbackstate) lifecycle machine
@@ -339,6 +339,7 @@ wrappers around the same controller. Clone handles (`outputs.playback.clone()`) 
 | [`HttpClient`](#http-client) / [`ReqwestClient`](#http-client) | Pluggable HTTP transport for manifest, segment, and clock-sync requests |
 | [`AbrFactory`](#abr) / [`BolaAbrFactory`](#abr) / [`LolPlusAbrFactory`](#abr) | Pluggable adaptive bitrate; default BOLA, optional LoL+ |
 | [`HttpRequest`](#http-client) / [`HttpResponse`](#http-client) / [`HttpError`](#http-client) | Request/response types for custom HTTP backends |
+| [`HttpRetryConfig`](#http-client) / [`HttpRequestKind`](#http-client) | Fixed-delay HTTP retry for transient failures |
 | `shared` | Wrap a concrete [`HttpClient`](#http-client) in [`SharedHttpClient`](#http-client) |
 | [`PlayerError`](#playererror) | Unified error type for the playback pipeline |
 | [`bola`](#bola) | BOLA adaptive bitrate algorithm |
@@ -362,12 +363,14 @@ Player::with_license_fetcher(self, fetcher: WidevineLicenseFetcher) -> Player
 Player::with_track_selection(self, selection: TrackSelection) -> Player
 Player::with_http_client(self, client: SharedHttpClient) -> Player
 Player::with_abr_factory(self, factory: SharedAbrFactory) -> Player
+Player::with_http_retry(self, config: HttpRetryConfig) -> Player
 ```
 
 Replace the default `reqwest` license POST with a custom fetcher (extra headers, cookies, proxy,
 etc.). `with_http_client` replaces the default [`ReqwestClient`](#http-client) used for manifest,
 segment, and `UTCTiming` requests. `with_abr_factory` replaces the default
-[`BolaAbrFactory`](#abr) used for representation selection.
+[`BolaAbrFactory`](#abr) used for representation selection. `with_http_retry` configures
+fixed-delay retries for transient HTTP failures (defaults are enabled).
 
 ```rust
 Player::start_tracks(self) -> Result<PlayerTrackOutputs, PlayerError>
@@ -425,6 +428,7 @@ MediaPlayer::with_license_fetcher(self, fetcher: WidevineLicenseFetcher) -> Medi
 MediaPlayer::with_track_selection(self, selection: TrackSelection) -> MediaPlayer
 MediaPlayer::with_http_client(self, client: SharedHttpClient) -> MediaPlayer
 MediaPlayer::with_abr_factory(self, factory: SharedAbrFactory) -> MediaPlayer
+MediaPlayer::with_http_retry(self, config: HttpRetryConfig) -> MediaPlayer
 MediaPlayer::fetch_manifest(&mut self) -> Result<(), PlayerError>
 MediaPlayer::start(self) -> Result<PlayerOutputs, PlayerError>
 ```
@@ -706,6 +710,8 @@ targets (with the `reqwest-http` feature). On `wasm32` without `reqwest-http`, t
 | `HttpRequest` | `get` / `head` / `post` builders with `header` and `byte_range` |
 | `HttpResponse` | Status, headers, and body; `is_success()`, `header(name)`, `text()`, `into_bytes()` |
 | `HttpError` | Transport or body decode failure |
+| `HttpRetryConfig` | Fixed per-type delay retry (dash.js-style); enabled by default |
+| `HttpRequestKind` | Request class used to select attempts/interval (MPD, media, init, …) |
 
 Used for:
 
@@ -714,11 +720,18 @@ Used for:
 - `UTCTiming` clock synchronization (`GET`, `HEAD`)
 - Default Widevine license POSTs (override with [`WidevineLicenseFetcher`](#widevinelicensefetcher))
 
+Transient failures (transport errors, `408` / `429` / `5xx`) are retried on the same URL with a
+**fixed** delay before BaseURL failover. Defaults: ~3 attempts; MPD `500ms`, media/init/index
+`1000ms`; CMAF low-latency fetches scale attempts up and intervals down. Use
+[`HttpRetryConfig::disabled`](src/http/retry.rs) to turn retries off.
+
 Configure on [`Player`](#player) or [`MediaPlayer`](#mediaplayer):
 
 ```rust
 Player::with_http_client(self, client: SharedHttpClient) -> Player
 MediaPlayer::with_http_client(self, client: SharedHttpClient) -> MediaPlayer
+Player::with_http_retry(self, config: HttpRetryConfig) -> Player
+MediaPlayer::with_http_retry(self, config: HttpRetryConfig) -> MediaPlayer
 ```
 
 ---

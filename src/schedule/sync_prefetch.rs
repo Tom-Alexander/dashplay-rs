@@ -11,7 +11,7 @@ use tokio::sync::Mutex as AsyncMutex;
 use crate::PlayerError;
 use crate::abr::{AbrCreateContext, AbrFactory, BolaAbrFactory};
 use crate::drm::DrmSessionCoordinator;
-use crate::http::SharedHttpClient;
+use crate::http::{HttpRetryConfig, SharedHttpClient};
 use crate::manifest::{self, TimelineBuildContext};
 use crate::metrics::TrackMetrics;
 use crate::segment_blacklist::SegmentBlacklist;
@@ -42,6 +42,7 @@ pub(crate) struct SyncPrefetchPlan {
 }
 
 /// Fetch (but do not emit) the first undelivered media segment of the next Period.
+#[allow(clippy::too_many_arguments)]
 pub(crate) async fn prefetch_next_period_first_segment(
     plan: &SyncPrefetchPlan,
     client: &SharedHttpClient,
@@ -50,6 +51,7 @@ pub(crate) async fn prefetch_next_period_first_segment(
     drm: &Arc<AsyncMutex<DrmSessionCoordinator>>,
     track_kind: TrackKind,
     cmcd: Option<&crate::cmcd::CmcdSession>,
+    http_retry: &HttpRetryConfig,
 ) -> Result<Option<Vec<PlayerEvent>>, PlayerError> {
     let _ = plan.next_period_idx;
     let addressing =
@@ -120,6 +122,7 @@ pub(crate) async fn prefetch_next_period_first_segment(
         metrics: &metrics,
         track_kind,
         cmcd,
+        http_retry,
         emit_init: false,
     };
 

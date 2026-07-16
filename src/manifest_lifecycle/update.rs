@@ -5,7 +5,9 @@ use url::Url;
 
 use crate::PlayerError;
 use crate::cmcd::{CmcdObjectType, CmcdSession, parse_cmsd_headers};
-use crate::http::{HttpRequest, SharedHttpClient};
+use crate::http::{
+    HttpRequest, HttpRequestKind, HttpRetryConfig, SharedHttpClient, send_with_retry,
+};
 use crate::manifest::ManifestError;
 use crate::manifest::merge_base_url;
 
@@ -32,9 +34,12 @@ impl ManifestSession {
         client: &SharedHttpClient,
         initial_uri: &Url,
         cmcd: Option<&CmcdSession>,
+        http_retry: &HttpRetryConfig,
     ) -> Result<(), PlayerError> {
         let fetch_uri = self.resolve_fetch_uri(initial_uri)?;
-        let (xml, parsed) = self.fetch_manifest_body(client, &fetch_uri, cmcd).await?;
+        let (xml, parsed) = self
+            .fetch_manifest_body(client, &fetch_uri, cmcd, http_retry)
+            .await?;
         if let Some(session) = cmcd {
             session.set_stream_type(crate::cmcd::CmcdStreamType::from_dynamic(
                 crate::manifest::is_dynamic_mpd(&parsed),
@@ -79,10 +84,11 @@ impl ManifestSession {
         client: &SharedHttpClient,
         fetch_uri: &Url,
         cmcd: Option<&CmcdSession>,
+        http_retry: &HttpRetryConfig,
     ) -> Result<(String, MPD), PlayerError> {
         if let Some(patch_uri) = self.patch_fetch_uri(fetch_uri)? {
             match self
-                .try_fetch_patch(client, fetch_uri, &patch_uri, cmcd)
+                .try_fetch_patch(client, fetch_uri, &patch_uri, cmcd, http_retry)
                 .await
             {
                 Ok(result) => return Ok(result),
@@ -91,7 +97,8 @@ impl ManifestSession {
         }
 
         let req = manifest_http_request(fetch_uri.clone(), cmcd);
-        let resp = client.send(req).await?;
+        let resp =
+            send_with_retry(client, req, http_retry, HttpRequestKind::Manifest, false).await?;
         if let Some(cmsd) =
             parse_cmsd_headers(resp.headers().iter().map(|(k, v)| (k.as_str(), v.as_str())))
         {
@@ -100,7 +107,7 @@ impl ManifestSession {
             }
         }
         let text = resp.text()?;
-        let resolved = xlink::resolve_period_xlinks(client, fetch_uri, &text)
+        let resolved = xlink::resolve_period_xlinks(client, fetch_uri, &text, http_retry)
             .await
             .map_err(map_xlink_error)?;
         let parsed = dash_mpd::parse(&resolved)?;
@@ -131,11 +138,17 @@ impl ManifestSession {
         manifest_uri: &Url,
         patch_uri: &Url,
         cmcd: Option<&CmcdSession>,
+        http_retry: &HttpRetryConfig,
     ) -> Result<(String, MPD), PlayerError> {
         let base_xml = self.mpd_xml.as_deref().ok_or(ManifestError::NotLoaded)?;
-        let resp = client
-            .send(manifest_http_request(patch_uri.clone(), cmcd))
-            .await?;
+        let resp = send_with_retry(
+            client,
+            manifest_http_request(patch_uri.clone(), cmcd),
+            http_retry,
+            HttpRequestKind::Manifest,
+            false,
+        )
+        .await?;
         if let Some(cmsd) =
             parse_cmsd_headers(resp.headers().iter().map(|(k, v)| (k.as_str(), v.as_str())))
         {
@@ -145,7 +158,7 @@ impl ManifestSession {
         }
         let patch_xml = resp.text()?;
         let updated = patch::apply_mpd_patch(base_xml, &patch_xml).map_err(map_patch_error)?;
-        let resolved = xlink::resolve_period_xlinks(client, manifest_uri, &updated)
+        let resolved = xlink::resolve_period_xlinks(client, manifest_uri, &updated, http_retry)
             .await
             .map_err(map_xlink_error)?;
         let parsed = dash_mpd::parse(&resolved)?;

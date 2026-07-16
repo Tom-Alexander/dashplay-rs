@@ -47,6 +47,7 @@ pub(crate) struct PlaybackLoopState {
     pub track_selection: TrackSelection,
     pub abr_factory: SharedAbrFactory,
     pub cmcd: Option<crate::cmcd::CmcdSession>,
+    pub http_retry: crate::http::HttpRetryConfig,
 }
 
 impl PlaybackLoopState {
@@ -59,6 +60,7 @@ impl PlaybackLoopState {
             mut track_selection,
             abr_factory,
             cmcd,
+            http_retry,
         } = self;
 
         let mut manifest_session = ManifestSession::default();
@@ -86,8 +88,14 @@ impl PlaybackLoopState {
 
                 playback.set_state(PlaybackState::LoadingManifest);
 
-                refresh_manifest(&mut manifest_session, &client, &manifest_uri, cmcd.as_ref())
-                    .await?;
+                refresh_manifest(
+                    &mut manifest_session,
+                    &client,
+                    &manifest_uri,
+                    cmcd.as_ref(),
+                    &http_retry,
+                )
+                .await?;
                 let tick = manifest_tick(&manifest_session, &client).await?;
                 broadcast_manifest_loaded(&tracks, tick.mpd, tick.xml);
 
@@ -234,6 +242,7 @@ impl PlaybackLoopState {
                         let playback = playback.clone();
                         let abr_factory = abr_factory.clone();
                         let cmcd_for_track = cmcd.clone();
+                        let http_retry_for_track = http_retry.clone();
                         let prt_reference_id = period_ctx.prt_reference_id.clone();
                         let operating =
                             crate::clock::service_description::OperatingConstraints::from_mpd(
@@ -285,6 +294,7 @@ impl PlaybackLoopState {
                                 prt_reference_id,
                                 operating_constraints,
                                 cmcd: cmcd_for_track,
+                                http_retry: http_retry_for_track,
                                 track_kind,
                                 sync_prefetch,
                             })

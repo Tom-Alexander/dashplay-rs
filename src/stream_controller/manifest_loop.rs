@@ -31,8 +31,11 @@ pub(crate) async fn refresh_manifest(
     client: &SharedHttpClient,
     manifest_uri: &Url,
     cmcd: Option<&crate::cmcd::CmcdSession>,
+    http_retry: &crate::http::HttpRetryConfig,
 ) -> Result<(), PlayerError> {
-    session.refresh(client, manifest_uri, cmcd).await?;
+    session
+        .refresh(client, manifest_uri, cmcd, http_retry)
+        .await?;
     session.sync_steering(client).await
 }
 

@@ -15,7 +15,7 @@ use crate::PlayerError;
 use crate::abr::SharedAbrFactory;
 use crate::cmcd::CmcdSession;
 use crate::drm::DrmSessionCoordinator;
-use crate::http::SharedHttpClient;
+use crate::http::{HttpRetryConfig, SharedHttpClient};
 use crate::manifest::{self, TimelineBuildContext};
 use crate::metrics::TrackMetrics;
 use crate::playback_control::{PlaybackController, PlaybackState};
@@ -220,6 +220,8 @@ pub(crate) struct AdaptationStreamContext {
         Option<crate::clock::service_description::ResolvedOperatingConstraints>,
     /// Shared CMCD/CMSD session when enabled on the player.
     pub cmcd: Option<CmcdSession>,
+    /// HTTP retry policy for transient failures.
+    pub http_retry: HttpRetryConfig,
     /// Kind of the selected track (for CMCD `ot`).
     pub track_kind: crate::track_selection::TrackKind,
     /// Optional sync-buffer prefetch of the next Continuous/Connected Period.
@@ -260,6 +262,7 @@ pub(crate) async fn run_adaptation_stream(
         prt_reference_id,
         operating_constraints,
         cmcd,
+        http_retry,
         track_kind,
         sync_prefetch,
     } = ctx;
@@ -320,6 +323,7 @@ pub(crate) async fn run_adaptation_stream(
                 rep,
                 &adaptation_set,
                 &blacklist,
+                &http_retry,
             )
             .await?
         }
@@ -344,6 +348,7 @@ pub(crate) async fn run_adaptation_stream(
                 rep,
                 &adaptation_set,
                 &blacklist,
+                &http_retry,
             )
             .await?
         }
@@ -457,6 +462,7 @@ pub(crate) async fn run_adaptation_stream(
         metrics: &metrics,
         track_kind,
         cmcd: cmcd.as_ref(),
+        http_retry: &http_retry,
         emit_init: init_taken,
     };
     if init_taken {
@@ -539,6 +545,7 @@ pub(crate) async fn run_adaptation_stream(
                 &drm,
                 track_kind,
                 cmcd.as_ref(),
+                &http_retry,
             )
             .await?;
         }

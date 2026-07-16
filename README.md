@@ -338,6 +338,7 @@ wrappers around the same controller. Clone handles (`outputs.playback.clone()`) 
 | [`WidevineLicenseFetcher`](#widevinelicensefetcher) | Custom async Widevine license HTTP handler |
 | [`HttpClient`](#http-client) / [`ReqwestClient`](#http-client) | Pluggable HTTP transport for manifest, segment, and clock-sync requests |
 | [`AbrFactory`](#abr) / [`BolaAbrFactory`](#abr) / [`LolPlusAbrFactory`](#abr) | Pluggable adaptive bitrate; default BOLA, optional LoL+ |
+| [`QualityConstraints`](#abr) | User min/max bitrate, fixed quality, and data-saver ABR limits |
 | [`HttpRequest`](#http-client) / [`HttpResponse`](#http-client) / [`HttpError`](#http-client) | Request/response types for custom HTTP backends |
 | [`HttpRetryConfig`](#http-client) / [`HttpRequestKind`](#http-client) | Fixed-delay HTTP retry for transient failures |
 | `shared` | Wrap a concrete [`HttpClient`](#http-client) in [`SharedHttpClient`](#http-client) |
@@ -363,13 +364,15 @@ Player::with_license_fetcher(self, fetcher: WidevineLicenseFetcher) -> Player
 Player::with_track_selection(self, selection: TrackSelection) -> Player
 Player::with_http_client(self, client: SharedHttpClient) -> Player
 Player::with_abr_factory(self, factory: SharedAbrFactory) -> Player
+Player::with_quality_constraints(self, constraints: QualityConstraints) -> Player
 Player::with_http_retry(self, config: HttpRetryConfig) -> Player
 ```
 
 Replace the default `reqwest` license POST with a custom fetcher (extra headers, cookies, proxy,
 etc.). `with_http_client` replaces the default [`ReqwestClient`](#http-client) used for manifest,
 segment, and `UTCTiming` requests. `with_abr_factory` replaces the default
-[`BolaAbrFactory`](#abr) used for representation selection. `with_http_retry` configures
+[`BolaAbrFactory`](#abr) used for representation selection. `with_quality_constraints` limits ABR
+to a bitrate envelope, fixed ladder index, or data-saver (lowest rung). `with_http_retry` configures
 fixed-delay retries for transient HTTP failures (defaults are enabled).
 
 ```rust
@@ -428,6 +431,7 @@ MediaPlayer::with_license_fetcher(self, fetcher: WidevineLicenseFetcher) -> Medi
 MediaPlayer::with_track_selection(self, selection: TrackSelection) -> MediaPlayer
 MediaPlayer::with_http_client(self, client: SharedHttpClient) -> MediaPlayer
 MediaPlayer::with_abr_factory(self, factory: SharedAbrFactory) -> MediaPlayer
+MediaPlayer::with_quality_constraints(self, constraints: QualityConstraints) -> MediaPlayer
 MediaPlayer::with_http_retry(self, config: HttpRetryConfig) -> MediaPlayer
 MediaPlayer::fetch_manifest(&mut self) -> Result<(), PlayerError>
 MediaPlayer::start(self) -> Result<PlayerOutputs, PlayerError>
@@ -594,6 +598,7 @@ Returned by [`Player::start_tracks`](#player):
 | `playback` | [`PlaybackController`](#playbackcontroller) for this session |
 | `join` | Background task running the stream controller loop |
 | `pause` / `resume` / `seek` / `set_track_selection` / `stop` | Playback control (delegates to `playback`) |
+| `quality_constraints` / `set_quality_constraints` / `set_quality_for` / `set_auto_switch_bitrate` | User ABR quality limits (delegates to `playback`) |
 | `playback_state` / `subscribe_playback_state` | Current or watched [`PlaybackState`](#playbackstate) |
 | `presentation_time` / `subscribe_presentation_time` | Current or watched session presentation time |
 | `buffer_feedback(idx)` | [`BufferFeedback`](#bufferfeedback) for a track index |
@@ -629,6 +634,10 @@ the same session.
 | `resume()` | Resume delivery after `pause` |
 | `seek(presentation_time)` | Seek to a presentation time ([`Duration`](https://doc.rust-lang.org/std/time/struct.Duration.html) from the start of the presentation) |
 | `set_track_selection(selection)` | Change audio/text preferences mid-playback without restarting (track slot count is fixed at start) |
+| `quality_constraints()` | Current user ABR quality constraints |
+| `set_quality_constraints(constraints)` | Update min/max bitrate, fixed quality, or data-saver (bitrate envelope changes rebuild ABR) |
+| `set_quality_for(quality_index)` | Pin a ladder index and disable autoswitch (dash.js: `setQualityFor`) |
+| `set_auto_switch_bitrate(enabled)` | Enable or disable automatic quality switching |
 | `presentation_time()` | Current session presentation time (media clock); `None` before the first segment is delivered |
 | `subscribe_presentation_time()` | Watch presentation time updates (media clock, seek target, or clock init) |
 | `stop()` | Stop playback; no further segments are delivered |
@@ -752,12 +761,29 @@ low-latency live, use [`LolPlusAbrFactory`](src/abr/lol_plus/) (LoL+ SOM).
 | `SharedAbrFactory` | `Arc<dyn AbrFactory>` shared across playback tasks |
 | `shared_abr_factory(factory)` | Wrap a concrete factory for use with `with_abr_factory` |
 | `quality_ladder_from_adaptation_set` | Build a bandwidth-ordered ladder from an adaptation set |
+| `QualityConstraints` | User min/max bitrate, fixed quality (`fixed_quality`), and data-saver |
 
 Configure on [`Player`](#player) or [`MediaPlayer`](#mediaplayer):
 
 ```rust
 Player::with_abr_factory(self, factory: SharedAbrFactory) -> Player
+Player::with_quality_constraints(self, constraints: QualityConstraints) -> Player
 MediaPlayer::with_abr_factory(self, factory: SharedAbrFactory) -> MediaPlayer
+MediaPlayer::with_quality_constraints(self, constraints: QualityConstraints) -> MediaPlayer
+```
+
+```rust
+use dashplayrs::{Player, QualityConstraints};
+
+let player = Player::new(url, None)?
+    .with_quality_constraints(
+        QualityConstraints::default()
+            .min_bitrate_bps(300_000)
+            .max_bitrate_bps(2_000_000),
+    );
+// Or pin a rung / enable data-saver:
+// QualityConstraints::default().fixed_quality(0)
+// QualityConstraints::default().data_saver(true)
 ```
 
 Implement [`AbrFactory`] and optionally reuse [`quality_ladder_from_adaptation_set`] when

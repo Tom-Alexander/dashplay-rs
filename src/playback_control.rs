@@ -9,6 +9,7 @@ use std::time::Duration;
 use thiserror::Error;
 use tokio::sync::watch;
 
+use super::abr::QualityConstraints;
 use super::clock::latency_control::{
     LatencyControlUpdate, LatencyPolicy, LiveClock, evaluate as evaluate_latency,
 };
@@ -76,6 +77,7 @@ struct Inner {
     seek_target: Mutex<Option<Duration>>,
     seek_generation: AtomicU64,
     pending_track_selection: Mutex<Option<TrackSelection>>,
+    quality_constraints: Mutex<QualityConstraints>,
     /// Per-track end of delivered media on the presentation timeline.
     track_delivered_ends: Mutex<Vec<Option<Duration>>>,
     /// Consumption position (media clock); published via `playhead_tx`.
@@ -116,6 +118,7 @@ impl PlaybackController {
                 seek_target: Mutex::new(None),
                 seek_generation: AtomicU64::new(0),
                 pending_track_selection: Mutex::new(None),
+                quality_constraints: Mutex::new(QualityConstraints::default()),
                 track_delivered_ends: Mutex::new(Vec::new()),
                 media_clock: Mutex::new(None),
                 media_clock_wall: Mutex::new(None),
@@ -243,6 +246,59 @@ impl PlaybackController {
             .pending_track_selection
             .lock()
             .unwrap_or_else(|e| e.into_inner()) = Some(selection);
+        self.interrupt_streams_from_playhead(PlaybackState::Buffering);
+        Ok(())
+    }
+
+    /// Current user ABR quality constraints.
+    pub fn quality_constraints(&self) -> QualityConstraints {
+        self.inner
+            .quality_constraints
+            .lock()
+            .unwrap_or_else(|e| e.into_inner())
+            .clone()
+    }
+
+    /// Update user ABR quality constraints (dash.js: `abr.minBitrate` / `maxBitrate`,
+    /// `autoSwitchBitrate`, `setQualityFor`).
+    ///
+    /// Fixed-quality and autoswitch changes apply on the next segment decision without
+    /// interrupting delivery. Changes to min/max bitrate or data-saver rebuild ABR state
+    /// by interrupting in-flight adaptation streams (same path as
+    /// [`Self::set_track_selection`]).
+    pub fn set_quality_constraints(
+        &self,
+        constraints: QualityConstraints,
+    ) -> Result<(), PlaybackControlError> {
+        self.require_active()?;
+        let previous = self.quality_constraints();
+        *self
+            .inner
+            .quality_constraints
+            .lock()
+            .unwrap_or_else(|e| e.into_inner()) = constraints.clone();
+        if previous.ladder_filter_changed(&constraints) {
+            self.interrupt_streams_from_playhead(PlaybackState::Buffering);
+        }
+        Ok(())
+    }
+
+    /// Pin the active ladder index and disable autoswitch (dash.js: `setQualityFor`).
+    pub fn set_quality_for(&self, quality_index: usize) -> Result<(), PlaybackControlError> {
+        let mut constraints = self.quality_constraints();
+        constraints.auto_switch = false;
+        constraints.fixed_quality_index = Some(quality_index);
+        self.set_quality_constraints(constraints)
+    }
+
+    /// Enable or disable automatic quality switching (dash.js: `setAutoSwitchQualityFor`).
+    pub fn set_auto_switch_bitrate(&self, enabled: bool) -> Result<(), PlaybackControlError> {
+        let mut constraints = self.quality_constraints();
+        constraints.auto_switch = enabled;
+        self.set_quality_constraints(constraints)
+    }
+
+    fn interrupt_streams_from_playhead(&self, state: PlaybackState) {
         let resume_at = self.presentation_time().unwrap_or(Duration::ZERO);
         *self
             .inner
@@ -258,8 +314,16 @@ impl PlaybackController {
             .has_started_playing
             .store(false, Ordering::Release);
         self.set_media_clock(Some(resume_at));
-        let _ = self.inner.state_tx.send(PlaybackState::Buffering);
-        Ok(())
+        let _ = self.inner.state_tx.send(state);
+    }
+
+    /// Install constraints before playback starts (used by [`crate::MediaPlayer::start`]).
+    pub(crate) fn set_quality_constraints_unchecked(&self, constraints: QualityConstraints) {
+        *self
+            .inner
+            .quality_constraints
+            .lock()
+            .unwrap_or_else(|e| e.into_inner()) = constraints;
     }
 
     /// Stop playback. No further segments are delivered; state becomes [`PlaybackState::Ended`].
@@ -809,6 +873,7 @@ fn min_delivered_end(ends: &[Option<Duration>]) -> Option<Duration> {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::abr::QualityConstraints;
     use crate::clock::latency_control::LatencyPolicy;
 
     #[test]
@@ -935,6 +1000,31 @@ mod tests {
         assert_eq!(playback.presentation_time(), Some(Duration::from_secs(4)));
         assert_eq!(playback.take_seek_target(), Some(Duration::from_secs(4)));
         assert_eq!(playback.take_track_selection(), Some(selection));
+    }
+
+    #[test]
+    fn set_quality_for_does_not_interrupt_streams() {
+        let playback = PlaybackController::new();
+        playback.mark_started();
+        playback.record_segment_delivery(0, Duration::from_secs(4), Duration::from_secs(8));
+        let before = playback.seek_generation();
+        playback.set_quality_for(1).unwrap();
+        assert_eq!(playback.seek_generation(), before);
+        assert!(!playback.quality_constraints().auto_switch);
+        assert_eq!(playback.quality_constraints().fixed_quality_index, Some(1));
+    }
+
+    #[test]
+    fn set_max_bitrate_interrupts_streams_for_abr_rebuild() {
+        let playback = PlaybackController::new();
+        playback.mark_started();
+        playback.record_segment_delivery(0, Duration::from_secs(4), Duration::from_secs(8));
+        let before = playback.seek_generation();
+        playback
+            .set_quality_constraints(QualityConstraints::default().max_bitrate_bps(500_000))
+            .unwrap();
+        assert!(playback.seek_generation() > before);
+        assert_eq!(playback.take_seek_target(), Some(Duration::from_secs(4)));
     }
 
     #[test]

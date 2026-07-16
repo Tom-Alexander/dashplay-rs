@@ -9,7 +9,7 @@ use dash_mpd::{AdaptationSet, Period};
 use tokio::sync::Mutex as AsyncMutex;
 
 use crate::PlayerError;
-use crate::abr::{AbrCreateContext, AbrFactory, BolaAbrFactory};
+use crate::abr::{AbrCreateContext, AbrFactory, BolaAbrFactory, QualityConstraints};
 use crate::drm::DrmSessionCoordinator;
 use crate::http::{HttpRetryConfig, SharedHttpClient};
 use crate::manifest::{self, TimelineBuildContext};
@@ -104,6 +104,7 @@ pub(crate) async fn prefetch_next_period_first_segment(
         &plan.next_adaptation_set,
         &AbrCreateContext {
             operating: None,
+            user: None,
             segment_duration_s,
             buffer_max_s: Some(buffer_target.max_buffer_s),
             quality_ladder: None,
@@ -134,7 +135,7 @@ pub(crate) async fn prefetch_next_period_first_segment(
     let mut encrypted_init_by_rep: HashMap<(usize, String), Bytes> = HashMap::new();
     // Prefetch holds events until PeriodChanged; Init is emitted then via held events when needed.
     let mut init_signal = InitSignalState::new(true);
-    let init_plan = plan_init(abr.as_mut(), 0.0);
+    let init_plan = plan_init(abr.as_mut(), 0.0, &QualityConstraints::default());
     let _ = fetch_init_with_rep_fallback(
         &fetch_env,
         abr.as_ref(),
@@ -158,6 +159,7 @@ pub(crate) async fn prefetch_next_period_first_segment(
             timeline_ctx: &plan.next_timeline_ctx,
             cached_inits: &encrypted_init_by_rep,
             last_quality_index: None,
+            quality_constraints: QualityConstraints::default(),
         },
     );
 

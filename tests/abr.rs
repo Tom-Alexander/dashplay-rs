@@ -29,6 +29,108 @@ async fn abr_starts_at_high_representation_with_full_buffer() {
 }
 
 #[tokio::test]
+async fn quality_constraints_max_bitrate_selects_low_representation()
+-> Result<(), dashplayrs::PlayerError> {
+    use dashplayrs::{Player, QualityConstraints};
+
+    let server = FixtureServer::spawn("vod_abr").await;
+    let player = Player::new(server.manifest_url.as_str(), None)?
+        .with_quality_constraints(QualityConstraints::default().max_bitrate_bps(200_000));
+    let outputs = player.start_tracks().await?;
+    let buffer_feedback = outputs.buffer_feedback(0).expect("one track");
+    let _ = buffer_feedback.report(25.0);
+    let _drain = common::spawn_playback_buffer_simulation(buffer_feedback, 25.0);
+    let mut rx = outputs
+        .tracks
+        .into_iter()
+        .next()
+        .expect("one track")
+        .into_receiver();
+    let events = common::collect_events(&mut rx, TIMEOUT).await;
+    outputs.join.await.unwrap()?;
+
+    assert_eq!(
+        init_payload(&events).as_deref(),
+        Some(b"dashplay-abr-low-init".as_ref())
+    );
+    assert_eq!(
+        segment_payloads(&events),
+        vec![
+            b"dashplay-abr-low-seg-1".to_vec(),
+            b"dashplay-abr-low-seg-2".to_vec(),
+        ]
+    );
+    assert!(has_end(&events));
+    Ok(())
+}
+
+#[tokio::test]
+async fn quality_constraints_data_saver_selects_lowest_representation()
+-> Result<(), dashplayrs::PlayerError> {
+    use dashplayrs::{Player, QualityConstraints};
+
+    let server = FixtureServer::spawn("vod_abr").await;
+    let player = Player::new(server.manifest_url.as_str(), None)?
+        .with_quality_constraints(QualityConstraints::default().data_saver(true));
+    let outputs = player.start_tracks().await?;
+    let buffer_feedback = outputs.buffer_feedback(0).expect("one track");
+    let _ = buffer_feedback.report(25.0);
+    let _drain = common::spawn_playback_buffer_simulation(buffer_feedback, 25.0);
+    let mut rx = outputs
+        .tracks
+        .into_iter()
+        .next()
+        .expect("one track")
+        .into_receiver();
+    let events = common::collect_events(&mut rx, TIMEOUT).await;
+    outputs.join.await.unwrap()?;
+
+    assert_eq!(
+        init_payload(&events).as_deref(),
+        Some(b"dashplay-abr-low-init".as_ref())
+    );
+    assert!(has_end(&events));
+    Ok(())
+}
+
+#[tokio::test]
+async fn quality_constraints_fixed_quality_pins_representation()
+-> Result<(), dashplayrs::PlayerError> {
+    use dashplayrs::{Player, QualityConstraints};
+
+    let server = FixtureServer::spawn("vod_abr").await;
+    // Ladder is low(0) then high(1); pin to low even with a full buffer.
+    let player = Player::new(server.manifest_url.as_str(), None)?
+        .with_quality_constraints(QualityConstraints::default().fixed_quality(0));
+    let outputs = player.start_tracks().await?;
+    let buffer_feedback = outputs.buffer_feedback(0).expect("one track");
+    let _ = buffer_feedback.report(25.0);
+    let _drain = common::spawn_playback_buffer_simulation(buffer_feedback, 25.0);
+    let mut rx = outputs
+        .tracks
+        .into_iter()
+        .next()
+        .expect("one track")
+        .into_receiver();
+    let events = common::collect_events(&mut rx, TIMEOUT).await;
+    outputs.join.await.unwrap()?;
+
+    assert_eq!(
+        init_payload(&events).as_deref(),
+        Some(b"dashplay-abr-low-init".as_ref())
+    );
+    assert_eq!(
+        segment_payloads(&events),
+        vec![
+            b"dashplay-abr-low-seg-1".to_vec(),
+            b"dashplay-abr-low-seg-2".to_vec(),
+        ]
+    );
+    assert!(has_end(&events));
+    Ok(())
+}
+
+#[tokio::test]
 async fn representation_fallback_uses_lower_rep_when_higher_segment_missing() {
     let server = FixtureServer::spawn("vod_rep_fallback").await;
     let events = play_single_track(&server.manifest_url, TIMEOUT)

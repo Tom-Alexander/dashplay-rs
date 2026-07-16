@@ -9,7 +9,7 @@ use std::collections::HashMap;
 use bytes::Bytes;
 use dash_mpd::AdaptationSet;
 
-use crate::abr::AbrController;
+use crate::abr::{AbrController, QualityConstraints, clamp_quality_index};
 use crate::manifest::{
     self, ByteRange, SegmentAddressing, SegmentAvailability, SwitchingHint, TimelineBuildContext,
     TimelineSegment, is_switch_opportunity, switching_hints_for,
@@ -38,6 +38,8 @@ pub(crate) struct SegmentPlanContext<'a> {
     pub cached_inits: &'a HashMap<(usize, String), Bytes>,
     /// Previous ABR quality index; used to hold switches until a `Switching` opportunity.
     pub last_quality_index: Option<usize>,
+    /// User quality constraints applied after each ABR decision (fixed quality / autoswitch).
+    pub quality_constraints: QualityConstraints,
 }
 
 /// Download plan for one media segment, produced synchronously before fetch/decrypt/emit.
@@ -67,11 +69,15 @@ pub(crate) struct SegmentPlan {
 }
 
 /// Plan the initialization-segment fetch for a track that has not yet emitted init.
-pub(crate) fn plan_init(abr: &mut dyn AbrController, buffer_s: f64) -> InitPlan {
+pub(crate) fn plan_init(
+    abr: &mut dyn AbrController,
+    buffer_s: f64,
+    constraints: &QualityConstraints,
+) -> InitPlan {
     abr.update_buffer(buffer_s);
-    InitPlan {
-        quality_index: abr.decide().quality_index,
-    }
+    let quality_index =
+        clamp_quality_index(abr.decide().quality_index, abr.rung_count(), constraints);
+    InitPlan { quality_index }
 }
 
 fn switching_hints_for_rung(
@@ -109,7 +115,11 @@ pub(crate) fn plan_segment(
     ctx: &SegmentPlanContext<'_>,
 ) -> SegmentPlan {
     abr.update_buffer(buffer_s);
-    let mut quality_index = abr.decide().quality_index;
+    let mut quality_index = clamp_quality_index(
+        abr.decide().quality_index,
+        abr.rung_count(),
+        &ctx.quality_constraints,
+    );
 
     // ISO/IEC 23009-1 §5.3.3.4: when `Switching` is present, only change representation
     // at switch-to opportunities for the target.
@@ -168,7 +178,9 @@ mod tests {
 
     use dash_mpd::{AdaptationSet, Representation};
 
-    use crate::abr::{AbrController, AbrDecision, AbrFactory, BolaAbrFactory, QualityRung};
+    use crate::abr::{
+        AbrController, AbrDecision, AbrFactory, BolaAbrFactory, QualityConstraints, QualityRung,
+    };
     use crate::manifest::{PeriodWindow, SegmentAddressing, TimelineBuildContext, TimelineSegment};
 
     use super::*;
@@ -312,7 +324,7 @@ mod tests {
             .create(&set, &crate::abr::AbrCreateContext::default())
             .expect("controller");
         abr.update_buffer(10.0);
-        let plan = plan_init(abr.as_mut(), 10.0);
+        let plan = plan_init(abr.as_mut(), 10.0, &QualityConstraints::default());
         assert_eq!(plan.quality_index, abr.decide().quality_index);
     }
 
@@ -334,6 +346,7 @@ mod tests {
             timeline_ctx: &timeline,
             cached_inits: &cached,
             last_quality_index: None,
+            quality_constraints: QualityConstraints::default(),
         };
         let plan = plan_segment(abr.as_mut(), 5.0, &segment(1), 2, &ctx);
         assert_eq!(plan.list_index, 12);
@@ -363,6 +376,7 @@ mod tests {
             timeline_ctx: &timeline,
             cached_inits: &cached,
             last_quality_index: None,
+            quality_constraints: QualityConstraints::default(),
         };
         let plan = plan_segment(abr.as_mut(), 5.0, &segment(1), 0, &ctx);
         assert!(!plan.init_needed);
@@ -402,6 +416,7 @@ mod tests {
             timeline_ctx: &timeline,
             cached_inits: &cached,
             last_quality_index: None,
+            quality_constraints: QualityConstraints::default(),
         };
         let plan = plan_segment(abr.as_mut(), 5.0, &segment(1), 0, &ctx);
         assert!(plan.init_needed);
@@ -464,6 +479,7 @@ mod tests {
             timeline_ctx: &timeline,
             cached_inits: &cached,
             last_quality_index: Some(0),
+            quality_constraints: QualityConstraints::default(),
         };
         let held = plan_segment(abr.as_mut(), 5.0, &segment_at(2000), 0, &ctx);
         assert_eq!(held.quality_index, 0);

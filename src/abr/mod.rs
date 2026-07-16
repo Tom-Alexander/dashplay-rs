@@ -5,6 +5,7 @@
 //! integrate alternative algorithms (e.g. [`LolPlusAbrFactory`]) or rule engines.
 
 pub mod bola;
+pub mod constraints;
 pub mod lol_plus;
 
 use std::sync::Arc;
@@ -12,10 +13,15 @@ use std::sync::Arc;
 use dash_mpd::AdaptationSet;
 
 pub use bola::BolaAbrFactory;
+pub use constraints::QualityConstraints;
 pub use lol_plus::LolPlusAbrFactory;
 
 use crate::clock::service_description::ResolvedOperatingConstraints;
 use crate::track_selection::descriptors::is_delivery_representation;
+
+pub(crate) use constraints::{
+    apply_user_quality_constraints, clamp_quality_index, forced_quality_index,
+};
 
 /// Quality rung in an adaptation-set ladder, ordered low→high bitrate.
 #[derive(Debug, Clone)]
@@ -46,6 +52,8 @@ pub struct AbrDecision {
 pub struct AbrCreateContext<'a> {
     /// Resolved `OperatingBandwidth` / `OperatingQuality` for this media type.
     pub(crate) operating: Option<&'a ResolvedOperatingConstraints>,
+    /// User-facing quality constraints (min/max bitrate, data-saver, fixed quality).
+    pub(crate) user: Option<&'a QualityConstraints>,
     /// Nominal media segment duration (seconds) when known from the timeline.
     pub(crate) segment_duration_s: Option<f64>,
     /// Prefetch / ABR buffer ceiling (seconds), typically from [`crate::schedule::BufferTarget`].
@@ -468,5 +476,63 @@ mod tests {
             controller.rung_for_quality_index(0).period_adaptation_index,
             7
         );
+    }
+
+    #[test]
+    fn factory_applies_user_max_bitrate() {
+        let set = adaptation_set_with_bandwidths(&[100_000, 500_000, 1_000_000, 3_000_000]);
+        let constraints = QualityConstraints::default().max_bitrate_bps(600_000);
+        let factory = BolaAbrFactory::default();
+        let controller = factory
+            .create(
+                &set,
+                &AbrCreateContext {
+                    user: Some(&constraints),
+                    ..Default::default()
+                },
+            )
+            .expect("controller");
+        assert_eq!(controller.rung_count(), 2);
+        assert_eq!(controller.bitrate_bps_for_quality_index(1), 500_000.0);
+    }
+
+    #[test]
+    fn factory_fixed_quality_pins_decision() {
+        let set = adaptation_set_with_bandwidths(&[100_000, 500_000, 1_000_000]);
+        let constraints = QualityConstraints::default().fixed_quality(1);
+        let factory = BolaAbrFactory::default();
+        let mut controller = factory
+            .create(
+                &set,
+                &AbrCreateContext {
+                    user: Some(&constraints),
+                    ..Default::default()
+                },
+            )
+            .expect("controller");
+        controller.update_buffer(20.0);
+        controller.observe_segment_download(10_000_000.0, 250_000, 1);
+        let decision = controller.decide();
+        assert_eq!(decision.quality_index, 1);
+        assert_eq!(decision.bitrate_bps, 500_000.0);
+    }
+
+    #[test]
+    fn factory_data_saver_keeps_lowest_rung() {
+        let set = adaptation_set_with_bandwidths(&[100_000, 500_000, 1_000_000]);
+        let constraints = QualityConstraints::default().data_saver(true);
+        let factory = BolaAbrFactory::default();
+        let mut controller = factory
+            .create(
+                &set,
+                &AbrCreateContext {
+                    user: Some(&constraints),
+                    ..Default::default()
+                },
+            )
+            .expect("controller");
+        assert_eq!(controller.rung_count(), 1);
+        controller.update_buffer(20.0);
+        assert_eq!(controller.decide().quality_index, 0);
     }
 }

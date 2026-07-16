@@ -48,7 +48,7 @@ Status: `[ ]` not started · `[~]` partial.
   instead of hardcoded 4 s / 25 s.
   *dash.js:* `bolaRule` uses measured buffer / fragment timing rather than fixed 4 s /
   25 s constants.
-- [ ] **User quality constraints.** Max/min bitrate, fixed quality, data-saver mode.
+- [x] **User quality constraints.** Max/min bitrate, fixed quality, data-saver mode.
   *dash.js:* `abr.minBitrate` / `maxBitrate`, `autoSwitchBitrate`,
   `limitBitrateByPortal`; fixed rung via `setQualityFor` / disable autoswitch.
 - [ ] **Playback rate / fast-forward.** `@maxPlayoutRate` and `@codingDependency`.

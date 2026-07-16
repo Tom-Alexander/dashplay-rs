@@ -5,7 +5,9 @@ use tokio::sync::watch;
 use url::Url;
 
 use super::PlayerError;
-use super::abr::{BolaAbrFactory, SharedAbrFactory, shared as shared_abr_factory};
+use super::abr::{
+    BolaAbrFactory, QualityConstraints, SharedAbrFactory, shared as shared_abr_factory,
+};
 use super::cmcd::{CmcdConfig, CmcdObjectType, CmcdSession, CmcdStreamType, parse_cmsd_headers};
 #[cfg(all(target_arch = "wasm32", not(feature = "reqwest-http")))]
 use super::http::FetchClient;
@@ -35,6 +37,7 @@ pub struct MediaPlayer {
     drm: DrmSessionCoordinator,
     track_selection: TrackSelection,
     abr_factory: SharedAbrFactory,
+    quality_constraints: QualityConstraints,
     cmcd: Option<CmcdSession>,
     http_retry: HttpRetryConfig,
 }
@@ -58,6 +61,7 @@ impl MediaPlayer {
             drm: DrmSessionCoordinator::new(client, license_uri, None),
             track_selection: TrackSelection::default(),
             abr_factory: shared_abr_factory(BolaAbrFactory::default()),
+            quality_constraints: QualityConstraints::default(),
             cmcd: None,
             http_retry: HttpRetryConfig::default(),
         })
@@ -96,6 +100,15 @@ impl MediaPlayer {
     /// The default is [`BolaAbrFactory`].
     pub fn with_abr_factory(mut self, factory: SharedAbrFactory) -> Self {
         self.abr_factory = factory;
+        self
+    }
+
+    /// Constrain ABR selection (min/max bitrate, fixed quality, data-saver).
+    ///
+    /// See [`QualityConstraints`]. Runtime updates use
+    /// [`PlaybackController::set_quality_constraints`](crate::PlaybackController::set_quality_constraints).
+    pub fn with_quality_constraints(mut self, constraints: QualityConstraints) -> Self {
+        self.quality_constraints = constraints;
         self
     }
 
@@ -186,6 +199,7 @@ impl MediaPlayer {
         let adaptation_sets = select_adaptation_sets(period, &self.track_selection);
 
         let playback = PlaybackController::new();
+        playback.set_quality_constraints_unchecked(self.quality_constraints);
         playback.mark_started();
 
         let mut tracks = Vec::with_capacity(adaptation_sets.len());

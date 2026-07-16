@@ -59,6 +59,13 @@ impl Player {
         }
     }
 
+    /// Constrain ABR selection (min/max bitrate, fixed quality, data-saver).
+    pub fn with_quality_constraints(self, constraints: crate::QualityConstraints) -> Self {
+        Self {
+            media_player: self.media_player.with_quality_constraints(constraints),
+        }
+    }
+
     /// Enable CTA-5004 CMCD request headers and CTA-5006 CMSD response parsing.
     pub fn with_cmcd(self, config: CmcdConfig) -> Self {
         Self {
@@ -291,6 +298,35 @@ impl PlayerTrackOutputs {
         selection: TrackSelection,
     ) -> Result<(), PlaybackControlError> {
         self.playback.set_track_selection(selection)
+    }
+
+    /// Current user ABR quality constraints.
+    pub fn quality_constraints(&self) -> crate::QualityConstraints {
+        self.playback.quality_constraints()
+    }
+
+    /// Update user ABR quality constraints.
+    ///
+    /// See [`PlaybackController::set_quality_constraints`].
+    pub fn set_quality_constraints(
+        &self,
+        constraints: crate::QualityConstraints,
+    ) -> Result<(), PlaybackControlError> {
+        self.playback.set_quality_constraints(constraints)
+    }
+
+    /// Pin a ladder index and disable autoswitch.
+    ///
+    /// See [`PlaybackController::set_quality_for`].
+    pub fn set_quality_for(&self, quality_index: usize) -> Result<(), PlaybackControlError> {
+        self.playback.set_quality_for(quality_index)
+    }
+
+    /// Enable or disable automatic quality switching.
+    ///
+    /// See [`PlaybackController::set_auto_switch_bitrate`].
+    pub fn set_auto_switch_bitrate(&self, enabled: bool) -> Result<(), PlaybackControlError> {
+        self.playback.set_auto_switch_bitrate(enabled)
     }
 
     /// Stop playback. No further segments are delivered.

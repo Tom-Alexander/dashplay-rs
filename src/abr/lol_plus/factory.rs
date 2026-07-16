@@ -5,7 +5,8 @@ use dash_mpd::AdaptationSet;
 use super::algorithm::{LolPlus, QualityLevel};
 use crate::abr::{
     AbrController, AbrCreateContext, AbrDecision, AbrFactory, QualityRung,
-    apply_operating_constraints, preferred_quality_index, resolve_quality_ladder,
+    apply_operating_constraints, apply_user_quality_constraints, forced_quality_index,
+    preferred_quality_index, resolve_quality_ladder,
 };
 
 /// Default segment duration used when the timeline does not provide one (seconds).
@@ -60,6 +61,7 @@ struct LolPlusAbrController {
     lol: LolPlus,
     rungs: Vec<QualityRung>,
     preferred_quality_index: Option<usize>,
+    forced_quality_index: Option<usize>,
 }
 
 impl LolPlusAbrController {
@@ -75,9 +77,16 @@ impl LolPlusAbrController {
         } else {
             None
         };
+        if let Some(user) = ctx.user {
+            rungs = apply_user_quality_constraints(rungs, user);
+        }
         if rungs.is_empty() {
             return None;
         }
+        let forced = ctx
+            .user
+            .and_then(|user| forced_quality_index(rungs.len(), user));
+        let preferred = forced.or(preferred);
 
         let qualities: Vec<QualityLevel> = rungs
             .iter()
@@ -103,6 +112,7 @@ impl LolPlusAbrController {
             ),
             rungs,
             preferred_quality_index: preferred,
+            forced_quality_index: forced,
         })
     }
 }
@@ -131,6 +141,12 @@ impl AbrController for LolPlusAbrController {
     }
 
     fn decide(&mut self) -> AbrDecision {
+        if let Some(idx) = self.forced_quality_index {
+            return AbrDecision {
+                quality_index: idx,
+                bitrate_bps: self.rungs[idx].bitrate_bps,
+            };
+        }
         if !self.lol.has_throughput_sample() {
             if let Some(idx) = self.preferred_quality_index {
                 return AbrDecision {

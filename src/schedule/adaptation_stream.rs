@@ -430,10 +430,12 @@ pub(crate) async fn run_adaptation_stream(
     let segment_duration_s = nominal_segment_duration_s(&segments);
     let buffer_target = buffer_target.with_segment_duration(segment_duration_s);
 
+    let quality_constraints = playback.quality_constraints();
     let Some(mut abr) = abr_factory.create(
         &adaptation_set,
         &crate::abr::AbrCreateContext {
             operating: operating_constraints.as_ref(),
+            user: Some(&quality_constraints),
             segment_duration_s,
             buffer_max_s: Some(buffer_target.max_buffer_s),
             quality_ladder: Some(quality_ladder.as_slice()),
@@ -470,7 +472,11 @@ pub(crate) async fn run_adaptation_stream(
         emit_init: init_taken,
     };
     if init_taken {
-        let init_plan = plan_init(abr.as_mut(), latest_buffer_s(&buffer_rx));
+        let init_plan = plan_init(
+            abr.as_mut(),
+            latest_buffer_s(&buffer_rx),
+            &playback.quality_constraints(),
+        );
         let init_res: Result<(), PlayerError> = async {
             let (_, rep_id) = fetch_init_with_rep_fallback(
                 &fetch_env,
@@ -597,6 +603,7 @@ pub(crate) async fn run_adaptation_stream(
             timeline_ctx: &timeline_ctx,
             cached_inits: &encrypted_init_by_rep,
             last_quality_index,
+            quality_constraints: playback.quality_constraints(),
         };
 
         let first_plan = plan_segment(abr.as_mut(), buffer_s, &segments[cursor], cursor, &plan_ctx);
@@ -733,6 +740,7 @@ pub(crate) async fn run_adaptation_stream(
                 timeline_ctx: &timeline_ctx,
                 cached_inits: &encrypted_init_by_rep,
                 last_quality_index: speculative_last_q,
+                quality_constraints: playback.quality_constraints(),
             };
             let plan = plan_segment(abr.as_mut(), buffer_s, &segments[look], look, &plan_ctx);
             if plan.chunked {

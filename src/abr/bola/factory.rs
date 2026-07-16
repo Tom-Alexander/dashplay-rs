@@ -7,7 +7,8 @@ use super::algorithm::{
 };
 use crate::abr::{
     AbrController, AbrCreateContext, AbrDecision, AbrFactory, QualityRung,
-    apply_operating_constraints, preferred_quality_index, resolve_quality_ladder,
+    apply_operating_constraints, apply_user_quality_constraints, forced_quality_index,
+    preferred_quality_index, resolve_quality_ladder,
 };
 
 /// Default [`AbrFactory`] using BOLA (Buffer Occupancy based Lyapunov Algorithm).
@@ -50,6 +51,8 @@ struct BolaAbrController {
     rungs: Vec<QualityRung>,
     /// Prefer this ladder index until the first throughput sample (Operating*@target).
     preferred_quality_index: Option<usize>,
+    /// Always return this index (user fixed quality / data-saver).
+    forced_quality_index: Option<usize>,
     has_throughput_sample: bool,
 }
 
@@ -66,9 +69,17 @@ impl BolaAbrController {
         } else {
             None
         };
+        if let Some(user) = ctx.user {
+            rungs = apply_user_quality_constraints(rungs, user);
+        }
         if rungs.is_empty() {
             return None;
         }
+        // Fixed quality / data-saver override Operating*@target when present.
+        let forced = ctx
+            .user
+            .and_then(|user| forced_quality_index(rungs.len(), user));
+        let preferred = forced.or(preferred);
 
         let qualities: Vec<QualityLevel> = rungs
             .iter()
@@ -99,6 +110,7 @@ impl BolaAbrController {
             ),
             rungs,
             preferred_quality_index: preferred,
+            forced_quality_index: forced,
             has_throughput_sample: false,
         })
     }
@@ -122,6 +134,12 @@ impl AbrController for BolaAbrController {
     }
 
     fn decide(&mut self) -> AbrDecision {
+        if let Some(idx) = self.forced_quality_index {
+            return AbrDecision {
+                quality_index: idx,
+                bitrate_bps: self.rungs[idx].bitrate_bps,
+            };
+        }
         if !self.has_throughput_sample {
             if let Some(idx) = self.preferred_quality_index {
                 return AbrDecision {

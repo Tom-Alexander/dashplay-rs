@@ -77,7 +77,7 @@ mod types;
 
 pub use abr::{
     AbrController, AbrCreateContext, AbrDecision, AbrFactory, BolaAbrFactory, LolPlusAbrFactory,
-    QualityRung, SharedAbrFactory, quality_ladder_from_adaptation_set,
+    QualityConstraints, QualityRung, SharedAbrFactory, quality_ladder_from_adaptation_set,
     quality_ladder_from_adaptation_sets, shared as shared_abr_factory,
 };
 pub use cmcd::{

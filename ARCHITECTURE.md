@@ -503,7 +503,6 @@ Examples include:
 - Multi-period playback
 - Trick-play tracks
 - Thumbnail tracks
-- SCTE-35 events
 - Analytics
 - Custom ABR algorithms
 

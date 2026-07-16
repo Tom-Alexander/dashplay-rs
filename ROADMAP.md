@@ -14,9 +14,9 @@ Status: `[ ]` not started · `[~]` partial.
 
 ## Correctness & standards
 
-- [~] **In-band / MPD events.** Period-level `EventStream` / `emsg` / SCTE-35 cues done;
-  remaining: AdaptationSet/Representation MPD `EventStream`, SCTE-35 splice decode, other
-  binary `Event@messageData` schemes.
+- [x] **In-band / MPD events.** Period-level `EventStream` + in-band `emsg` (filtered by
+  AS/Rep `InbandEventStream`); SCTE-35 payload bytes exposed to the app via
+  `MediaEvent` / `Scte35Cue`. No AS/Rep MPD `EventStream`, no splice-command decode.
   *dash.js:* Period `EventStream` + in-band `emsg` only (AS/Rep expose
   `InbandEventStream`, not MPD `EventStream`). SCTE-35 bytes are dispatched to the app;
   no splice-command decode.

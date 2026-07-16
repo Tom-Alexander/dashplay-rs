@@ -69,9 +69,6 @@ Status: `[ ]` not started · `[~]` partial.
 - [x] **HTTP retry with backoff.** Transient failures (failover only today).
   *dash.js:* Fixed per-type delay (`retryIntervals`), not exponential backoff; default
   ~3 attempts (`retryAttempts`), scaled in low-latency mode.
-- [ ] **Conditional manifest fetch.** `If-None-Match` / `304` on live refresh.
-  *dash.js:* No explicit ETag/`If-None-Match` handling in the loader; may observe 304 via
-  browser HTTP cache. Relies on `@minimumUpdatePeriod`, patch, or in-band reload events.
 - [~] **`BaseURL@availabilityTimeOffset`.** Honour BaseURL-level ATO.
   *dash.js:* Uses BaseURL ATO when segment-level ATO is absent; core LL availability.
 - [ ] **DVB / namespace BaseURL extensions.** e.g. `@dvb:priority` beyond deserialize.
@@ -81,7 +78,4 @@ Status: `[ ]` not started · `[~]` partial.
   pathway query params.
 - [~] **WASM test player.** MSE demo exists; remaining: real buffer feedback, live MSE
   lifecycle, non-A/V tracks, broader fixtures.
-- [ ] **Multiplexed A+V.** Single adaptation set with muxed audio and video.
-  *dash.js:* Expects separate audio/video adaptation sets for MSE; muxed A+V is not a
-  first-class path (demux stays with the browser/MSE stack).
 

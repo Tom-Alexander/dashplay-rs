@@ -1,0 +1,26 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<MPD xmlns="urn:mpeg:dash:schema:mpd:2011"
+     xmlns:cenc="urn:mpeg:cenc:2013"
+     xmlns:mspr="urn:microsoft:playready"
+     profiles="urn:mpeg:dash:profile:isoff-on-demand:2011,http://dashif.org/guidelines/dash264"
+     type="static"
+     mediaPresentationDuration="PT4S"
+     minBufferTime="PT2S">
+  <ProgramInformation>
+    <Title>DASH-IF encrypted CENC vector (local, KID eb6769950da145d03ae4082255eb141a)</Title>
+  </ProgramInformation>
+  <Period id="p0">
+    <AdaptationSet mimeType="video/mp4" contentType="video" segmentAlignment="true"
+                   par="16:9" maxWidth="320" maxHeight="240" maxFrameRate="25">
+      <ContentProtection schemeIdUri="urn:uuid:edef8ba9-79d6-4ace-a3c8-27dcd51d21ed" value="Widevine">
+        <cenc:pssh>AAAANHBzc2gAAAAA7e+LqXnWSs6jyCfc1R0h7QAAABsIARIQ62dplQ2hRdA65AgiVesUGg==</cenc:pssh>
+        <mspr:laurl>https://license.example/wv</mspr:laurl>
+      </ContentProtection>
+      <ContentProtection schemeIdUri="urn:mpeg:dash:mp4protection:2011" value="cenc"/>
+      <SegmentTemplate timescale="1000" duration="2000" initialization="init.mp4"
+                       media="segment-1.$Number%04d$.m4s" startNumber="1"/>
+      <Representation id="1" bandwidth="100000" codecs="avc1.42E01E" width="320" height="240"
+                    sar="1:1" frameRate="25"/>
+    </AdaptationSet>
+  </Period>
+</MPD>

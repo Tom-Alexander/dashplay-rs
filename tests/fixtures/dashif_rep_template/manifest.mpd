@@ -1,0 +1,33 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<MPD xmlns="urn:mpeg:dash:schema:mpd:2011"
+     profiles="urn:mpeg:dash:profile:isoff-live:2011,http://dashif.org/guidelines/dash264"
+     type="static"
+     mediaPresentationDuration="PT8S"
+     minBufferTime="PT1.5S">
+  <ProgramInformation>
+    <Title>Adapted from DASH-IF TestCases/5a/nomor/1.mpd (local stub media)</Title>
+  </ProgramInformation>
+  <Period id="0" duration="PT8S">
+    <AdaptationSet segmentAlignment="true" mimeType="video/mp4" contentType="video"
+                   par="16:9" maxWidth="640" maxHeight="360" maxFrameRate="24">
+      <Representation id="1" bandwidth="100000" codecs="avc1.42E01E" width="640" height="360"
+                    startWithSAP="1" sar="1:1" frameRate="24">
+        <SegmentTemplate timescale="1000"
+                         presentationTimeOffset="0"
+                         duration="4000"
+                         media="rep1-seg-$Number$.m4s"
+                         startNumber="1"
+                         initialization="rep1-init.mp4"/>
+      </Representation>
+      <Representation id="2" bandwidth="500000" codecs="avc1.42E01E" width="640" height="360"
+                    startWithSAP="1" sar="1:1" frameRate="24">
+        <SegmentTemplate timescale="1000"
+                         presentationTimeOffset="0"
+                         duration="4000"
+                         media="rep2-seg-$Number$.m4s"
+                         startNumber="1"
+                         initialization="rep2-init.mp4"/>
+      </Representation>
+    </AdaptationSet>
+  </Period>
+</MPD>

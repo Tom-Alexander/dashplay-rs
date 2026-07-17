@@ -1,0 +1,14 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<MPD xmlns="urn:mpeg:dash:schema:mpd:2011" type="static" mediaPresentationDuration="PT8S" minBufferTime="PT2S">
+  <Period>
+    <AdaptationSet mimeType="image/jpeg" contentType="image" segmentAlignment="true">
+      <EssentialProperty schemeIdUri="http://dashif.org/guidelines/thumbnail_tile" value="4x2"/>
+      <SegmentTemplate timescale="1000" duration="4000" media="thumb-$Number$.jpg" startNumber="1" initialization="thumb-init.jpg"/>
+      <Representation id="tiles" bandwidth="50000" width="320" height="180"/>
+    </AdaptationSet>
+    <AdaptationSet mimeType="video/mp4" contentType="video">
+      <SegmentTemplate timescale="1000" duration="4000" initialization="init.mp4" media="seg-$Number$.m4s" startNumber="1"/>
+      <Representation id="1" bandwidth="100000" codecs="avc1.42E01E" width="640" height="360"/>
+    </AdaptationSet>
+  </Period>
+</MPD>

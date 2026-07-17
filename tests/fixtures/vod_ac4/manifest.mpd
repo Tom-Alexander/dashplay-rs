@@ -1,0 +1,17 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<MPD xmlns="urn:mpeg:dash:schema:mpd:2011"
+     type="static"
+     mediaPresentationDuration="PT8S"
+     minBufferTime="PT2S"
+     profiles="http://dashif.org/guidelines/dashif#ac-4">
+  <Period>
+    <AdaptationSet mimeType="audio/mp4" contentType="audio" lang="en">
+      <AudioChannelConfiguration schemeIdUri="tag:dolby.com,2014:dash:audio_channel_configuration:2011" value="320000"/>
+      <SegmentTemplate timescale="1000" duration="4000"
+                       initialization="init.mp4"
+                       media="seg-$Number$.m4s"
+                       startNumber="1"/>
+      <Representation id="ac4" bandwidth="128000" codecs="ac-4.02.01.00" audioSamplingRate="48000"/>
+    </AdaptationSet>
+  </Period>
+</MPD>

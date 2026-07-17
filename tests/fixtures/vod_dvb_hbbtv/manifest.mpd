@@ -1,0 +1,24 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<MPD xmlns="urn:mpeg:dash:schema:mpd:2011"
+     type="static"
+     mediaPresentationDuration="PT8S"
+     minBufferTime="PT2S"
+     profiles="urn:dvb:dash:profile:dvb-dash:2014,urn:hbbtv:dash:profile:isoff-live:2012,urn:mpeg:dash:profile:isoff-live:2011">
+  <Period>
+    <AdaptationSet id="main" mimeType="video/mp4" contentType="video" segmentAlignment="true">
+      <SegmentTemplate timescale="1000" duration="4000"
+                       initialization="init.mp4"
+                       media="seg-$Number$.m4s"
+                       startNumber="1"/>
+      <Representation id="1" bandwidth="800000" codecs="avc1.4d401f" width="640" height="360"/>
+    </AdaptationSet>
+    <AdaptationSet id="fallback" mimeType="video/mp4" contentType="video" segmentAlignment="true">
+      <SupplementalProperty schemeIdUri="urn:dvb:dash:fallback_adaptation_set:2014" value="main"/>
+      <SegmentTemplate timescale="1000" duration="4000"
+                       initialization="fb-init.mp4"
+                       media="fb-seg-$Number$.m4s"
+                       startNumber="1"/>
+      <Representation id="fb" bandwidth="200000" codecs="avc1.42E01E" width="320" height="180"/>
+    </AdaptationSet>
+  </Period>
+</MPD>

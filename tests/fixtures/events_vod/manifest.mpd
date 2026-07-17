@@ -1,0 +1,17 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<MPD xmlns="urn:mpeg:dash:schema:mpd:2011" type="static" mediaPresentationDuration="PT8S" minBufferTime="PT2S">
+  <Period>
+    <EventStream schemeIdUri="urn:scte:scte35:2014:xml+bin" timescale="1">
+      <Event presentationTime="100" duration="30" id="42">
+        <Signal xmlns="http://www.scte.org/schemas/35/2016">
+          <Binary>/DAhAAAAAAAAAP/wEAUAAAfPf+9/fgAg9YDAAAAAAAA/APOv</Binary>
+        </Signal>
+      </Event>
+    </EventStream>
+    <AdaptationSet mimeType="video/mp4" contentType="video">
+      <InbandEventStream schemeIdUri="urn:mpeg:dash:event:2012" value="1"/>
+      <SegmentTemplate timescale="1000" duration="4000" initialization="init.mp4" media="seg-$Number$.m4s" startNumber="1"/>
+      <Representation id="1" bandwidth="100000" codecs="avc1.42E01E" width="640" height="360"/>
+    </AdaptationSet>
+  </Period>
+</MPD>

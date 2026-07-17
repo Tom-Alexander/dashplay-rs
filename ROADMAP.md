@@ -27,5 +27,5 @@ Status: `[ ]` not started · `[~]` partial · `[x]` done.
 - [~] **Live DVR seek.** Expand seek bounds beyond the resolved timeline.
   *dash.js:* DVR window vs availability window; `getDvrWindow` / seek across sliding
   live multiperiod.
-- [~] **`BaseURL@availabilityTimeOffset`.** Honour BaseURL-level ATO.
+- [x] **`BaseURL@availabilityTimeOffset`.** Honour BaseURL-level ATO.
   *dash.js:* Uses BaseURL ATO when segment-level ATO is absent; core LL availability.

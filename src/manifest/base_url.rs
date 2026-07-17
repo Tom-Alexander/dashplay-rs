@@ -159,6 +159,69 @@ fn dedupe_urls(mut bases: Vec<Url>) -> Vec<Url> {
     bases
 }
 
+/// Summed `@availabilityTimeOffset` and merged `@availabilityTimeComplete` from the primary
+/// `BaseURL` at each hierarchy level for this Representation (DASH-IF timing model).
+pub(crate) fn base_url_availability_for_representation(
+    ctx: &SegmentBaseContext,
+    adaptation_set: &AdaptationSet,
+    representation: &Representation,
+) -> super::availability::SegmentAvailability {
+    use super::availability::SegmentAvailability;
+
+    let mpd_base_urls = crate::manifest_lifecycle::order_base_urls_for_steering(
+        &ctx.mpd_base_urls,
+        &ctx.service_location_priority,
+        ctx.default_service_location.as_deref(),
+    );
+    let seed = ctx.dvb_selection_seed;
+    let layers: [(&[BaseURL], u64); 4] = [
+        (mpd_base_urls.as_slice(), 1),
+        (ctx.period_base_urls.as_slice(), 2),
+        (adaptation_set.BaseURL.as_slice(), 3),
+        (representation.BaseURL.as_slice(), 4),
+    ];
+
+    let mut ato_sum = 0.0;
+    let mut ato_any = false;
+    let mut atc = true;
+    let mut atc_explicit = false;
+
+    for (layer, layer_tag) in layers {
+        let ordered = ordered_base_url_layer(layer, seed, layer_tag);
+        let Some(bu) = ordered.first() else {
+            continue;
+        };
+        if let Some(ato) = bu.availability_time_offset {
+            if ato.is_infinite() {
+                if ato.is_sign_positive() {
+                    return SegmentAvailability {
+                        availability_time_offset_s: Some(f64::INFINITY),
+                        availability_time_complete: if atc_explicit { atc } else { true },
+                    };
+                }
+                ato_sum = f64::NEG_INFINITY;
+                ato_any = true;
+                continue;
+            }
+            if !ato.is_nan() {
+                ato_sum += ato;
+                ato_any = true;
+            }
+        }
+        if let Some(complete) = bu.availability_time_complete {
+            atc_explicit = true;
+            if !complete {
+                atc = false;
+            }
+        }
+    }
+
+    SegmentAvailability {
+        availability_time_offset_s: if ato_any { Some(ato_sum) } else { None },
+        availability_time_complete: if atc_explicit { atc } else { true },
+    }
+}
+
 /// Absolute segment bases for `(AdaptationSet, Representation)` after MPD → Period → AdaptationSet → Representation `BaseURL` expansion.
 ///
 /// When a level carries `@dvb:priority` / `@dvb:weight` (or un-namespaced aliases), that level

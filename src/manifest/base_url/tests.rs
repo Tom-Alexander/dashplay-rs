@@ -1,7 +1,10 @@
 use dash_mpd::{AdaptationSet, BaseURL, Representation};
 use url::Url;
 
-use super::{SegmentBaseContext, merge_base_url, segment_bases_for_representation};
+use super::{
+    SegmentBaseContext, base_url_availability_for_representation, merge_base_url,
+    segment_bases_for_representation,
+};
 
 #[test]
 fn merge_base_url_relative_and_absolute() {
@@ -201,4 +204,57 @@ fn dvb_attrs_deserialize_from_mpd() {
             || bases[0].as_str() == "https://cdn2.example/"
     );
     assert_eq!(bases[1].as_str(), "https://cdn3.example/");
+}
+
+#[test]
+fn base_url_availability_sums_offsets_across_hierarchy() {
+    let ctx = SegmentBaseContext {
+        manifest_uri: Url::parse("https://example.com/manifest.mpd").unwrap(),
+        mpd_base_urls: vec![BaseURL {
+            base: "mpd/".into(),
+            availability_time_offset: Some(2.0),
+            ..Default::default()
+        }],
+        period_base_urls: vec![BaseURL {
+            base: "period/".into(),
+            availability_time_offset: Some(5.0),
+            ..Default::default()
+        }],
+        service_location_priority: Vec::new(),
+        default_service_location: None,
+        dvb_selection_seed: 0,
+    };
+    let adaptation_set = AdaptationSet::default();
+    let representation = Representation::default();
+
+    let availability =
+        base_url_availability_for_representation(&ctx, &adaptation_set, &representation);
+    assert_eq!(availability.availability_time_offset_s, Some(7.0));
+    assert!(availability.availability_time_complete);
+}
+
+#[test]
+fn base_url_availability_merges_complete_false_from_any_level() {
+    let ctx = SegmentBaseContext {
+        manifest_uri: Url::parse("https://example.com/manifest.mpd").unwrap(),
+        mpd_base_urls: vec![BaseURL {
+            base: "mpd/".into(),
+            availability_time_complete: Some(true),
+            ..Default::default()
+        }],
+        period_base_urls: vec![BaseURL {
+            base: "period/".into(),
+            availability_time_complete: Some(false),
+            ..Default::default()
+        }],
+        service_location_priority: Vec::new(),
+        default_service_location: None,
+        dvb_selection_seed: 0,
+    };
+    let availability = base_url_availability_for_representation(
+        &ctx,
+        &AdaptationSet::default(),
+        &Representation::default(),
+    );
+    assert!(!availability.availability_time_complete);
 }

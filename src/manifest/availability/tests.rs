@@ -167,12 +167,14 @@ fn filter_segments_by_availability_drops_unpublished_complete_live_edge() {
         resync_hints: None,
     };
     let segments = timeline_segments(&st, &ctx, None).unwrap();
+    let availability =
+        SegmentAvailability::for_representation(&addressing, &SegmentAvailability::default());
     let filtered = filter_segments_by_availability(
         segments,
         true,
         Duration::ZERO,
         ctx.since_availability_start,
-        &addressing,
+        &availability,
     );
     let numbers: Vec<_> = filtered.iter().map(|s| s.number).collect();
     assert_eq!(numbers, vec![1, 2]);
@@ -203,13 +205,91 @@ fn filter_segments_by_availability_includes_partial_live_edge_at_sap() {
         resync_hints: None,
     };
     let segments = timeline_segments(&st, &ctx, None).unwrap();
+    let availability =
+        SegmentAvailability::for_representation(&addressing, &SegmentAvailability::default());
     let filtered = filter_segments_by_availability(
         segments,
         true,
         Duration::ZERO,
         ctx.since_availability_start,
-        &addressing,
+        &availability,
     );
     let numbers: Vec<_> = filtered.iter().map(|s| s.number).collect();
     assert_eq!(numbers, vec![1, 2, 3]);
+}
+
+#[test]
+fn segment_availability_uses_base_url_offset_when_segment_absent() {
+    let st = SegmentTemplate {
+        timescale: Some(1000),
+        duration: Some(4000.0),
+        startNumber: Some(1),
+        ..Default::default()
+    };
+    let addressing = SegmentAddressing::Template(st);
+    let base_url = SegmentAvailability {
+        availability_time_offset_s: Some(7.0),
+        availability_time_complete: false,
+    };
+    let merged = SegmentAvailability::for_representation(&addressing, &base_url);
+    assert_eq!(merged.availability_time_offset_s, Some(7.0));
+    assert!(!merged.availability_time_complete);
+}
+
+#[test]
+fn segment_availability_prefers_segment_offset_over_base_url() {
+    let st = SegmentTemplate {
+        availabilityTimeOffset: Some(3.0),
+        availabilityTimeComplete: Some(true),
+        ..Default::default()
+    };
+    let addressing = SegmentAddressing::Template(st);
+    let base_url = SegmentAvailability {
+        availability_time_offset_s: Some(7.0),
+        availability_time_complete: false,
+    };
+    let merged = SegmentAvailability::for_representation(&addressing, &base_url);
+    assert_eq!(merged.availability_time_offset_s, Some(3.0));
+    assert!(merged.availability_time_complete);
+}
+
+#[test]
+fn filter_segments_by_availability_honours_base_url_only_offset() {
+    let st = SegmentTemplate {
+        timescale: Some(1000),
+        duration: Some(4000.0),
+        startNumber: Some(1),
+        ..Default::default()
+    };
+    let addressing = SegmentAddressing::Template(st.clone());
+    let ctx = TimelineBuildContext {
+        is_dynamic: true,
+        period_window: PeriodWindow {
+            idx: 0,
+            start: Duration::ZERO,
+            end: None,
+        },
+        period_duration: None,
+        media_presentation_duration: None,
+        time_shift_buffer_depth: Some(Duration::from_secs(20)),
+        since_availability_start: Some(Duration::from_secs(12)),
+        resync_hints: None,
+    };
+    let segments = timeline_segments(&st, &ctx, None).unwrap();
+    let availability = SegmentAvailability::for_representation(
+        &addressing,
+        &SegmentAvailability {
+            availability_time_offset_s: Some(7.0),
+            availability_time_complete: true,
+        },
+    );
+    let filtered = filter_segments_by_availability(
+        segments,
+        true,
+        Duration::ZERO,
+        ctx.since_availability_start,
+        &availability,
+    );
+    let numbers: Vec<_> = filtered.iter().map(|s| s.number).collect();
+    assert_eq!(numbers, vec![1, 2]);
 }

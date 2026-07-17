@@ -14,8 +14,8 @@ use crate::abr::{
     clamp_quality_index,
 };
 use crate::manifest::{
-    self, ByteRange, SegmentAddressing, SegmentAvailability, SwitchingHint, TimelineBuildContext,
-    TimelineSegment, is_switch_opportunity, switching_hints_for,
+    self, ByteRange, SegmentAvailability, SwitchingHint, TimelineBuildContext, TimelineSegment,
+    is_switch_opportunity, switching_hints_for,
 };
 
 /// First-segment init fetch decision for a track.
@@ -35,7 +35,8 @@ pub(crate) struct SegmentPlanContext<'a> {
     /// `@bitstreamSwitching` (or equivalent) per period adaptation index.
     #[allow(dead_code)]
     pub bitstream_switching: &'a HashMap<usize, bool>,
-    pub addressing: &'a SegmentAddressing,
+    /// Merged segment + BaseURL availability for this adaptation set.
+    pub set_availability: SegmentAvailability,
     pub timeline_ctx: &'a TimelineBuildContext,
     /// Cached init segments keyed by `(period_adaptation_index, representation_id)`.
     pub cached_inits: &'a HashMap<(usize, String), Bytes>,
@@ -168,7 +169,7 @@ pub(crate) fn plan_segment(
     // seamless switches at SAP points; it does not imply Initialization Segments are shared.
     let init_needed = !ctx.cached_inits.contains_key(&cache_key);
 
-    let set_availability = SegmentAvailability::from_addressing(ctx.addressing);
+    let set_availability = ctx.set_availability;
     let chunked = ctx.timeline_ctx.is_dynamic
         && manifest::uses_chunked_segment_transfer(&set_availability, segment);
 
@@ -357,7 +358,10 @@ mod tests {
             primary_period_adaptation_index: 0,
             adaptation_sets: &sets,
             bitstream_switching: &bitstream,
-            addressing: &addressing,
+            set_availability: SegmentAvailability::for_representation(
+                &addressing,
+                &SegmentAvailability::default(),
+            ),
             timeline_ctx: &timeline,
             cached_inits: &cached,
             last_quality_index: None,
@@ -388,7 +392,10 @@ mod tests {
             primary_period_adaptation_index: 0,
             adaptation_sets: &sets,
             bitstream_switching: &bitstream,
-            addressing: &addressing,
+            set_availability: SegmentAvailability::for_representation(
+                &addressing,
+                &SegmentAvailability::default(),
+            ),
             timeline_ctx: &timeline,
             cached_inits: &cached,
             last_quality_index: None,
@@ -429,7 +436,10 @@ mod tests {
             primary_period_adaptation_index: 0,
             adaptation_sets: &sets,
             bitstream_switching: &bitstream,
-            addressing: &addressing,
+            set_availability: SegmentAvailability::for_representation(
+                &addressing,
+                &SegmentAvailability::default(),
+            ),
             timeline_ctx: &timeline,
             cached_inits: &cached,
             last_quality_index: None,
@@ -497,7 +507,10 @@ mod tests {
             primary_period_adaptation_index: 0,
             adaptation_sets: &sets,
             bitstream_switching: &bitstream,
-            addressing: &addressing,
+            set_availability: SegmentAvailability::for_representation(
+                &addressing,
+                &SegmentAvailability::default(),
+            ),
             timeline_ctx: &timeline,
             cached_inits: &cached,
             last_quality_index: Some(0),
@@ -570,7 +583,10 @@ mod tests {
             primary_period_adaptation_index: 0,
             adaptation_sets: &sets,
             bitstream_switching: &bitstream,
-            addressing: &addressing,
+            set_availability: SegmentAvailability::for_representation(
+                &addressing,
+                &SegmentAvailability::default(),
+            ),
             timeline_ctx: &timeline,
             cached_inits: &cached,
             last_quality_index: None,

@@ -130,6 +130,7 @@ fn next_duration_template_segment(
 struct LiveEdgeExtend<'a> {
     segments: &'a mut Vec<manifest::TimelineSegment>,
     addressing: &'a manifest::SegmentAddressing,
+    availability: manifest::SegmentAvailability,
     timeline_ctx: &'a TimelineBuildContext,
     period_start: Duration,
     since_ast_base: Option<Duration>,
@@ -149,6 +150,7 @@ async fn extend_duration_template_live_edge(ctx: LiveEdgeExtend<'_>) -> bool {
     let LiveEdgeExtend {
         segments,
         addressing,
+        availability,
         timeline_ctx,
         period_start,
         since_ast_base,
@@ -177,7 +179,6 @@ async fn extend_duration_template_live_edge(ctx: LiveEdgeExtend<'_>) -> bool {
         return false;
     };
 
-    let availability = manifest::SegmentAvailability::from_addressing(addressing);
     let poll =
         Duration::from_millis(100).min(Duration::from_secs_f64(next.duration_s.max(0.05) / 2.0));
 
@@ -293,6 +294,19 @@ pub(crate) async fn run_adaptation_stream(
 
     let addressing = manifest::segment_addressing_for_timeline(&period, &adaptation_set)?;
 
+    let set_availability = {
+        let primary_rep = adaptation_set
+            .representations
+            .first()
+            .ok_or(SegmentError::ExhaustedRepresentations)?;
+        let base_url_availability = manifest::base_url_availability_for_representation(
+            &segment_base_ctx,
+            &adaptation_set,
+            primary_rep,
+        );
+        manifest::SegmentAvailability::for_representation(&addressing, &base_url_availability)
+    };
+
     let mut adaptation_sets = switch_peers;
     adaptation_sets.insert(period_adaptation_index, adaptation_set.clone());
 
@@ -384,7 +398,7 @@ pub(crate) async fn run_adaptation_stream(
         timeline_ctx.is_dynamic,
         period_start,
         timeline_ctx.since_availability_start,
-        &addressing,
+        &set_availability,
     );
 
     // Align every adaptation set to the same media instant: pick the first segment whose
@@ -546,6 +560,7 @@ pub(crate) async fn run_adaptation_stream(
             let extended = extend_duration_template_live_edge(LiveEdgeExtend {
                 segments: &mut segments,
                 addressing: &addressing,
+                availability: set_availability,
                 timeline_ctx: &timeline_ctx,
                 period_start,
                 since_ast_base,
@@ -631,7 +646,7 @@ pub(crate) async fn run_adaptation_stream(
             primary_period_adaptation_index: period_adaptation_index,
             adaptation_sets: &adaptation_sets,
             bitstream_switching: &bitstream_switching,
-            addressing: &addressing,
+            set_availability,
             timeline_ctx: &timeline_ctx,
             cached_inits: &encrypted_init_by_rep,
             last_quality_index,
@@ -771,7 +786,7 @@ pub(crate) async fn run_adaptation_stream(
                 primary_period_adaptation_index: period_adaptation_index,
                 adaptation_sets: &adaptation_sets,
                 bitstream_switching: &bitstream_switching,
-                addressing: &addressing,
+                set_availability,
                 timeline_ctx: &timeline_ctx,
                 cached_inits: &encrypted_init_by_rep,
                 last_quality_index: speculative_last_q,

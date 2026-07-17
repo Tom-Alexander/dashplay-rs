@@ -41,7 +41,8 @@ pub(crate) use availability::{
     uses_chunked_segment_transfer,
 };
 pub(crate) use base_url::{
-    SegmentBaseContext, merge_base_url, new_dvb_selection_seed, segment_bases_for_representation,
+    SegmentBaseContext, base_url_availability_for_representation, merge_base_url,
+    new_dvb_selection_seed, segment_bases_for_representation,
 };
 pub(crate) use bitstream_switching::bitstream_switching_enabled;
 pub(crate) use end_numbers::{SegmentTemplateEndNumbers, parse_segment_template_end_numbers};

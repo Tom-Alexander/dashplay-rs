@@ -18,22 +18,40 @@ pub(crate) struct SegmentAvailability {
     pub availability_time_complete: bool,
 }
 
-impl SegmentAvailability {
-    pub(crate) fn from_addressing(addressing: &SegmentAddressing) -> Self {
-        match addressing {
-            SegmentAddressing::Template(st) => Self {
-                availability_time_offset_s: st.availabilityTimeOffset,
-                availability_time_complete: st.availabilityTimeComplete.unwrap_or(true),
-            },
-            SegmentAddressing::List(_sl) => Self {
-                availability_time_offset_s: None,
-                availability_time_complete: true,
-            },
-            SegmentAddressing::Base(sb) => Self {
-                availability_time_offset_s: sb.availabilityTimeOffset,
-                availability_time_complete: sb.availabilityTimeComplete.unwrap_or(true),
-            },
+impl Default for SegmentAvailability {
+    fn default() -> Self {
+        Self {
+            availability_time_offset_s: None,
+            availability_time_complete: true,
         }
+    }
+}
+
+impl SegmentAvailability {
+    /// Segment addressing merged with [`super::base_url::base_url_availability_for_representation`].
+    ///
+    /// Segment-level `@availabilityTimeOffset` / `@availabilityTimeComplete` take precedence when
+    /// present; otherwise values from the primary `BaseURL` at each hierarchy level apply (dash.js
+    /// fallback; DASH-IF sums BaseURL offsets across levels).
+    pub(crate) fn for_representation(
+        addressing: &SegmentAddressing,
+        base_url_availability: &Self,
+    ) -> Self {
+        let (seg_ato, seg_atc) = segment_level_availability_attrs(addressing);
+        Self {
+            availability_time_offset_s: seg_ato
+                .or(base_url_availability.availability_time_offset_s),
+            availability_time_complete: seg_atc
+                .unwrap_or(base_url_availability.availability_time_complete),
+        }
+    }
+}
+
+fn segment_level_availability_attrs(addressing: &SegmentAddressing) -> (Option<f64>, Option<bool>) {
+    match addressing {
+        SegmentAddressing::Template(st) => (st.availabilityTimeOffset, st.availabilityTimeComplete),
+        SegmentAddressing::List(_sl) => (None, None),
+        SegmentAddressing::Base(sb) => (sb.availabilityTimeOffset, sb.availabilityTimeComplete),
     }
 }
 
@@ -97,7 +115,7 @@ pub(crate) fn filter_segments_by_availability(
     is_dynamic: bool,
     period_start: Duration,
     since_availability_start: Option<Duration>,
-    addressing: &SegmentAddressing,
+    availability: &SegmentAvailability,
 ) -> Vec<TimelineSegment> {
     if !is_dynamic {
         return segments;
@@ -105,10 +123,9 @@ pub(crate) fn filter_segments_by_availability(
     let Some(since) = since_availability_start else {
         return segments;
     };
-    let availability = SegmentAvailability::from_addressing(addressing);
     segments
         .into_iter()
-        .filter(|s| segment_is_available(s, period_start, since, &availability))
+        .filter(|s| segment_is_available(s, period_start, since, availability))
         .collect()
 }
 

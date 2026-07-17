@@ -14,6 +14,7 @@ use crate::drm::DrmSessionCoordinator;
 use crate::http::{HttpRetryConfig, SharedHttpClient};
 use crate::manifest::{self, TimelineBuildContext};
 use crate::metrics::TrackMetrics;
+use crate::segment::SegmentError;
 use crate::segment_blacklist::SegmentBlacklist;
 use crate::track_selection::TrackKind;
 use crate::track_session::TrackSessionState;
@@ -61,6 +62,20 @@ pub(crate) async fn prefetch_next_period_first_segment(
         return Ok(None);
     }
 
+    let set_availability = {
+        let primary_rep = plan
+            .next_adaptation_set
+            .representations
+            .first()
+            .ok_or(SegmentError::ExhaustedRepresentations)?;
+        let base_url_availability = manifest::base_url_availability_for_representation(
+            &plan.next_segment_base_ctx,
+            &plan.next_adaptation_set,
+            primary_rep,
+        );
+        manifest::SegmentAvailability::for_representation(&addressing, &base_url_availability)
+    };
+
     let mut segments = manifest::timeline_segments_for_addressing(
         &addressing,
         &plan.next_timeline_ctx,
@@ -71,7 +86,7 @@ pub(crate) async fn prefetch_next_period_first_segment(
         plan.next_timeline_ctx.is_dynamic,
         plan.next_period_start,
         plan.next_timeline_ctx.since_availability_start,
-        &addressing,
+        &set_availability,
     );
 
     let period_start_s = plan.next_period_start.as_secs_f64();
@@ -155,7 +170,7 @@ pub(crate) async fn prefetch_next_period_first_segment(
             primary_period_adaptation_index: plan.next_period_adaptation_index,
             adaptation_sets: &adaptation_sets,
             bitstream_switching: &bitstream_switching,
-            addressing: &addressing,
+            set_availability,
             timeline_ctx: &plan.next_timeline_ctx,
             cached_inits: &encrypted_init_by_rep,
             last_quality_index: None,

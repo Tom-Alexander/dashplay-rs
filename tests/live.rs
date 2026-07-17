@@ -4,9 +4,10 @@ use common::{
     AdvancingLiveServer, FixtureServer, InbandProducerReferenceLiveServer, LatencyLiveServer,
     LongMupLiveServer, PartialLiveServer, ProducerReferenceLiveServer,
     assert_no_duplicate_segments, has_end, init_payload, init_payloads, partial_segment_payloads,
-    play_single_track, play_single_track_live, playback_rate_suggestions, segment_numbers,
-    segment_payloads,
+    play_single_track, play_single_track_live, playback_rate_suggestions, recv_matching,
+    segment_numbers, segment_payloads,
 };
+use dashplayrs::PlayerEvent;
 
 const LIVE_TIMEOUT: std::time::Duration = std::time::Duration::from_millis(800);
 const REFRESH_TIMEOUT: std::time::Duration = std::time::Duration::from_secs(2);
@@ -293,6 +294,64 @@ async fn live_partial_segment_transfer_emits_chunked_cmaf_fragments() {
         "expected final chunk of seg-5, got {partials:?}"
     );
     assert!(!has_end(&events));
+}
+
+#[tokio::test]
+async fn live_dvr_seek_repositions_within_time_shift_buffer() {
+    let server = FixtureServer::spawn("live_duration").await;
+    let player = dashplayrs::Player::new(server.manifest_url.as_str(), None).expect("player");
+    let outputs = player.start_tracks().await.expect("start");
+    let buffer = outputs.buffer_feedback(0).expect("track");
+    let _ = buffer.report(25.0);
+    let mut rx = outputs.subscribe(0).expect("one track");
+
+    assert!(matches!(
+        recv_matching(&mut rx, LIVE_TIMEOUT, |ev| matches!(
+            ev,
+            PlayerEvent::Init(_)
+        ))
+        .await,
+        Some(PlayerEvent::Init(_))
+    ));
+    assert!(matches!(
+        recv_matching(&mut rx, LIVE_TIMEOUT, |ev| matches!(
+            ev,
+            PlayerEvent::Segment { .. }
+        ))
+        .await,
+        Some(PlayerEvent::Segment { .. })
+    ));
+
+    outputs
+        .seek(std::time::Duration::from_secs(8))
+        .expect("seek");
+
+    let mut payloads = Vec::new();
+    let deadline = tokio::time::Instant::now() + LIVE_TIMEOUT;
+    while tokio::time::Instant::now() < deadline {
+        if let Some(ev) = tokio::time::timeout(std::time::Duration::from_millis(500), rx.recv())
+            .await
+            .ok()
+            .and_then(Result::ok)
+        {
+            match ev {
+                PlayerEvent::Segment { data, .. } => payloads.push(data),
+                PlayerEvent::End => break,
+                _ => {}
+            }
+        }
+    }
+
+    assert!(
+        payloads
+            .first()
+            .is_some_and(|p| p.starts_with(b"dashplay-live-seg-3")),
+        "DVR seek to 8s should start at seg-3 within the TSBD window, got {payloads:?}"
+    );
+
+    outputs.stop().ok();
+    drop(rx);
+    outputs.join.await.unwrap().expect("join");
 }
 
 #[tokio::test]

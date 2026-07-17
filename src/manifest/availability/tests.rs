@@ -165,6 +165,7 @@ fn filter_segments_by_availability_drops_unpublished_complete_live_edge() {
         time_shift_buffer_depth: Some(Duration::from_secs(20)),
         since_availability_start: Some(Duration::from_secs(12)),
         resync_hints: None,
+        must_cover_presentation_s: None,
     };
     let segments = timeline_segments(&st, &ctx, None).unwrap();
     let availability =
@@ -203,6 +204,7 @@ fn filter_segments_by_availability_includes_partial_live_edge_at_sap() {
         time_shift_buffer_depth: Some(Duration::from_secs(20)),
         since_availability_start: Some(Duration::from_secs(11)),
         resync_hints: None,
+        must_cover_presentation_s: None,
     };
     let segments = timeline_segments(&st, &ctx, None).unwrap();
     let availability =
@@ -274,6 +276,7 @@ fn filter_segments_by_availability_honours_base_url_only_offset() {
         time_shift_buffer_depth: Some(Duration::from_secs(20)),
         since_availability_start: Some(Duration::from_secs(12)),
         resync_hints: None,
+        must_cover_presentation_s: None,
     };
     let segments = timeline_segments(&st, &ctx, None).unwrap();
     let availability = SegmentAvailability::for_representation(

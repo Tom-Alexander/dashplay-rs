@@ -112,7 +112,7 @@ pub(crate) fn build_period_context<'a>(
         .or(since_ast_utc);
 
     let period_target_time = if let Some(seek) = seek_target_override {
-        Some(seek)
+        manifest::period_seek_target(current_window, seek)
     } else if let Some(s) = reference_since_ast {
         Some(manifest::target_presentation_time_from_since(mpd, s))
     } else {
@@ -162,6 +162,9 @@ pub(crate) fn build_timeline_context(inputs: TimelineContextInputs<'_>) -> Timel
         })
         .or(period_ctx.since_ast_utc);
     let resync_hints = rep.and_then(|r| resync::resync_hints(period, adaptation_set, r));
+    let must_cover_presentation_s = period_ctx
+        .period_target_time
+        .map(|t| t.saturating_sub(current_window.start).as_secs_f64());
     TimelineBuildContext {
         is_dynamic,
         period_window: current_window,
@@ -170,5 +173,6 @@ pub(crate) fn build_timeline_context(inputs: TimelineContextInputs<'_>) -> Timel
         time_shift_buffer_depth: mpd.timeShiftBufferDepth,
         since_availability_start: since_ast,
         resync_hints,
+        must_cover_presentation_s,
     }
 }

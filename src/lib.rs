@@ -102,7 +102,7 @@ pub use http::{
     HttpRetryConfig, HttpRetryPolicy, HttpStreamResponse, SharedHttpClient, shared,
 };
 pub use manifest::{
-    AssetIdentifier, ContentLabel, ManifestError, ManifestMetadata, MetricsRange,
+    AssetIdentifier, ContentLabel, DvrWindow, ManifestError, ManifestMetadata, MetricsRange,
     MpdReportingMetrics, PeriodMetadata, ProgramInformation, ReportingDescriptor, Scte214ContentId,
 };
 pub use media_events::{MediaEvent, MediaEventSource, Scte35Cue};

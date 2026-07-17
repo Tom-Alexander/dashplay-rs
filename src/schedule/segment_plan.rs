@@ -212,6 +212,7 @@ mod tests {
             time_shift_buffer_depth: None,
             since_availability_start: None,
             resync_hints: None,
+            must_cover_presentation_s: None,
         }
     }
 

@@ -28,6 +28,7 @@ fn static_ctx(period_end: Option<Duration>) -> TimelineBuildContext {
         time_shift_buffer_depth: None,
         since_availability_start: None,
         resync_hints: None,
+        must_cover_presentation_s: None,
     }
 }
 
@@ -379,6 +380,7 @@ fn dynamic_segment_timeline_filtered_to_time_shift_buffer() {
         time_shift_buffer_depth: Some(Duration::from_secs(2)),
         since_availability_start: Some(Duration::from_secs(5)),
         resync_hints: None,
+        must_cover_presentation_s: None,
     };
     let segs = timeline_segments(&st, &ctx, None).unwrap();
     assert_eq!(segs.len(), 3);
@@ -386,6 +388,40 @@ fn dynamic_segment_timeline_filtered_to_time_shift_buffer() {
         segs.iter().map(|s| s.time).collect::<Vec<_>>(),
         vec![3000, 4000, 5000]
     );
+}
+
+#[test]
+fn dynamic_segment_timeline_keeps_tsbd_bounds_when_seek_is_outside_dvr() {
+    let st = SegmentTemplate {
+        timescale: Some(1000),
+        presentationTimeOffset: Some(0),
+        startNumber: Some(1),
+        SegmentTimeline: Some(SegmentTimeline {
+            segments: vec![S {
+                t: Some(0),
+                d: 1000,
+                r: Some(9),
+                ..Default::default()
+            }],
+        }),
+        ..Default::default()
+    };
+    let ctx = TimelineBuildContext {
+        is_dynamic: true,
+        period_window: PeriodWindow {
+            idx: 0,
+            start: Duration::ZERO,
+            end: None,
+        },
+        period_duration: None,
+        media_presentation_duration: None,
+        time_shift_buffer_depth: Some(Duration::from_secs(2)),
+        since_availability_start: Some(Duration::from_secs(5)),
+        resync_hints: None,
+        must_cover_presentation_s: Some(1.0),
+    };
+    let segs = timeline_segments(&st, &ctx, None).unwrap();
+    assert_eq!(segs.len(), 3);
 }
 
 #[test]
@@ -416,6 +452,7 @@ fn dynamic_segment_timeline_caps_window_at_media_presentation_duration() {
         time_shift_buffer_depth: Some(Duration::from_secs(20)),
         since_availability_start: Some(Duration::from_secs(20)),
         resync_hints: None,
+        must_cover_presentation_s: None,
     };
     let segs = timeline_segments(&st, &ctx, None).unwrap();
     assert_eq!(segs.len(), 4);
@@ -527,6 +564,7 @@ fn static_duration_template_bounds_last_segment_to_period_extent() {
         time_shift_buffer_depth: None,
         since_availability_start: None,
         resync_hints: None,
+        must_cover_presentation_s: None,
     };
     let segs = timeline_segments(&st, &ctx, None).unwrap();
     assert_eq!(segs.len(), 3);
@@ -560,6 +598,7 @@ fn ll_duration_template_expands_ntsc_fractional_segment_duration() {
         time_shift_buffer_depth: Some(Duration::from_secs(60)),
         since_availability_start: Some(Duration::from_secs(1000)),
         resync_hints: None,
+        must_cover_presentation_s: None,
     };
     let segs = timeline_segments(&st, &ctx, None).expect("fractional LL segment duration");
     assert!(!segs.is_empty());
@@ -899,6 +938,7 @@ fn static_duration_template_emits_expected_segment_count() {
         time_shift_buffer_depth: None,
         since_availability_start: None,
         resync_hints: None,
+        must_cover_presentation_s: None,
     };
 
     let segs = timeline_segments(&st, &ctx, None).unwrap();
@@ -928,6 +968,7 @@ fn static_duration_template_bounds_by_end_number_without_period_extent() {
         time_shift_buffer_depth: None,
         since_availability_start: None,
         resync_hints: None,
+        must_cover_presentation_s: None,
     };
 
     let err = timeline_segments(&st, &ctx, None).unwrap_err();
@@ -963,6 +1004,7 @@ fn static_duration_template_prefers_end_number_over_period_extent() {
         time_shift_buffer_depth: None,
         since_availability_start: None,
         resync_hints: None,
+        must_cover_presentation_s: None,
     };
 
     let segs = timeline_segments(&st, &ctx, Some(1)).unwrap();
@@ -991,10 +1033,40 @@ fn dynamic_duration_template_limits_window_to_time_shift_buffer() {
         time_shift_buffer_depth: Some(Duration::from_secs(8)),
         since_availability_start: Some(Duration::from_secs(20)),
         resync_hints: None,
+        must_cover_presentation_s: None,
     };
 
     let segs = timeline_segments(&st, &ctx, None).unwrap();
     assert_eq!(segs.first().map(|s| s.number), Some(2));
+    assert_eq!(segs.last().map(|s| s.number), Some(6));
+}
+
+#[test]
+fn dynamic_duration_template_expands_for_dvr_seek_target() {
+    let st = SegmentTemplate {
+        timescale: Some(1000),
+        duration: Some(4000.0),
+        presentationTimeOffset: Some(0),
+        startNumber: Some(1),
+        ..Default::default()
+    };
+    let ctx = TimelineBuildContext {
+        is_dynamic: true,
+        period_window: PeriodWindow {
+            idx: 0,
+            start: Duration::ZERO,
+            end: None,
+        },
+        period_duration: None,
+        media_presentation_duration: None,
+        time_shift_buffer_depth: Some(Duration::from_secs(8)),
+        since_availability_start: Some(Duration::from_secs(20)),
+        resync_hints: None,
+        must_cover_presentation_s: Some(0.0),
+    };
+
+    let segs = timeline_segments(&st, &ctx, None).unwrap();
+    assert_eq!(segs.first().map(|s| s.number), Some(1));
     assert_eq!(segs.last().map(|s| s.number), Some(6));
 }
 
@@ -1020,6 +1092,7 @@ fn dynamic_duration_template_caps_at_media_presentation_duration() {
         // Live edge past the known presentation end.
         since_availability_start: Some(Duration::from_secs(20)),
         resync_hints: None,
+        must_cover_presentation_s: None,
     };
 
     let segs = timeline_segments(&st, &ctx, None).unwrap();
@@ -1050,6 +1123,7 @@ fn dynamic_duration_template_bounds_last_segment_to_presentation_end() {
         time_shift_buffer_depth: Some(Duration::from_secs(20)),
         since_availability_start: Some(Duration::from_secs(20)),
         resync_hints: None,
+        must_cover_presentation_s: None,
     };
 
     let segs = timeline_segments(&st, &ctx, None).unwrap();
@@ -1093,6 +1167,7 @@ fn segment_list_explicit_urls_builds_timeline() {
         time_shift_buffer_depth: None,
         since_availability_start: None,
         resync_hints: None,
+        must_cover_presentation_s: None,
     };
 
     let segs = timeline_segments_from_list(&sl, &ctx).unwrap();
@@ -1140,6 +1215,7 @@ fn segment_list_media_range_builds_byte_ranges() {
         time_shift_buffer_depth: None,
         since_availability_start: None,
         resync_hints: None,
+        must_cover_presentation_s: None,
     };
 
     let segs = timeline_segments_from_list(&sl, &ctx).unwrap();
@@ -1199,6 +1275,7 @@ fn segment_list_timeline_copies_media_range() {
         time_shift_buffer_depth: None,
         since_availability_start: None,
         resync_hints: None,
+        must_cover_presentation_s: None,
     };
 
     let segs = timeline_segments_from_list(&sl, &ctx).unwrap();
@@ -1237,6 +1314,7 @@ fn segment_list_invalid_media_range_errors() {
         time_shift_buffer_depth: None,
         since_availability_start: None,
         resync_hints: None,
+        must_cover_presentation_s: None,
     };
 
     assert!(matches!(
@@ -1268,6 +1346,7 @@ fn timeline_segments_for_per_segment_index_uses_explicit_timeline() {
         time_shift_buffer_depth: None,
         since_availability_start: None,
         resync_hints: None,
+        must_cover_presentation_s: None,
     };
     let segs =
         timeline_segments_for_addressing(&SegmentAddressing::Template(st), &ctx, None).unwrap();

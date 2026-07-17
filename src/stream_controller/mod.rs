@@ -125,6 +125,7 @@ impl PlaybackLoopState {
                     tick.is_dynamic,
                     tick.wall_now,
                     buffer_target.min_buffer_s,
+                    seek_target_override,
                 )?;
                 let seek_generation_at_start = playback.seek_generation();
                 let mut seek_interrupted = false;
@@ -134,6 +135,12 @@ impl PlaybackLoopState {
                 for (window_pos, current_window) in periods_to_play.iter().copied().enumerate() {
                     if playback.is_stopped() {
                         break;
+                    }
+
+                    if seek_target_override
+                        .is_some_and(|seek| manifest::period_is_before_seek(current_window, seek))
+                    {
+                        continue;
                     }
 
                     let link = last_period_idx

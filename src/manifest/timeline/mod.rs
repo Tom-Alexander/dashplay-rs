@@ -383,7 +383,14 @@ fn filter_explicit_timeline_for_dynamic_window(
         .map(|x| x.as_secs_f64())
         .filter(|x| x.is_finite() && *x > 0.0)
         .unwrap_or(120.0);
-    let window_start_s = (now_s - tsbd_s).max(period_start_s);
+    let mut window_start_s = (now_s - tsbd_s).max(period_start_s);
+    if let Some(must_cover) = ctx.must_cover_presentation_s {
+        let abs_cover = period_start_s + must_cover;
+        let dvr_start = (now_s - tsbd_s).max(period_start_s);
+        if abs_cover + 1e-6 >= dvr_start && abs_cover <= now_s + 1e-6 {
+            window_start_s = window_start_s.min(abs_cover);
+        }
+    }
     let period_end_s = ctx.period_end_secs();
 
     Ok(segments
@@ -453,7 +460,13 @@ fn segments_from_duration_template(
         let span = ((tsbd_s / duration_s).ceil() as u64)
             .saturating_add(2)
             .max(1);
-        let start_n = end_n.saturating_sub(span).max(start_number);
+        let mut start_n = end_n.saturating_sub(span).max(start_number);
+        if let Some(must_cover) = ctx.must_cover_presentation_s
+            && must_cover + 1e-6 < t_in_period
+        {
+            let cover_n = start_number + (must_cover / duration_s).floor() as u64;
+            start_n = start_n.min(cover_n.max(start_number));
+        }
 
         let mut segments = Vec::new();
         for n in start_n..=end_n {

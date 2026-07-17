@@ -5,6 +5,7 @@ mod alignment;
 mod availability;
 mod base_url;
 mod bitstream_switching;
+mod dvr;
 mod end_numbers;
 pub mod error;
 mod fetch;
@@ -45,6 +46,10 @@ pub(crate) use base_url::{
     new_dvb_selection_seed, segment_bases_for_representation,
 };
 pub(crate) use bitstream_switching::bitstream_switching_enabled;
+pub use dvr::DvrWindow;
+pub(crate) use dvr::{
+    dvr_window_at, live_periods_for_playback, period_is_before_seek, period_seek_target,
+};
 pub(crate) use end_numbers::{SegmentTemplateEndNumbers, parse_segment_template_end_numbers};
 pub(crate) use fetch::{
     media_range_from_per_segment_index, segment_base_index_target, segment_base_init_target,

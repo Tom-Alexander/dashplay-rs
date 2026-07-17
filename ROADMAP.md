@@ -16,16 +16,11 @@ Status: `[ ]` not started · `[~]` partial · `[x]` done.
   *dash.js:* AS min/max attrs are modelled/metadata; ABR caps come from settings
   (`abr.minBitrate` / `maxBitrate`) and capability filters, not hard enforcement of AS
   range attrs against each Representation.
-- [x] **ABR inputs.** Live latency / playback rate (LoL+); dropped-frame signals via
-  host `PlaybackQualityFeedback` (dash.js `DroppedFramesRule` /
-  `getVideoPlaybackQuality()`).
-  *dash.js:* `droppedFramesRule` uses `getVideoPlaybackQuality()`; LL catch-up feeds
-  latency into playback rate.
 - [~] **Pause semantics.** Buffer drain signalling; optional in-flight cancel.
   *dash.js:* `scheduleWhilePaused` (default true); `HTTPLoader.abort()` cancels
   in-flight + pending retries.
-- [~] **Live DVR seek.** Expand seek bounds beyond the resolved timeline.
+- [~] **Live DVR seek.** DVR window API + seek expands duration-template timelines and
+  selects periods for backward multi-period rewind; explicit `SegmentTimeline` already
+  spans full TSBD.
   *dash.js:* DVR window vs availability window; `getDvrWindow` / seek across sliding
   live multiperiod.
-- [x] **`BaseURL@availabilityTimeOffset`.** Honour BaseURL-level ATO.
-  *dash.js:* Uses BaseURL ATO when segment-level ATO is absent; core LL availability.

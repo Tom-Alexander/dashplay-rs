@@ -21,6 +21,9 @@ pub(crate) struct TimelineBuildContext {
     pub time_shift_buffer_depth: Option<Duration>,
     pub since_availability_start: Option<Duration>,
     pub resync_hints: Option<crate::clock::resync::ResyncHints>,
+    /// When set, dynamic timeline trimming must include segments covering this presentation
+    /// time relative to the Period start (seconds).
+    pub must_cover_presentation_s: Option<f64>,
 }
 
 impl TimelineBuildContext {

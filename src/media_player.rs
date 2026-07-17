@@ -169,6 +169,17 @@ impl MediaPlayer {
         Ok(())
     }
 
+    /// Seekable presentation-time range for a dynamic live MPD (dash.js: `getDvrWindow`).
+    ///
+    /// Requires a loaded manifest ([`Self::fetch_manifest`]). Uses [`UTCTiming`](crate::clock::utc_timing)
+    /// when present to anchor the live edge.
+    pub async fn dvr_window(&self) -> Result<Option<manifest::DvrWindow>, PlayerError> {
+        let mpd = manifest::mpd(&self.manifest)?;
+        let wall_now =
+            utc_timing::wall_clock_utc(&self.client, mpd, Some(&self.manifest_uri)).await;
+        Ok(manifest::dvr_window_at(mpd, wall_now)?)
+    }
+
     /// Attach source and prepare the stream controller (dash.js: initialize + attachSource).
     ///
     /// This does **not** spawn a background task. After subscribing to the tracks you need,

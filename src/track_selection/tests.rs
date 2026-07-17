@@ -362,7 +362,7 @@ fn sub_representation_codecs_participate_in_preference_ranking() {
     assert_eq!(selected[0].info.codecs, vec!["avc1.4D401E", "mp4a.40"]);
     assert_eq!(selected[0].info.sub_tracks.len(), 2);
     assert_eq!(selected[0].info.sub_tracks[0].level, Some(0));
-    assert!(selected[0].info.sub_tracks[0].max_playout_rate);
+    assert_eq!(selected[0].info.sub_tracks[0].max_playout_rate, Some(4.0));
     assert_eq!(
         selected[0].info.sub_tracks[1].language.as_deref(),
         Some("en")

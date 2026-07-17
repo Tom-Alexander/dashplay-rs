@@ -48,6 +48,8 @@ pub enum PlaybackControlError {
     NotActive,
     #[error("playback has already stopped")]
     Stopped,
+    #[error("playback rate must be a finite value greater than zero")]
+    InvalidPlaybackRate,
 }
 
 /// Result of advancing the internal media clock.
@@ -98,6 +100,10 @@ struct Inner {
     live_latency_rx: watch::Receiver<Option<Duration>>,
     /// Avoid repeated max-latency seeks until latency recovers below `@max`.
     latency_seek_armed: AtomicBool,
+    /// User override for consumption rate (`None` = follow LL suggested rate / 1.0).
+    user_playback_rate: Mutex<Option<f64>>,
+    /// Active video/trick Representation `@maxPlayoutRate` cap when known.
+    max_playout_rate_cap: Mutex<Option<f64>>,
 }
 
 impl PlaybackController {
@@ -132,6 +138,8 @@ impl PlaybackController {
                 live_latency_tx,
                 live_latency_rx,
                 latency_seek_armed: AtomicBool::new(true),
+                user_playback_rate: Mutex::new(None),
+                max_playout_rate_cap: Mutex::new(None),
             }),
         }
     }
@@ -161,17 +169,72 @@ impl PlaybackController {
         self.inner.playhead_tx.subscribe()
     }
 
-    /// Suggested consumption rate for LL-DASH target-latency catch-up (`1.0` when inactive).
+    /// Suggested LL-DASH consumption rate (`1.0` when inactive).
     ///
     /// Derived from measured live latency vs `ServiceDescription/Latency@target`, clamped
-    /// to `PlaybackRate` bounds. Apply this rate on the consumer media clock.
+    /// to `PlaybackRate` bounds. See [`Self::playback_rate`] for the effective rate applied
+    /// to the media clock (user override + `@maxPlayoutRate` clamp).
     pub fn suggested_playback_rate(&self) -> f64 {
         *self.inner.suggested_rate_rx.borrow()
     }
 
-    /// Watch suggested consumption rate updates.
+    /// Watch suggested LL-DASH consumption rate updates.
     pub fn subscribe_suggested_playback_rate(&self) -> watch::Receiver<f64> {
         self.inner.suggested_rate_tx.subscribe()
+    }
+
+    /// Effective consumption rate for the media clock and ABR (`1.0` when inactive).
+    ///
+    /// Composition: `user_rate.unwrap_or(suggested_ll_rate)`, then capped by the active
+    /// video/trick Representation `@maxPlayoutRate` when known.
+    pub fn playback_rate(&self) -> f64 {
+        effective_playback_rate(
+            *self
+                .inner
+                .user_playback_rate
+                .lock()
+                .unwrap_or_else(|e| e.into_inner()),
+            self.suggested_playback_rate(),
+            *self
+                .inner
+                .max_playout_rate_cap
+                .lock()
+                .unwrap_or_else(|e| e.into_inner()),
+        )
+    }
+
+    /// Set or clear a user playback-rate override.
+    ///
+    /// - `Some(rate)` — apply `rate` (must be finite and `> 0`), subject to `@maxPlayoutRate`
+    /// - `None` — clear the override and follow LL-DASH suggested rate (or `1.0`)
+    ///
+    /// Trick-play AdaptationSet selection remains via [`Self::set_track_selection`]; this
+    /// only controls the consumption clock rate.
+    pub fn set_playback_rate(&self, rate: Option<f64>) -> Result<(), PlaybackControlError> {
+        self.require_active()?;
+        if let Some(rate) = rate {
+            if !rate.is_finite() || rate <= 0.0 {
+                return Err(PlaybackControlError::InvalidPlaybackRate);
+            }
+        }
+        *self
+            .inner
+            .user_playback_rate
+            .lock()
+            .unwrap_or_else(|e| e.into_inner()) = rate;
+        // Wall-time base must reset so the next advance uses the new rate cleanly.
+        self.clear_media_clock_wall();
+        Ok(())
+    }
+
+    /// Install the `@maxPlayoutRate` cap from the active video/trick quality rung.
+    pub(crate) fn set_max_playout_rate_cap(&self, cap: Option<f64>) {
+        let cap = cap.filter(|v| v.is_finite() && *v > 0.0);
+        *self
+            .inner
+            .max_playout_rate_cap
+            .lock()
+            .unwrap_or_else(|e| e.into_inner()) = cap;
     }
 
     /// Measured live latency when LL-DASH latency control is active.
@@ -361,6 +424,16 @@ impl PlaybackController {
             .store(false, Ordering::Release);
         self.set_media_clock(None);
         self.clear_latency_control();
+        *self
+            .inner
+            .user_playback_rate
+            .lock()
+            .unwrap_or_else(|e| e.into_inner()) = None;
+        *self
+            .inner
+            .max_playout_rate_cap
+            .lock()
+            .unwrap_or_else(|e| e.into_inner()) = None;
         let _ = self.inner.state_tx.send(PlaybackState::LoadingManifest);
     }
 
@@ -576,7 +649,7 @@ impl PlaybackController {
     }
 
     /// Advance the media clock while [`PlaybackState::Playing`] using wall time and the
-    /// suggested playback rate. Caps at the earliest delivered-media end across tracks.
+    /// effective playback rate. Caps at the earliest delivered-media end across tracks.
     pub(crate) fn advance_media_clock(&self) -> MediaClockAdvance {
         if self.is_paused() || self.is_stopped() {
             self.clear_media_clock_wall();
@@ -591,7 +664,7 @@ impl PlaybackController {
             };
         }
 
-        let rate = self.suggested_playback_rate();
+        let rate = self.playback_rate();
         let rate = if rate.is_finite() && rate > 0.0 {
             rate
         } else {
@@ -870,6 +943,24 @@ fn min_delivered_end(ends: &[Option<Duration>]) -> Option<Duration> {
     ends.iter().filter_map(|p| *p).min()
 }
 
+/// Compose user override with LL suggested rate, then clamp to `@maxPlayoutRate`.
+fn effective_playback_rate(
+    user_rate: Option<f64>,
+    suggested_ll_rate: f64,
+    max_playout_rate_cap: Option<f64>,
+) -> f64 {
+    let base = user_rate.unwrap_or(suggested_ll_rate);
+    let base = if base.is_finite() && base > 0.0 {
+        base
+    } else {
+        1.0
+    };
+    match max_playout_rate_cap {
+        Some(cap) if cap.is_finite() && cap > 0.0 => base.min(cap),
+        _ => base,
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -1025,6 +1116,68 @@ mod tests {
             .unwrap();
         assert!(playback.seek_generation() > before);
         assert_eq!(playback.take_seek_target(), Some(Duration::from_secs(4)));
+    }
+
+    #[test]
+    fn set_playback_rate_overrides_suggested_and_clears() {
+        let playback = PlaybackController::new();
+        playback.mark_started();
+        playback.set_state(PlaybackState::Playing);
+        playback.set_latency_control(
+            Some(LatencyPolicy {
+                target: Duration::from_millis(3500),
+                min: None,
+                max: None,
+                rate_min: 0.96,
+                rate_max: 1.04,
+            }),
+            Some(Duration::from_secs(20)),
+        );
+        playback.record_segment_delivery(0, Duration::from_secs(15), Duration::from_secs(19));
+        let update = playback.refresh_latency_control().expect("update");
+        assert!(update.rate > 1.0);
+
+        playback.set_playback_rate(Some(2.0)).unwrap();
+        assert!((playback.playback_rate() - 2.0).abs() < 1e-9);
+        assert!((playback.suggested_playback_rate() - update.rate).abs() < 1e-9);
+
+        playback.set_playback_rate(None).unwrap();
+        assert!((playback.playback_rate() - update.rate).abs() < 1e-9);
+    }
+
+    #[test]
+    fn set_playback_rate_clamps_to_max_playout_rate_cap() {
+        let playback = PlaybackController::new();
+        playback.mark_started();
+        playback.set_max_playout_rate_cap(Some(1.05));
+        playback.set_playback_rate(Some(2.0)).unwrap();
+        assert!((playback.playback_rate() - 1.05).abs() < 1e-9);
+    }
+
+    #[test]
+    fn set_playback_rate_rejects_invalid() {
+        let playback = PlaybackController::new();
+        playback.mark_started();
+        assert!(matches!(
+            playback.set_playback_rate(Some(0.0)),
+            Err(PlaybackControlError::InvalidPlaybackRate)
+        ));
+        assert!(matches!(
+            playback.set_playback_rate(Some(-1.0)),
+            Err(PlaybackControlError::InvalidPlaybackRate)
+        ));
+        assert!(matches!(
+            playback.set_playback_rate(Some(f64::NAN)),
+            Err(PlaybackControlError::InvalidPlaybackRate)
+        ));
+    }
+
+    #[test]
+    fn effective_playback_rate_helper() {
+        assert!((effective_playback_rate(None, 1.02, None) - 1.02).abs() < 1e-9);
+        assert!((effective_playback_rate(Some(3.0), 1.02, Some(1.5)) - 1.5).abs() < 1e-9);
+        assert!((effective_playback_rate(Some(0.5), 1.02, Some(1.5)) - 0.5).abs() < 1e-9);
+        assert!((effective_playback_rate(None, f64::NAN, None) - 1.0).abs() < 1e-9);
     }
 
     #[test]

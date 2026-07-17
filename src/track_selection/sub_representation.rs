@@ -11,7 +11,7 @@ use dash_mpd::{AdaptationSet, ContentComponent, Representation, SubRepresentatio
 use super::kind::TrackDescriptor;
 
 /// Public metadata for one MPD `SubRepresentation` after common-attribute inheritance.
-#[derive(Debug, Clone, PartialEq, Eq)]
+#[derive(Debug, Clone, PartialEq)]
 pub struct SubTrackInfo {
     /// `SubRepresentation@level`. When set, a Subsegment Index assigns this level.
     pub level: Option<u32>,
@@ -39,8 +39,12 @@ pub struct SubTrackInfo {
     pub roles: Vec<String>,
     /// Accessibility descriptors from linked ContentComponents.
     pub accessibility: Vec<TrackDescriptor>,
-    /// Whether `@maxPlayoutRate` is present (trick-mode suitability hint).
-    pub max_playout_rate: bool,
+    /// Maximum supported playout rate after SubRepresentation → Representation →
+    /// AdaptationSet inheritance.
+    pub max_playout_rate: Option<f64>,
+    /// Whether samples have coding dependencies after the same inheritance chain.
+    /// Metadata only; not used for trick-play selection.
+    pub coding_dependency: Option<bool>,
 }
 
 fn parse_whitespace_ids(value: &str) -> Vec<String> {
@@ -164,7 +168,23 @@ fn resolve_one(
         language,
         roles,
         accessibility,
-        max_playout_rate: sub.maxPlayoutRate.is_some(),
+        max_playout_rate: sub
+            .maxPlayoutRate
+            .filter(|v| v.is_finite() && *v > 0.0)
+            .or_else(|| {
+                representation
+                    .maxPlayoutRate
+                    .filter(|v| v.is_finite() && *v > 0.0)
+            })
+            .or_else(|| {
+                adaptation_set
+                    .maxPlayoutRate
+                    .filter(|v| v.is_finite() && *v > 0.0)
+            }),
+        coding_dependency: sub
+            .codingDependency
+            .or(representation.codingDependency)
+            .or(adaptation_set.codingDependency),
     })
 }
 
@@ -255,7 +275,8 @@ mod tests {
         assert_eq!(subs[0].height, Some(480));
         assert_eq!(subs[0].frame_rate.as_deref(), Some("30"));
         assert_eq!(subs[0].content_type.as_deref(), Some("video"));
-        assert!(subs[0].max_playout_rate);
+        assert_eq!(subs[0].max_playout_rate, Some(4.0));
+        assert_eq!(subs[0].coding_dependency, None);
 
         assert_eq!(subs[1].level, Some(2));
         assert_eq!(subs[1].content_component_ids, vec!["1"]);
@@ -263,7 +284,8 @@ mod tests {
         assert_eq!(subs[1].language.as_deref(), Some("fr"));
         assert_eq!(subs[1].roles, vec!["main"]);
         assert_eq!(subs[1].codecs, vec!["mp4a.40"]);
-        assert!(!subs[1].max_playout_rate);
+        assert_eq!(subs[1].max_playout_rate, None);
+        assert_eq!(subs[1].coding_dependency, None);
     }
 
     #[test]
@@ -284,6 +306,24 @@ mod tests {
         assert_eq!(subs.len(), 1);
         assert_eq!(subs[0].codecs, vec!["mp4a.40.2"]);
         assert_eq!(subs[0].level, None);
+    }
+
+    #[test]
+    fn inherits_coding_dependency_from_representation() {
+        let aset = adaptation_set(
+            r#"<MPD xmlns="urn:mpeg:dash:schema:mpd:2011">
+                <Period>
+                  <AdaptationSet mimeType="video/mp4" codingDependency="true">
+                    <Representation id="1" bandwidth="500000" codingDependency="false">
+                      <SubRepresentation level="0" bandwidth="320000" codecs="avc1.4D401E"/>
+                    </Representation>
+                  </AdaptationSet>
+                </Period>
+              </MPD>"#,
+        );
+        let subs = resolve_sub_tracks(&aset);
+        assert_eq!(subs[0].coding_dependency, Some(false));
+        assert_eq!(subs[0].max_playout_rate, None);
     }
 
     #[test]

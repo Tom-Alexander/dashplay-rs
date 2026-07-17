@@ -175,6 +175,10 @@ Enable delivery with [`TrackSelection::with_trick_play`](#trick-play-and-thumbna
 [`TrackSelection::with_image`](#trick-play-and-thumbnails). Both are disabled by default
 (`max_tracks(0)`). `TrackKind::TrickPlay` and `TrackKind::Image` mark selected auxiliary tracks;
 [`TrackInfo::thumbnail_tile`](#trick-play-and-thumbnails) reports tile layout when declared.
+Representation `@maxPlayoutRate` / `@codingDependency` appear on [`QualityRung`](#abr) and
+[`SubTrackInfo`](#track-selection); use [`PlaybackController::set_playback_rate`](#playbackcontroller)
+to accelerate the media clock (capped by the active video/trick `@maxPlayoutRate`). Switching to a
+trick-play AdaptationSet remains an explicit `TrackSelection` change.
 
 ```rust
 use dashplayrs::{Player, TrackKind, TrackPreference, TrackSelection};
@@ -331,7 +335,7 @@ wrappers around the same controller. Clone handles (`outputs.playback.clone()`) 
 | [`TrackMetricsSnapshot`](#metrics) | Point-in-time metrics view (throughput, buffer, switches, rebuffers) |
 | [`ThroughputSample`](#metrics) / [`BufferSample`](#metrics) / [`BitrateSwitch`](#metrics) / [`RebufferEvent`](#metrics) | Individual metric samples |
 | `TrackSelection` / `TrackPreference` | Ordered adaptation-set preferences and per-kind limits (audio, video, text) |
-| `TrackInfo` / `TrackKind` | Metadata and media kind (`Audio`, `Video`, `Text`, `TrickPlay`, `Image`) for a selected track |
+| `TrackInfo` / `TrackKind` / `SubTrackInfo` | Metadata and media kind for a selected track; `SubTrackInfo` includes `@maxPlayoutRate` / `@codingDependency` |
 | [`ManifestMetadata`](#track-selection) | MPD `ProgramInformation`, reporting `Metrics`, period asset ids / labels |
 | `SubtitleType` | Detected subtitle/caption format for text tracks |
 | `TrackDescriptor` | Accessibility descriptor scheme/value matcher and metadata |
@@ -599,6 +603,8 @@ Returned by [`Player::start_tracks`](#player):
 | `join` | Background task running the stream controller loop |
 | `pause` / `resume` / `seek` / `set_track_selection` / `stop` | Playback control (delegates to `playback`) |
 | `quality_constraints` / `set_quality_constraints` / `set_quality_for` / `set_auto_switch_bitrate` | User ABR quality limits (delegates to `playback`) |
+| `suggested_playback_rate` / `subscribe_suggested_playback_rate` | LL-DASH catch-up rate (delegates to `playback`) |
+| `playback_rate` / `set_playback_rate` | Effective / user override playback rate (delegates to `playback`) |
 | `playback_state` / `subscribe_playback_state` | Current or watched [`PlaybackState`](#playbackstate) |
 | `presentation_time` / `subscribe_presentation_time` | Current or watched session presentation time |
 | `buffer_feedback(idx)` | [`BufferFeedback`](#bufferfeedback) for a track index |
@@ -638,6 +644,10 @@ the same session.
 | `set_quality_constraints(constraints)` | Update min/max bitrate, fixed quality, or data-saver (bitrate envelope changes rebuild ABR) |
 | `set_quality_for(quality_index)` | Pin a ladder index and disable autoswitch (dash.js: `setQualityFor`) |
 | `set_auto_switch_bitrate(enabled)` | Enable or disable automatic quality switching |
+| `suggested_playback_rate()` | LL-DASH catch-up suggestion from `ServiceDescription` (`1.0` when inactive) |
+| `subscribe_suggested_playback_rate()` | Watch LL-DASH suggested rate updates |
+| `playback_rate()` | Effective consumption rate (user override or LL suggestion, capped by Representation `@maxPlayoutRate`) |
+| `set_playback_rate(rate)` | Set (`Some`) or clear (`None`) a user playback-rate override; trick-play AS selection stays via `set_track_selection` |
 | `presentation_time()` | Current session presentation time (media clock); `None` before the first segment is delivered |
 | `subscribe_presentation_time()` | Watch presentation time updates (media clock, seek target, or clock init) |
 | `stop()` | Stop playback; no further segments are delivered |
@@ -672,6 +682,7 @@ Explicit lifecycle state for the playback pipeline:
 |---------|------|
 | `NotActive` | Command issued before playback started |
 | `Stopped` | Command issued after `stop` or natural end |
+| `InvalidPlaybackRate` | `set_playback_rate(Some(rate))` with non-finite or `<= 0` rate |
 
 ---
 
@@ -761,6 +772,7 @@ low-latency live, use [`LolPlusAbrFactory`](src/abr/lol_plus/) (LoL+ SOM).
 | `SharedAbrFactory` | `Arc<dyn AbrFactory>` shared across playback tasks |
 | `shared_abr_factory(factory)` | Wrap a concrete factory for use with `with_abr_factory` |
 | `quality_ladder_from_adaptation_set` | Build a bandwidth-ordered ladder from an adaptation set |
+| `QualityRung` | Ladder entry: bitrate, indices, `@maxPlayoutRate`, `@codingDependency` |
 | `QualityConstraints` | User min/max bitrate, fixed quality (`fixed_quality`), and data-saver |
 
 Configure on [`Player`](#player) or [`MediaPlayer`](#mediaplayer):

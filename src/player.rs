@@ -260,9 +260,21 @@ impl PlayerTrackOutputs {
         self.playback.suggested_playback_rate()
     }
 
-    /// Watch suggested consumption rate updates.
+    /// Watch suggested LL-DASH consumption rate updates.
     pub fn subscribe_suggested_playback_rate(&self) -> watch::Receiver<f64> {
         self.playback.subscribe_suggested_playback_rate()
+    }
+
+    /// Effective consumption rate (user override + LL catch-up, capped by `@maxPlayoutRate`).
+    pub fn playback_rate(&self) -> f64 {
+        self.playback.playback_rate()
+    }
+
+    /// Set or clear a user playback-rate override.
+    ///
+    /// See [`PlaybackController::set_playback_rate`].
+    pub fn set_playback_rate(&self, rate: Option<f64>) -> Result<(), PlaybackControlError> {
+        self.playback.set_playback_rate(rate)
     }
 
     /// Measured live latency when LL-DASH latency control is active.

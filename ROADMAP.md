@@ -51,7 +51,9 @@ Status: `[ ]` not started · `[~]` partial.
 - [x] **User quality constraints.** Max/min bitrate, fixed quality, data-saver mode.
   *dash.js:* `abr.minBitrate` / `maxBitrate`, `autoSwitchBitrate`,
   `limitBitrateByPortal`; fixed rung via `setQualityFor` / disable autoswitch.
-- [ ] **Playback rate / fast-forward.** `@maxPlayoutRate` and `@codingDependency`.
+- [x] **Playback rate / fast-forward.** `@maxPlayoutRate` and `@codingDependency` on
+  `QualityRung` / `SubTrackInfo`; `set_playback_rate` + effective rate capped by active
+  video/trick `@maxPlayoutRate`. Trick AS remapping remains via `TrackSelection`.
   *dash.js:* `setPlaybackRate` + LL catch-up rate limits; `@maxPlayoutRate` on the
   Representation model. `@codingDependency` is not a driver for trick-play.
 - [~] **ABR inputs.** Live latency / playback rate done (LoL+); dropped-frame signals

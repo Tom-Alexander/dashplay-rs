@@ -73,7 +73,25 @@ fn feed_abr_live_inputs(abr: &mut dyn crate::abr::AbrController, playback: &Play
     if let Some(latency) = playback.live_latency() {
         abr.update_latency(latency.as_secs_f64());
     }
-    abr.update_playback_rate(playback.suggested_playback_rate());
+    abr.update_playback_rate(playback.playback_rate());
+}
+
+/// Publish `@maxPlayoutRate` from the active video/trick quality rung for rate clamping.
+fn update_max_playout_rate_cap(
+    playback: &PlaybackController,
+    abr: &dyn crate::abr::AbrController,
+    track_kind: crate::track_selection::TrackKind,
+    quality_index: usize,
+) {
+    use crate::track_selection::TrackKind;
+    if !matches!(track_kind, TrackKind::Video | TrackKind::TrickPlay) {
+        return;
+    }
+    if abr.rung_count() == 0 {
+        return;
+    }
+    let qi = quality_index.min(abr.rung_count() - 1);
+    playback.set_max_playout_rate_cap(abr.rung_for_quality_index(qi).max_playout_rate);
 }
 
 /// Whether this addressing can invent later `$Number$` segments from `@duration` alone
@@ -488,6 +506,12 @@ pub(crate) async fn run_adaptation_stream(
             .await?;
             let _ = rep_id;
             metrics.set_quality_index(init_plan.quality_index);
+            update_max_playout_rate_cap(
+                &playback,
+                abr.as_ref(),
+                track_kind,
+                init_plan.quality_index,
+            );
             Ok(())
         }
         .await;
@@ -644,6 +668,7 @@ pub(crate) async fn run_adaptation_stream(
                 &buffer_rx,
             )
             .await?;
+            update_max_playout_rate_cap(&playback, abr.as_ref(), track_kind, used_quality_index);
 
             let (rep_period_idx, rep_aset, rep_idx) =
                 fetch_env.resolve_quality(abr.as_ref(), used_quality_index);
@@ -842,6 +867,7 @@ pub(crate) async fn run_adaptation_stream(
                 &buffer_rx,
             )
             .await?;
+            update_max_playout_rate_cap(&playback, abr.as_ref(), track_kind, used_quality_index);
 
             let (rep_period_idx, rep_aset, rep_idx) =
                 fetch_env.resolve_quality(abr.as_ref(), used_quality_index);

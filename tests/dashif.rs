@@ -511,6 +511,10 @@ fn dashif_trick_play_mpd_parses() {
         })
         .expect("trick-mode adaptation set");
     assert_eq!(trick.representations[0].maxPlayoutRate, Some(24.0));
+    let ladder = dashplayrs::quality_ladder_from_adaptation_set(trick);
+    assert_eq!(ladder.len(), 1);
+    assert_eq!(ladder[0].max_playout_rate, Some(24.0));
+    assert_eq!(ladder[0].coding_dependency, None);
 }
 
 #[tokio::test]

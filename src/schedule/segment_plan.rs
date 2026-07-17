@@ -279,6 +279,8 @@ mod tests {
                 label: String::new(),
                 bitrate_bps: 1_000_000.0,
                 quality_ranking: None,
+                max_playout_rate: None,
+                coding_dependency: None,
             },
         }
     }
@@ -458,6 +460,8 @@ mod tests {
                     label: "lo".into(),
                     bitrate_bps: 100_000.0,
                     quality_ranking: None,
+                    max_playout_rate: None,
+                    coding_dependency: None,
                 },
                 QualityRung {
                     period_adaptation_index: 0,
@@ -465,6 +469,8 @@ mod tests {
                     label: "hi".into(),
                     bitrate_bps: 500_000.0,
                     quality_ranking: None,
+                    max_playout_rate: None,
+                    coding_dependency: None,
                 },
             ],
         }) as Box<dyn AbrController>;

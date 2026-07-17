@@ -189,6 +189,8 @@ mod tests {
                 label: format!("r{idx}"),
                 bitrate_bps: *bw as f64,
                 quality_ranking: None,
+                max_playout_rate: None,
+                coding_dependency: None,
             })
             .collect()
     }

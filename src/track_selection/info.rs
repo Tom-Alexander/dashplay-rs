@@ -5,7 +5,7 @@ use super::sub_representation::SubTrackInfo;
 use crate::manifest::ContentLabel;
 
 /// Public metadata for one selected adaptation-set track.
-#[derive(Debug, Clone, PartialEq, Eq)]
+#[derive(Debug, Clone, PartialEq)]
 pub struct TrackInfo {
     /// Index of this adaptation set within the containing `Period.adaptations` list.
     pub period_adaptation_index: usize,

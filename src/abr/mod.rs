@@ -36,6 +36,12 @@ pub struct QualityRung {
     pub bitrate_bps: f64,
     /// Representation `@qualityRanking` when present (lower is better).
     pub quality_ranking: Option<u8>,
+    /// Maximum supported playout rate (`@maxPlayoutRate`), inherited from Representation →
+    /// AdaptationSet when unset on the Representation.
+    pub max_playout_rate: Option<f64>,
+    /// Whether samples have coding dependencies (`@codingDependency`), inherited from
+    /// Representation → AdaptationSet. Metadata only; not used for trick-play selection.
+    pub coding_dependency: Option<bool>,
 }
 
 /// Next-segment representation choice returned by an [`AbrController`].
@@ -150,12 +156,22 @@ pub fn quality_ladder_from_adaptation_sets(sets: &[(usize, &AdaptationSet)]) -> 
                         return None;
                     }
                     let label = r.id.as_deref().unwrap_or_default().to_string();
+                    let max_playout_rate = r
+                        .maxPlayoutRate
+                        .filter(|v| v.is_finite() && *v > 0.0)
+                        .or_else(|| {
+                            adaptation_set
+                                .maxPlayoutRate
+                                .filter(|v| v.is_finite() && *v > 0.0)
+                        });
                     Some(QualityRung {
                         period_adaptation_index: *period_adaptation_index,
                         representation_index: idx,
                         label,
                         bitrate_bps: bw,
                         quality_ranking: r.qualityRanking,
+                        max_playout_rate,
+                        coding_dependency: r.codingDependency.or(adaptation_set.codingDependency),
                     })
                 })
         })
@@ -314,6 +330,35 @@ mod tests {
         assert_eq!(ladder.len(), 3);
         assert_eq!(ladder[0].bitrate_bps, 500_000.0);
         assert_eq!(ladder[2].bitrate_bps, 2_000_000.0);
+    }
+
+    #[test]
+    fn quality_ladder_inherits_max_playout_rate_and_coding_dependency() {
+        let set = AdaptationSet {
+            maxPlayoutRate: Some(2.0),
+            codingDependency: Some(true),
+            representations: vec![
+                Representation {
+                    id: Some("inherited".into()),
+                    bandwidth: Some(500_000),
+                    ..Default::default()
+                },
+                Representation {
+                    id: Some("override".into()),
+                    bandwidth: Some(1_000_000),
+                    maxPlayoutRate: Some(8.0),
+                    codingDependency: Some(false),
+                    ..Default::default()
+                },
+            ],
+            ..Default::default()
+        };
+        let ladder = quality_ladder_from_adaptation_set(&set);
+        assert_eq!(ladder.len(), 2);
+        assert_eq!(ladder[0].max_playout_rate, Some(2.0));
+        assert_eq!(ladder[0].coding_dependency, Some(true));
+        assert_eq!(ladder[1].max_playout_rate, Some(8.0));
+        assert_eq!(ladder[1].coding_dependency, Some(false));
     }
 
     #[test]

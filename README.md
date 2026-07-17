@@ -92,18 +92,18 @@ does not parse or render captions or thumbnail tiles.
 use std::time::Duration;
 use dashplay::Player;
 
-# async fn example() -> Result<(), dashplay::PlayerError> {
-let outputs = Player::new("https://example.com/manifest.mpd", None)?
-    .start_tracks()
-    .await?;
+async fn example() -> Result<(), dashplay::PlayerError> {
+  let outputs = Player::new("https://example.com/manifest.mpd", None)?
+      .start_tracks()
+      .await?;
 
-outputs.pause()?;
-outputs.resume()?;
-outputs.seek(Duration::from_secs(30))?;
-outputs.stop()?;
-outputs.join.await.unwrap()?;
-# Ok(())
-# }
+  outputs.pause()?;
+  outputs.resume()?;
+  outputs.seek(Duration::from_secs(30))?;
+  outputs.stop()?;
+  outputs.join.await.unwrap()?;
+  Ok(())
+}
 ```
 
 Clone `outputs.playback` to share one session across tasks.

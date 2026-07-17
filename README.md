@@ -1,28 +1,30 @@
 # dashplayrs
 
-A pure Rust implementation of an MPEG-DASH player library.
+A pure Rust MPEG-DASH player library: manifest parsing, timeline resolution, ABR,
+segment scheduling, HTTP download, and optional Widevine decryption.
+
+See [ARCHITECTURE.md](ARCHITECTURE.md) for the pipeline layout and design goals.
+Full API docs are on [docs.rs](https://docs.rs/dashplayrs) (or `cargo doc --open`).
 
 ## Features
 
-- **MPEG-DASH playback** — VOD and live streams with `SegmentTemplate` addressing (number, time, and duration) and `SegmentTimeline` support, including segment sequences (`S@k`)
-- **Live streaming** — Dynamic manifests, time-shift buffer windows, periodic manifest refresh, and multi-period transitions with init re-emission
-- **Multi-track output** — Separate audio, video, and text adaptation sets, or a single merged byte stream
-- **Track selection** — Ordered language, role, codec, and accessibility preferences with per-kind output limits (audio, video, and opt-in subtitles/captions)
-- **Adaptive bitrate** — pluggable [`AbrFactory`](#abr) with BOLA ([`BolaAbrFactory`](#abr)) as the default and optional LoL+ ([`LolPlusAbrFactory`](#abr)) for CMAF low-latency; automatic representation switching and init re-emission on quality changes
-- **Widevine DRM** — PSSH and license URL parsing from the MPD, license acquisition, and in-pipeline segment decryption for ISO Common Encryption schemes `cenc` / `cens` / `cbc1` / `cbcs` (scheme taken from media `schm`/`tenc` boxes; MPD `mp4protection` `@value` is parsed and exposed)
-- **Custom license handling** — Pluggable async license fetcher for custom headers, cookies, or proxies
-- **Pluggable HTTP client** — [`HttpClient`](#http-client) trait with default [`ReqwestClient`](#http-client) (native) and [`FetchClient`](#http-client) (WASM); swap in embedded stacks or custom TLS
-- **Resilient fetching** — BaseURL resolution and failover, fixed-delay HTTP retry for transient failures, representation fallback, and segment URL blacklisting after failures
-- **Clock sync** — `UTCTiming` resolution for live edge calculation (HTTP, NTP/SNTP, and related schemes)
-- **Modular API** — High-level [`Player`](#player) wrapper or lower-level [`MediaPlayer`](#mediaplayer) for finer control
-- **Playback control** — `seek`, `pause`, `resume`, `stop`, and a [`PlaybackState`](#playbackstate) lifecycle machine
-- **Async delivery** — Tokio-based fragment delivery via broadcast channels (`Init`, `Segment`, `End` events)
-- **Rich event model** — Lifecycle and observability events (`ManifestLoaded`, `ManifestPatchFailed`, `BufferUpdated`, `BitrateChanged`, `PlaybackStarted`/`PlaybackEnded`, `Error`) plus MPD/in-band timed events (`MediaEvent`, including SCTE-35 ad markers) alongside fragment events
-- **Metrics API** — Per-track throughput, buffer level, startup delay, rebuffer events, and bitrate-switch history via [`TrackMetrics`](#metrics)
+- VOD and live DASH (including low-latency / CMAF)
+- Multi-track output (audio, video, text, trick-play, thumbnails)
+- Pluggable ABR (BOLA by default; LoL+ for low-latency live)
+- Pluggable HTTP (`reqwest` native; `fetch` on wasm)
+- Widevine DRM (`cenc` / `cens` / `cbc1` / `cbcs`) behind the `drm` feature
+- Seek, pause, resume, mid-playback track switching, quality constraints
+- Timed events (MPD `EventStream`, in-band `emsg`, SCTE-35 helpers)
+
+### Cargo features
+
+| Feature | Default | Purpose |
+|---------|---------|---------|
+| `drm` | yes | Widevine license acquisition and segment decryption |
+| `reqwest-http` | yes | Native HTTP via `reqwest` |
+| `full-runtime` | yes | Tokio multi-thread runtime extras used by examples/tests |
 
 ## Usage
-
-Add to your `Cargo.toml`:
 
 ```toml
 dashplayrs = "0.1"
@@ -46,7 +48,7 @@ async fn main() -> Result<(), dashplayrs::PlayerError> {
                     println!("switched to {to_bitrate_bps} bps");
                 }
                 ev if ev.is_terminal() => break, // End, PlaybackEnded, or Error
-                _ => {} // ManifestLoaded, BufferUpdated, PlaybackStarted
+                _ => {}
             }
         }
     }
@@ -56,170 +58,71 @@ async fn main() -> Result<(), dashplayrs::PlayerError> {
 }
 ```
 
-For DRM-protected streams, pass a Widevine license server URL as the second argument to
-[`Player::new`](#player), or supply a custom license fetcher with
-[`Player::with_license_fetcher`](#player). For custom manifest, segment, or clock-sync HTTP
-handling, use [`Player::with_http_client`](#http-client).
+`Player` is the high-level entry point (spawns the stream controller). Prefer
+`MediaPlayer` when you want to own the async task via `PlayerOutputs::run` /
+`spawn`.
 
 ### Track selection
 
-Use ordered fallback preferences and per-kind limits to choose adaptation sets. The default
-retains every audio and video track. **Text tracks (subtitles and captions) are disabled by
-default** — enable them with [`TrackSelection::with_text`](#subtitles-and-captions).
+Audio and video are enabled by default; text, trick-play, and image tracks are
+not. Prefer languages, roles, codecs, and caps with `TrackSelection`:
 
 ```rust
-use dashplayrs::{Player, TrackDescriptor, TrackPreference, TrackSelection};
+use dashplayrs::{Player, TrackPreference, TrackSelection};
 
 # async fn example() -> Result<(), dashplayrs::PlayerError> {
 let selection = TrackSelection::default()
-    .with_audio(
-        TrackPreference::default()
-            .language("en-NZ")
-            .language("en")
-            .role("main")
-            .accessibility(TrackDescriptor::scheme(
-                "urn:tva:metadata:cs:AudioPurposeCS:2007",
-            ))
-            .max_tracks(2),
-    )
-    .with_video(
-        TrackPreference::default()
-            .codec("avc1")
-            .max_tracks(1),
-    );
+    .with_audio(TrackPreference::default().language("en").max_tracks(2))
+    .with_video(TrackPreference::default().codec("avc1").max_tracks(1))
+    .with_text(TrackPreference::default().language("en").max_tracks(1));
 
 let outputs = Player::new("https://example.com/manifest.mpd", None)?
     .with_track_selection(selection)
     .start_tracks()
     .await?;
 # outputs.stop()?;
-# outputs.join.await.unwrap()?;
 # Ok(())
 # }
 ```
 
-Selected tracks expose `TrackInfo` metadata including language, roles, codecs, accessibility
-descriptors, labels, ratings, and (for text tracks) `subtitle_type`
-([`SubtitleType`](#subtitles-and-captions)). Document-level MPD metadata
-(`ProgramInformation`, DASH `Metrics` reporting descriptors, period
-`AssetIdentifier` / labels) is available on [`PlayerOutputs::manifest_metadata`](#playeroutputs)
-and on each [`PlayerEvent::ManifestLoaded`](#playerevent). Preferences rank candidates; unmatched
-tracks are fallback candidates. Use `max_tracks(0)` to disable a media kind.
+Text and image payloads are delivered as `Init` / `Segment` bytes — the library
+does not parse or render captions or thumbnail tiles.
 
-### Subtitles and captions
-
-Subtitle and caption adaptation sets are delivered on the same fragment pipeline as audio and
-video: [`PlayerEvent::Init`](#playerevent) (when the manifest declares one) followed by
-[`PlayerEvent::Segment`](#playerevent) bytes. The library does not parse or render captions —
-feed the payloads to your WebVTT, TTML, or fMP4 text decoder.
-
-**Supported formats** (detected via `dash_mpd` and exposed as [`SubtitleType`](#subtitles-and-captions)):
-
-| Format | Typical signals |
-|--------|-----------------|
-| WebVTT (`text/vtt`) | Standalone `.vtt` segments; init is often omitted |
-| TTML (`application/ttml+xml`) | Standalone XML segments with optional init |
-| In-band fMP4 text | `application/mp4` with `stpp`, `wvtt`, `c608`, or `tx3g` codecs |
-
-Enable delivery with [`TrackSelection::with_text`](#subtitles-and-captions). Text tracks use the
-same [`TrackPreference`](#track-selection) fields as audio (language, role, codec, accessibility,
-`max_tracks`). `TrackKind::Text` marks a selected text track; `TrackInfo::subtitle_type` reports
-the detected format.
+### Playback control
 
 ```rust
-use dashplayrs::{Player, TrackKind, TrackPreference, TrackSelection};
+use std::time::Duration;
+use dashplayrs::Player;
 
 # async fn example() -> Result<(), dashplayrs::PlayerError> {
-let selection = TrackSelection::default()
-    .with_text(
-        TrackPreference::default()
-            .language("en")
-            .role("subtitle") // or "caption"
-            .max_tracks(1),
-    );
-
 let outputs = Player::new("https://example.com/manifest.mpd", None)?
-    .with_track_selection(selection)
     .start_tracks()
     .await?;
 
-for track in &outputs.tracks {
-    match track.info().kind {
-        TrackKind::Text => {
-            println!(
-                "subtitle {:?} ({:?})",
-                track.info().language,
-                track.info().subtitle_type
-            );
-            // subscribe and decode Init/Segment payloads for this track
-        }
-        _ => {}
-    }
-}
-# outputs.stop()?;
-# outputs.join.await.unwrap()?;
+outputs.pause()?;
+outputs.resume()?;
+outputs.seek(Duration::from_secs(30))?;
+outputs.stop()?;
+outputs.join.await.unwrap()?;
 # Ok(())
 # }
 ```
 
-### Trick-play and thumbnails
+Clone `outputs.playback` to share one session across tasks.
 
-Trick-play video (`http://dashif.org/guidelines/trickmode`) and thumbnail image
-(`image/jpeg`, `image/png`, `image/bmp`, and other `image/*` types; often with
-`http://dashif.org/guidelines/thumbnail_tile` or the legacy `http://dashif.org/thumbnail_tile`
-scheme) adaptation sets use the same fragment pipeline as other tracks. The library does not
-decode image tiles or render preview UI — feed the payloads to your image decoder or scrub-bar
-component.
+### DRM
 
-Enable delivery with [`TrackSelection::with_trick_play`](#trick-play-and-thumbnails) or
-[`TrackSelection::with_image`](#trick-play-and-thumbnails). Both are disabled by default
-(`max_tracks(0)`). `TrackKind::TrickPlay` and `TrackKind::Image` mark selected auxiliary tracks;
-[`TrackInfo::thumbnail_tile`](#trick-play-and-thumbnails) reports tile layout when declared.
-Representation `@maxPlayoutRate` / `@codingDependency` appear on [`QualityRung`](#abr) and
-[`SubTrackInfo`](#track-selection); use [`PlaybackController::set_playback_rate`](#playbackcontroller)
-to accelerate the media clock (capped by the active video/trick `@maxPlayoutRate`). Switching to a
-trick-play AdaptationSet remains an explicit `TrackSelection` change.
+Pass a Widevine license server URL to `Player::new`, or supply a custom fetcher
+with `Player::with_license_fetcher`. Requires the `drm` feature and a Widevine
+device (native: `DEVICE_PATH`; wasm: `set_widevine_device_bytes`).
+
+### HTTP and ABR
 
 ```rust
-use dashplayrs::{Player, TrackKind, TrackPreference, TrackSelection};
-
-# async fn example() -> Result<(), dashplayrs::PlayerError> {
-let selection = TrackSelection::default()
-    .with_trick_play(TrackPreference::default().max_tracks(1))
-    .with_image(TrackPreference::default().max_tracks(1));
-
-let outputs = Player::new("https://example.com/manifest.mpd", None)?
-    .with_track_selection(selection)
-    .start_tracks()
-    .await?;
-
-for track in &outputs.tracks {
-    match track.info().kind {
-        TrackKind::TrickPlay => {
-            // low-frame-rate video segments for fast scrubbing
-        }
-        TrackKind::Image => {
-            println!("thumbnail tiles {:?}", track.info().thumbnail_tile);
-        }
-        _ => {}
-    }
-}
-# outputs.stop()?;
-# outputs.join.await.unwrap()?;
-# Ok(())
-# }
-```
-
-### Custom HTTP client
-
-By default, playback uses an internal [`ReqwestClient`](#http-client) for manifest fetches,
-segment downloads, `UTCTiming` clock sync, and Widevine license POSTs (unless you replace
-license handling with [`Player::with_license_fetcher`](#player)).
-
-To configure the underlying `reqwest` client (user agent, proxy, custom TLS, timeouts):
-
-```rust
-use dashplayrs::{Player, ReqwestClient, shared};
+use dashplayrs::{
+    LolPlusAbrFactory, Player, QualityConstraints, ReqwestClient, shared,
+    shared_abr_factory,
+};
 
 # async fn example() -> Result<(), dashplayrs::PlayerError> {
 let reqwest = reqwest::Client::builder()
@@ -229,758 +132,43 @@ let reqwest = reqwest::Client::builder()
 
 let outputs = Player::new("https://example.com/manifest.mpd", None)?
     .with_http_client(shared(ReqwestClient::new(reqwest)))
-    .start_tracks()
-    .await?;
-# outputs.stop()?;
-# outputs.join.await.unwrap()?;
-# Ok(())
-# }
-```
-
-For environments without `reqwest` (embedded stacks, corporate proxies), implement
-[`HttpClient`](#http-client) and pass a shared handle via
-[`Player::with_http_client`](#player) or [`MediaPlayer::with_http_client`](#mediaplayer).
-On `wasm32` builds without `reqwest-http`, [`FetchClient`](#http-client) is already the default.
-
-```rust
-use dashplayrs::{
-    HttpClient, HttpError, HttpRequest, HttpResponse, Player, shared,
-};
-use std::future::Future;
-use std::pin::Pin;
-
-struct MyHttpClient;
-
-impl HttpClient for MyHttpClient {
-    fn send<'a>(
-        &'a self,
-        request: HttpRequest,
-    ) -> Pin<Box<dyn Future<Output = Result<HttpResponse, HttpError>> + Send + 'a>> {
-        Box::pin(async move {
-            // Dispatch `request` to your stack and map the result to `HttpResponse`.
-            let _ = request;
-            Err(HttpError::Transport("not implemented".into()))
-        })
-    }
-}
-
-# async fn example() -> Result<(), dashplayrs::PlayerError> {
-let outputs = Player::new("https://example.com/manifest.mpd", None)?
-    .with_http_client(shared(MyHttpClient))
-    .start_tracks()
-    .await?;
-# outputs.stop()?;
-# outputs.join.await.unwrap()?;
-# Ok(())
-# }
-```
-
-[`HttpRequest`](#http-client) supports `GET`, `HEAD`, and `POST` with optional headers and
-inclusive byte ranges (`byte_range(start, end)`). HTTP failures surface as
-[`PlayerError::Request`](#playererror) ([`HttpError`](#http-client)).
-
-### Playback control
-
-After [`Player::start_tracks`](#player) or [`MediaPlayer::start`](#mediaplayer), use
-[`PlaybackController`](#playbackcontroller) (available as `outputs.playback`) to manage the
-session:
-
-```rust
-use std::time::Duration;
-use dashplayrs::{PlaybackState, Player};
-
-# async fn example() -> Result<(), dashplayrs::PlayerError> {
-let outputs = Player::new("https://example.com/manifest.mpd", None)?
-    .start_tracks()
-    .await?;
-
-outputs.pause()?;                       // freeze media clock (scheduling continues by default)
-outputs.resume()?;                      // continue from the current position
-outputs.seek(Duration::from_secs(30))?; // jump to 30 s into the presentation
-outputs.stop()?;                        // halt playback and emit End
-
-assert_eq!(outputs.playback_state(), PlaybackState::Ended);
-
-outputs.join.await.unwrap()?;
-# Ok(())
-# }
-```
-
-[`PlayerTrackOutputs`](#playertrackoutputs) also exposes `pause`, `resume`, `seek`,
-`set_track_selection`, `stop`, `playback_state`, and `subscribe_playback_state` as convenience
-wrappers around the same controller. Clone handles (`outputs.playback.clone()`) share one session.
-
-## Public API
-
-### Crate root
-
-| Item | Description |
-|------|-------------|
-| [`Player`](#player) | High-level playback entry point |
-| [`MediaPlayer`](#mediaplayer) | Lower-level DASH coordinator |
-| [`PlayerEvent`](#playerevent) | Fragment, lifecycle, observability, and timed media events on a track stream |
-| [`MediaEvent`](#mediaevent) | MPD `EventStream` or in-band `emsg` timed event |
-| [`MediaEventSource`](#mediaevent) / [`Scte35Cue`](#mediaevent) | Event origin and SCTE-35 binary payload helper |
-| [`PlayerEventError`](#playerevent) | Error message delivered via [`PlayerEvent::Error`](#playerevent) |
-| [`PlayerTrack`](#playertrack) | One adaptation-set broadcast channel |
-| [`PlayerOutputs`](#playeroutputs) | Tracks and playback controller from [`MediaPlayer::start`](#mediaplayer) |
-| [`PlayerTrackOutput`](#playertrackoutput) | Per-track handle from [`Player::start_tracks`](#player) |
-| [`PlayerTrackOutputs`](#playertrackoutputs) | Multi-track session from [`Player::start_tracks`](#player) |
-| [`PlayerMergedOutput`](#playermergedoutput) | Merged byte stream from [`Player::start_merged`](#player) |
-| [`PlayerMergedAsyncRead`](#playermergedoutput) | `AsyncRead` adapter for piping merged output |
-| [`PlaybackController`](#playbackcontroller) | Seek, pause, resume, stop, and lifecycle state |
-| [`PlaybackState`](#playbackstate) | Explicit playback lifecycle enum |
-| [`PlaybackControlError`](#playbackcontrolerror) | Errors from playback control commands |
-| [`TrackMetrics`](#metrics) | Per-track playback metrics collector |
-| [`TrackMetricsSnapshot`](#metrics) | Point-in-time metrics view (throughput, buffer, switches, rebuffers) |
-| [`ThroughputSample`](#metrics) / [`BufferSample`](#metrics) / [`BitrateSwitch`](#metrics) / [`RebufferEvent`](#metrics) | Individual metric samples |
-| [`BufferFeedback`](#bufferfeedback) | Optional decoder buffer occupancy reports for ABR |
-| [`PlaybackQualityFeedback`](#playbackqualityfeedback) / [`PlaybackQualitySample`](#playbackqualityfeedback) | Optional dropped-frame counters for ABR |
-| `TrackSelection` / `TrackPreference` | Ordered adaptation-set preferences and per-kind limits (audio, video, text) |
-| `TrackInfo` / `TrackKind` / `SubTrackInfo` | Metadata and media kind for a selected track; `SubTrackInfo` includes `@maxPlayoutRate` / `@codingDependency` |
-| [`ManifestMetadata`](#track-selection) | MPD `ProgramInformation`, reporting `Metrics`, period asset ids / labels |
-| `SubtitleType` | Detected subtitle/caption format for text tracks |
-| `TrackDescriptor` | Accessibility descriptor scheme/value matcher and metadata |
-| [`WidevineLicenseFetcher`](#widevinelicensefetcher) | Custom async Widevine license HTTP handler |
-| [`HttpClient`](#http-client) / [`ReqwestClient`](#http-client) | Pluggable HTTP transport for manifest, segment, and clock-sync requests |
-| [`AbrFactory`](#abr) / [`BolaAbrFactory`](#abr) / [`LolPlusAbrFactory`](#abr) | Pluggable adaptive bitrate; default BOLA, optional LoL+ |
-| [`QualityConstraints`](#abr) | User min/max bitrate, fixed quality, and data-saver ABR limits |
-| [`HttpRequest`](#http-client) / [`HttpResponse`](#http-client) / [`HttpError`](#http-client) | Request/response types for custom HTTP backends |
-| [`HttpRetryConfig`](#http-client) / [`HttpRequestKind`](#http-client) | Fixed-delay HTTP retry for transient failures |
-| `shared` | Wrap a concrete [`HttpClient`](#http-client) in [`SharedHttpClient`](#http-client) |
-| [`PlayerError`](#playererror) | Unified error type for the playback pipeline |
-| [`bola`](#bola) | BOLA adaptive bitrate algorithm |
-| [`drm`](#drm) | Widevine license handling and MPD DRM parsing |
-
----
-
-### `Player`
-
-Convenience wrapper around [`MediaPlayer`](#mediaplayer).
-
-```rust
-Player::new(manifest_uri: &str, license_uri: Option<&str>) -> Result<Player, PlayerError>
-```
-
-Create a player for the given MPD URL. `license_uri` is an optional fallback Widevine license
-server when the manifest does not specify one.
-
-```rust
-Player::with_license_fetcher(self, fetcher: WidevineLicenseFetcher) -> Player
-Player::with_track_selection(self, selection: TrackSelection) -> Player
-Player::with_http_client(self, client: SharedHttpClient) -> Player
-Player::with_abr_factory(self, factory: SharedAbrFactory) -> Player
-Player::with_quality_constraints(self, constraints: QualityConstraints) -> Player
-Player::with_http_retry(self, config: HttpRetryConfig) -> Player
-Player::with_pause_policy(self, policy: PausePolicy) -> Player
-```
-
-Replace the default `reqwest` license POST with a custom fetcher (extra headers, cookies, proxy,
-etc.). `with_http_client` replaces the default [`ReqwestClient`](#http-client) used for manifest,
-segment, and `UTCTiming` requests. `with_abr_factory` replaces the default
-[`BolaAbrFactory`](#abr) used for representation selection. `with_quality_constraints` limits ABR
-to a bitrate envelope, fixed ladder index, or data-saver (lowest rung). `with_http_retry` configures
-fixed-delay retries for transient HTTP failures (defaults are enabled). `with_pause_policy`
-controls whether scheduling continues while paused (dash.js `scheduleWhilePaused`, default true)
-and whether pause aborts in-flight segment requests.
-
-```rust
-Player::start_tracks(self) -> Result<PlayerTrackOutputs, PlayerError>
-```
-
-Fetch the manifest, start playback, and return one output handle per selected adaptation set
-(audio, video, and/or text). Each track emits [`PlayerEvent::Init`](#playerevent) when the
-manifest declares an initialization segment, then [`PlayerEvent::Segment`](#playerevent)
-fragments (decrypted when DRM is present).
-
-This convenience API spawns one background Tokio task for the stream controller and returns its
-[`JoinHandle`](https://docs.rs/tokio/latest/tokio/task/struct.JoinHandle.html) as `join`. For
-caller-owned concurrency, use [`MediaPlayer::start`](#mediaplayer) and
-[`PlayerOutputs::run`](#playeroutputs) instead.
-
-The returned value also exposes:
-
-- `tracks` — slice of [`PlayerTrackOutput`](#playertrackoutput)
-- `playback` — [`PlaybackController`](#playbackcontroller) for seek / pause / resume / stop
-- `join` — await to wait for the background stream controller
-- `pause` / `resume` / `seek` / `stop` — convenience wrappers around `playback`
-- `playback_state` / `subscribe_playback_state` — observe lifecycle transitions
-- `subscribe(idx)` — subscribe to track `idx` after start
-- `into_parts()` — split into tracks, senders, and join handle
-
-```rust
-Player::start_merged(self) -> Result<PlayerMergedOutput, PlayerError>
-```
-
-Same as `start_tracks`, but merges all track fragments into a single byte stream in arrival
-order. Use when you do not need per-track separation (e.g. a single combined A/V pipe).
-
----
-
-### `PlayerMergedOutput`
-
-Returned by [`Player::start_merged`](#player):
-
-| Field / method | Description |
-|----------------|-------------|
-| `stream` | Merged init + media fragments as a [`ReceiverStream`](https://docs.rs/tokio-stream/latest/tokio_stream/wrappers/struct.ReceiverStream.html) |
-| `join` | Background task running the stream controller and fragment forwarding |
-| `into_async_read()` | Convert to [`PlayerMergedAsyncRead`](#playermergedoutput) for piping into a child process (e.g. `ffmpeg -i pipe:0`) |
-
----
-
-### `MediaPlayer`
-
-Lower-level DASH client (dash.js `MediaPlayer` equivalent). Prefer [`Player`](#player) unless you
-need finer control over manifest loading.
-
-```rust
-MediaPlayer::new(uri: &str, license_uri: Option<&str>) -> Result<MediaPlayer, PlayerError>
-MediaPlayer::with_license_fetcher(self, fetcher: WidevineLicenseFetcher) -> MediaPlayer
-MediaPlayer::with_track_selection(self, selection: TrackSelection) -> MediaPlayer
-MediaPlayer::with_http_client(self, client: SharedHttpClient) -> MediaPlayer
-MediaPlayer::with_abr_factory(self, factory: SharedAbrFactory) -> MediaPlayer
-MediaPlayer::with_quality_constraints(self, constraints: QualityConstraints) -> MediaPlayer
-MediaPlayer::with_http_retry(self, config: HttpRetryConfig) -> MediaPlayer
-MediaPlayer::with_pause_policy(self, policy: PausePolicy) -> MediaPlayer
-MediaPlayer::fetch_manifest(&mut self) -> Result<(), PlayerError>
-MediaPlayer::start(self) -> Result<PlayerOutputs, PlayerError>
-```
-
-`start` fetches the manifest, acquires Widevine licenses when needed, and returns playback
-handles. It does **not** spawn a background task — call [`PlayerOutputs::run`](#playeroutputs)
-on the current async task, or [`PlayerOutputs::spawn`](#playeroutputs) for a separate Tokio
-task. Subscribe to every [`PlayerTrack`](#playertrack) you care about before relying on
-delivery — broadcast channels drop events when there are no receivers.
-
----
-
-### `PlayerEvent`
-
-Events emitted on a single adaptation-set stream. **Fragment** events carry media bytes;
-**lifecycle** and **observability** events report manifest, buffer, bitrate, and playback state.
-
-| Variant | Kind | Payload / meaning |
-|---------|------|-------------------|
-| `Init(Bytes)` | Fragment | Initialization segment when declared (`ftyp` + `moov`, TTML header, fMP4 text init, etc.) |
-| `Segment { number, time, presentation_time, sub_number, data }` | Fragment | Media segment; `presentation_time` is seconds from the start of the presentation |
-| `ManifestLoaded { is_dynamic, media_presentation_duration, metadata }` | Lifecycle | An MPD was fetched and parsed (initial load or live refresh) |
-| `ManifestPatchFailed { reason }` | Observability | Live MPD patch failed; player fell back to a full MPD refresh (non-fatal) |
-| `BufferUpdated { buffer_s }` | Observability | Buffer occupancy changed (media-clock estimate or [`BufferFeedback::report`](#bufferfeedback)) |
-| `PlayheadUpdated { presentation_time }` | Observability | Session presentation time changed (media clock, seek target, or clock init) |
-| `BitrateChanged { from_quality_index, to_quality_index, from_bitrate_bps, to_bitrate_bps }` | Observability | The active representation changed on the ladder |
-| `PlaybackStarted` | Lifecycle | First media segment delivered for this adaptation set |
-| `PlaybackEnded` | Lifecycle | Playback finished (VOD end, stop, or bounded window); precedes `End` |
-| `TrackChanged { info }` | Lifecycle | Mid-playback adaptation-set remap (language/role switch); a fresh `Init` follows |
-| `Error(PlayerEventError)` | Lifecycle | Pipeline failed; the full [`PlayerError`](#playererror) is still returned by `join` |
-| `MediaEvent(MediaEvent)` | Timed event | MPD `EventStream` or in-band `emsg` (including SCTE-35 ad markers) |
-| `End` | Fragment | No more fragments for this adaptation set (VOD / bounded window) |
-
-Helper methods classify events without matching every variant:
-
-| Method | Returns `true` for |
-|--------|--------------------|
-| `is_terminal()` | `End`, `PlaybackEnded`, `Error` |
-| `is_fragment()` | `Init`, `Segment` |
-
-`PlayerEventError` is a clone-friendly wrapper around the error message string (`PlayerEventError(pub String)`),
-so track events remain `Clone` even though [`PlayerError`](#playererror) is not.
-
----
-
-### `MediaEvent`
-
-Timed events from MPD `EventStream` elements (emitted on manifest/period load) and in-band
-`emsg` boxes (emitted when a matching media segment is delivered). In-band events are filtered
-by `InbandEventStream` descriptors on the active adaptation set or representation when present.
-
-| Field | Description |
-|-------|-------------|
-| `source` | [`MediaEventSource::Mpd`] or [`MediaEventSource::InBand`] with segment coordinates |
-| `scheme_id_uri` | DASH event scheme (e.g. SCTE-35 `urn:scte:scte35:2014:xml+bin`) |
-| `value` | Optional scheme-specific value |
-| `timescale` | Presentation-time timescale |
-| `presentation_time` | Event instant in `timescale` ticks |
-| `duration` | Optional event duration in `timescale` ticks |
-| `id` | Optional event identifier |
-| `message_data` | Raw event payload (MPD message or `emsg` message data) |
-
-[`MediaEvent::is_scte35()`](#mediaevent) detects SCTE-35 schemes; [`MediaEvent::scte35_cue()`](#mediaevent)
-returns decoded splice-info bytes when present.
-
----
-
-### `PlayerTrack`
-
-One DASH adaptation set exposed as a `tokio::sync::broadcast` channel.
-
-| Field / method | Description |
-|----------------|-------------|
-| `mime_type()` | `AdaptationSet@mimeType` when present (e.g. `video/mp4`, `text/vtt`); updates after mid-playback switches |
-| `info()` | Selected-track language, roles, codecs, accessibility, subtitle format, ID, and media kind; updates after mid-playback switches |
-| `subscribe()` | Create a new event receiver |
-| `receiver_count()` | Number of active subscribers |
-| `buffer_feedback()` | Report playback buffer occupancy for ABR |
-| `playback_quality_feedback()` | Report decoder / MSE dropped-frame counters for ABR |
-| `metrics()` | [`TrackMetrics`](#metrics) collector for this track |
-
----
-
-### `BufferFeedback`
-
-Optional correction for buffer occupancy (seconds of media buffered ahead of the playhead)
-used by ABR and buffer-target scheduling.
-
-The library estimates buffer from delivered media versus an internal media clock, so
-calling `report` is not required for stall detection, ABR, or prefetch throttling. When the
-consumer has a real decoder / MSE buffer, report periodically so decisions stay aligned with
-actual occupancy.
-
-| Method | Description |
-|--------|-------------|
-| `report(buffer_s)` | Override the buffer level seen by ABR for this track and resync the media clock |
-
----
-
-### `PlaybackQualityFeedback`
-
-Optional decoder / MSE video playback quality input for the dropped-frames ABR rule
-(dash.js: `DroppedFramesRule` / `getVideoPlaybackQuality()`).
-
-Report absolute `dropped_video_frames` / `total_video_frames` counters periodically. The
-library diffs intervals, attributes them to the currently playing quality, and caps ABR
-one rung below any quality whose drop ratio exceeds 15% after at least 375 frames
-(dash.js defaults). Fixed quality / disabled autoswitch take precedence over this cap.
-
-| Type / method | Description |
-|---------------|-------------|
-| `PlaybackQualitySample` | Absolute frame counters (`dropped_video_frames`, `total_video_frames`) |
-| `report(sample)` | Push a sample into the track's dropped-frames history |
-
-```rust
-use dashplayrs::{PlaybackQualitySample, Player};
-
-# async fn example() -> Result<(), dashplayrs::PlayerError> {
-let outputs = Player::new("https://example.com/manifest.mpd", None)?
-    .start_tracks()
-    .await?;
-let quality = outputs.playback_quality_feedback(0).expect("track 0");
-// From HTMLVideoElement.getVideoPlaybackQuality() or an equivalent decoder API:
-let _ = quality.report(PlaybackQualitySample {
-    dropped_video_frames: 12,
-    total_video_frames: 480,
-});
-# Ok(())
-# }
-```
-
----
-
-### Metrics
-
-Per-track playback metrics are collected as a side effect of delivery and buffer feedback.
-Metrics observe download and buffer behaviour without influencing playback or ABR decisions
-directly. Obtain a [`TrackMetrics`](#metrics) handle from `outputs.metrics(idx)`
-([`PlayerTrackOutputs`](#playertrackoutputs)), `track.metrics()` ([`PlayerTrack`](#playertrack)),
-or `output.metrics()` ([`PlayerTrackOutput`](#playertrackoutput)). Clone handles share one
-session.
-
-```rust
-use dashplayrs::Player;
-
-# async fn example() -> Result<(), dashplayrs::PlayerError> {
-let outputs = Player::new("https://example.com/manifest.mpd", None)?
-    .start_tracks()
-    .await?;
-let metrics = outputs.metrics(0).expect("track 0");
-
-// Point-in-time view:
-let snap = metrics.snapshot();
-println!("throughput: {} bps, buffer: {} s", snap.throughput_bps, snap.buffer_s);
-
-// Or watch updates as they are recorded:
-let mut rx = metrics.subscribe();
-while rx.changed().await.is_ok() {
-    let snap = rx.borrow();
-    if let Some(delay) = snap.startup_delay {
-        println!("startup delay: {delay:?}");
-    }
-}
-# Ok(())
-# }
-```
-
-**`TrackMetrics` methods:**
-
-| Method | Description |
-|--------|-------------|
-| `snapshot()` | Current [`TrackMetricsSnapshot`](#metrics) |
-| `subscribe()` | [`watch::Receiver`](https://docs.rs/tokio/latest/tokio/sync/watch/struct.Receiver.html) of snapshots, seeded with the current value |
-
-**`TrackMetricsSnapshot` fields:**
-
-| Field | Description |
-|-------|-------------|
-| `startup_delay: Option<Duration>` | Time from stream start to the first delivered segment |
-| `buffer_s: f64` | Latest consumer-reported buffer level (seconds) |
-| `throughput_bps: f64` | Smoothed (EWMA) download throughput estimate |
-| `throughput_history: Vec<ThroughputSample>` | Per-segment throughput samples (`elapsed`, `throughput_bps`, `bytes`, `download_duration`) |
-| `buffer_history: Vec<BufferSample>` | Reported buffer occupancy over time (`elapsed`, `buffer_s`) |
-| `bitrate_switch_history: Vec<BitrateSwitch>` | Representation switches (`from`/`to` quality index and bitrate) |
-| `rebuffer_events: Vec<RebufferEvent>` | Buffer drops below the low-water mark after playback began (`elapsed`, `buffer_s`) |
-
-History series are bounded (most recent samples retained). Each sample's `elapsed` is measured
-from the start of metrics collection for that track.
-
----
-
-### `PlayerTrackOutputs`
-
-Returned by [`Player::start_tracks`](#player):
-
-| Field / method | Description |
-|----------------|-------------|
-| `tracks` | One [`PlayerTrackOutput`](#playertrackoutput) per adaptation set |
-| `playback` | [`PlaybackController`](#playbackcontroller) for this session |
-| `join` | Background task running the stream controller loop |
-| `pause` / `resume` / `seek` / `set_track_selection` / `stop` | Playback control (delegates to `playback`) |
-| `quality_constraints` / `set_quality_constraints` / `set_quality_for` / `set_auto_switch_bitrate` | User ABR quality limits (delegates to `playback`) |
-| `suggested_playback_rate` / `subscribe_suggested_playback_rate` | LL-DASH catch-up rate (delegates to `playback`) |
-| `playback_rate` / `set_playback_rate` | Effective / user override playback rate (delegates to `playback`) |
-| `playback_state` / `subscribe_playback_state` | Current or watched [`PlaybackState`](#playbackstate) |
-| `presentation_time` / `subscribe_presentation_time` | Current or watched session presentation time |
-| `buffer_feedback(idx)` | [`BufferFeedback`](#bufferfeedback) for a track index |
-| `playback_quality_feedback(idx)` | [`PlaybackQualityFeedback`](#playbackqualityfeedback) for a track index |
-| `metrics(idx)` | [`TrackMetrics`](#metrics) for a track index |
-| `subscribe(idx)` | Subscribe to a track's broadcast channel |
-| `track_count()` | Number of adaptation-set tracks in this session |
-
----
-
-### `PlayerOutputs`
-
-Returned by [`MediaPlayer::start`](#mediaplayer):
-
-| Field / method | Description |
-|----------------|-------------|
-| `tracks` | One [`PlayerTrack`](#playertrack) per selected adaptation set |
-| `playback` | [`PlaybackController`](#playbackcontroller) for this session |
-| `manifest_metadata` | [`ManifestMetadata`](#track-selection) from the initially loaded MPD |
-| `run()` | Run the stream controller on the current async task (no spawn) |
-| `spawn()` | Spawn the stream controller as a separate Tokio task |
-
----
-
-### `PlaybackController`
-
-Lifecycle controls for an active playback session. Returned as `outputs.playback` from
-[`Player::start_tracks`](#player) and [`MediaPlayer::start`](#mediaplayer). Clone handles share
-the same session.
-
-| Method | Description |
-|--------|-------------|
-| `pause()` | Freeze media-clock drain; segment fetch/delivery continues by default (`PausePolicy`) |
-| `resume()` | Resume consumption after `pause` |
-| `seek(presentation_time)` | Seek to a presentation time ([`Duration`](https://doc.rust-lang.org/std/time/struct.Duration.html) from the start of the presentation) |
-| `set_track_selection(selection)` | Change audio/text preferences mid-playback without restarting (track slot count is fixed at start) |
-| `quality_constraints()` | Current user ABR quality constraints |
-| `set_quality_constraints(constraints)` | Update min/max bitrate, fixed quality, or data-saver (bitrate envelope changes rebuild ABR) |
-| `set_quality_for(quality_index)` | Pin a ladder index and disable autoswitch (dash.js: `setQualityFor`) |
-| `set_auto_switch_bitrate(enabled)` | Enable or disable automatic quality switching |
-| `suggested_playback_rate()` | LL-DASH catch-up suggestion from `ServiceDescription` (`1.0` when inactive) |
-| `subscribe_suggested_playback_rate()` | Watch LL-DASH suggested rate updates |
-| `playback_rate()` | Effective consumption rate (user override or LL suggestion, capped by Representation `@maxPlayoutRate`) |
-| `set_playback_rate(rate)` | Set (`Some`) or clear (`None`) a user playback-rate override; trick-play AS selection stays via `set_track_selection` |
-| `presentation_time()` | Current session presentation time (media clock); `None` before the first segment is delivered |
-| `subscribe_presentation_time()` | Watch presentation time updates (media clock, seek target, or clock init) |
-| `stop()` | Stop playback; no further segments are delivered |
-| `state()` | Current [`PlaybackState`](#playbackstate) |
-| `subscribe_state()` | Watch lifecycle state transitions |
-
-Commands return [`PlaybackControlError`](#playbackcontrolerror) when playback is not active or
-has already stopped.
-
----
-
-### `PlaybackState`
-
-Explicit lifecycle state for the playback pipeline:
-
-| Variant | Meaning |
-|---------|---------|
-| `Idle` | No active playback session |
-| `LoadingManifest` | Fetching or refreshing the MPD |
-| `Buffering` | Waiting for media to begin or resume |
-| `Playing` | Segments are being delivered |
-| `Paused` | Delivery suspended until `resume` |
-| `Seeking` | Repositioning to a new presentation time |
-| `Ended` | Manifest window exhausted or playback stopped |
-| `Error` | Pipeline failed; inspect `join` for details |
-
----
-
-### `PlaybackControlError`
-
-| Variant | When |
-|---------|------|
-| `NotActive` | Command issued before playback started |
-| `Stopped` | Command issued after `stop` or natural end |
-| `InvalidPlaybackRate` | `set_playback_rate(Some(rate))` with non-finite or `<= 0` rate |
-
----
-
-### `PlayerTrackOutput`
-
-Per-track handle returned in `PlayerTrackOutputs.tracks`:
-
-| Field / method | Description |
-|----------------|-------------|
-| `track_index` | Adaptation-set index |
-| `mime_type()` | MIME type of the adaptation set (updates after mid-playback switches) |
-| `info()` | Selected-track language, roles, codecs, accessibility, ID, and media kind |
-| `into_receiver()` | Take ownership of the broadcast receiver |
-| `buffer_feedback()` | Report playback buffer occupancy for ABR |
-| `playback_quality_feedback()` | Report decoder / MSE dropped-frame counters for ABR |
-| `metrics()` | [`TrackMetrics`](#metrics) collector for this track |
-| `events()` | Stream wrapper over track events |
-
----
-
-### `WidevineLicenseFetcher`
-
-```rust
-Arc<dyn Fn(Url, Vec<u8>) -> Pin<Box<dyn Future<Output = Result<Bytes, PlayerError>> + Send>> + Send + Sync>
-```
-
-Async callback invoked for Widevine license POSTs instead of the built-in HTTP client when
-[`Player::with_license_fetcher`](#player) is set.
-
----
-
-### HTTP client
-
-Networking is abstracted behind [`HttpClient`](src/http/mod.rs) so playback is not tied to a
-single HTTP library. The default backend is [`ReqwestClient`](src/http/reqwest.rs) on native
-targets (with the `reqwest-http` feature). On `wasm32` without `reqwest-http`, the default is
-[`FetchClient`](src/http/fetch.rs) (browser `fetch`).
-
-| Type / function | Description |
-|-----------------|-------------|
-| `HttpClient` | Async trait: `send(HttpRequest) -> Result<HttpResponse, HttpError>` |
-| `SharedHttpClient` | `Arc<dyn HttpClient>` shared across playback tasks |
-| `shared(client)` | Wrap a concrete client for use with `with_http_client` |
-| `ReqwestClient` | Default native backend; `ReqwestClient::new(reqwest::Client)` for custom `reqwest` settings |
-| `FetchClient` | Reference WASM / browser backend (`window.fetch`); default on `wasm32` without `reqwest-http` |
-| `HttpRequest` | `get` / `head` / `post` builders with `header` and `byte_range` |
-| `HttpResponse` | Status, headers, and body; `is_success()`, `header(name)`, `text()`, `into_bytes()` |
-| `HttpError` | Transport or body decode failure |
-| `HttpRetryConfig` | Fixed per-type delay retry (dash.js-style); enabled by default |
-| `HttpRequestKind` | Request class used to select attempts/interval (MPD, media, init, …) |
-
-Used for:
-
-- MPD manifest fetches
-- Init and media segment downloads (including HTTP `Range` requests)
-- `UTCTiming` clock synchronization (`GET`, `HEAD`)
-- Default Widevine license POSTs (override with [`WidevineLicenseFetcher`](#widevinelicensefetcher))
-
-Transient failures (transport errors, `408` / `429` / `5xx`) are retried on the same URL with a
-**fixed** delay before BaseURL failover. Defaults: ~3 attempts; MPD `500ms`, media/init/index
-`1000ms`; CMAF low-latency fetches scale attempts up and intervals down. Use
-[`HttpRetryConfig::disabled`](src/http/retry.rs) to turn retries off.
-
-Configure on [`Player`](#player) or [`MediaPlayer`](#mediaplayer):
-
-```rust
-Player::with_http_client(self, client: SharedHttpClient) -> Player
-MediaPlayer::with_http_client(self, client: SharedHttpClient) -> MediaPlayer
-Player::with_http_retry(self, config: HttpRetryConfig) -> Player
-MediaPlayer::with_http_retry(self, config: HttpRetryConfig) -> MediaPlayer
-Player::with_pause_policy(self, policy: PausePolicy) -> Player
-MediaPlayer::with_pause_policy(self, policy: PausePolicy) -> MediaPlayer
-```
-
----
-
-### ABR
-
-Adaptive bitrate is abstracted behind [`AbrFactory`](src/abr/mod.rs) so playback is not tied to
-a single algorithm. The default backend is [`BolaAbrFactory`](src/abr/bola.rs) (BOLA). For CMAF
-low-latency live, use [`LolPlusAbrFactory`](src/abr/lol_plus/) (LoL+ SOM).
-
-| Type / function | Description |
-|-----------------|-------------|
-| `AbrFactory` | Creates a per-adaptation-set [`AbrController`] when a stream starts |
-| `AbrController` | Stateful controller: buffer/latency/rate updates, throughput observations, `decide()` |
-| `AbrDecision` | Chosen quality index and nominal bitrate |
-| `BolaAbrFactory` | Default BOLA backend; configure `ewma_alpha` / fallback timing on the struct |
-| `LolPlusAbrFactory` | LoL+ SOM backend for low-latency live; configure duration/latency/seed |
-| `DroppedFramesHistory` / `DroppedFramesParams` | Host-reported dropped-frame accumulators and rule thresholds |
-| `PlaybackQualityFeedback` / `PlaybackQualitySample` | Report `getVideoPlaybackQuality()`-style counters for the dropped-frames cap |
-| `SharedAbrFactory` | `Arc<dyn AbrFactory>` shared across playback tasks |
-| `shared_abr_factory(factory)` | Wrap a concrete factory for use with `with_abr_factory` |
-| `quality_ladder_from_adaptation_set` | Build a bandwidth-ordered ladder from an adaptation set |
-| `QualityRung` | Ladder entry: bitrate, indices, `@maxPlayoutRate`, `@codingDependency` |
-| `QualityConstraints` | User min/max bitrate, fixed quality (`fixed_quality`), and data-saver |
-
-Configure on [`Player`](#player) or [`MediaPlayer`](#mediaplayer):
-
-```rust
-Player::with_abr_factory(self, factory: SharedAbrFactory) -> Player
-Player::with_quality_constraints(self, constraints: QualityConstraints) -> Player
-MediaPlayer::with_abr_factory(self, factory: SharedAbrFactory) -> MediaPlayer
-MediaPlayer::with_quality_constraints(self, constraints: QualityConstraints) -> MediaPlayer
-```
-
-```rust
-use dashplayrs::{Player, QualityConstraints};
-
-let player = Player::new(url, None)?
+    .with_abr_factory(shared_abr_factory(LolPlusAbrFactory::default()))
     .with_quality_constraints(
         QualityConstraints::default()
             .min_bitrate_bps(300_000)
             .max_bitrate_bps(2_000_000),
-    );
-// Or pin a rung / enable data-saver:
-// QualityConstraints::default().fixed_quality(0)
-// QualityConstraints::default().data_saver(true)
+    )
+    .start_tracks()
+    .await?;
+# outputs.stop()?;
+# Ok(())
+# }
 ```
 
-Implement [`AbrFactory`] and optionally reuse [`quality_ladder_from_adaptation_set`] when
-building custom controllers. [`bola`](#bola) exposes the BOLA algorithm directly for advanced
-integrations.
+Implement `HttpClient` or `AbrFactory` for fully custom stacks. On `wasm32`
+without `reqwest-http`, `FetchClient` is the default HTTP backend.
 
----
+### Merged output
 
-### `PlayerError`
+`Player::start_merged` concatenates all track fragments into one byte stream
+(useful for piping into `ffmpeg`). Prefer `start_tracks` when tracks must stay
+separate.
 
-Unified error type covering manifest parsing, HTTP, URL resolution, segment fetch failures,
-and DRM errors. Notable variants:
+## Examples
 
-| Variant | When |
-|---------|------|
-| `Manifest` | MPD parse failure |
-| `Request` | HTTP client error ([`HttpError`](#http-client)) |
-| `Url` | Invalid URL |
-| `ManifestNotLoaded` | Operation before manifest fetch |
-| `SegmentRequestFailed { status, url }` | Non-success HTTP response for a segment |
-| `SegmentBlacklisted` | URL previously failed and was skipped |
-| `License` | Widevine license or decryption failure |
-| `DrmMpd` | MPD DRM metadata parse failure |
-
-See [`src/lib.rs`](src/lib.rs) for the full list.
-
----
-
-### `bola`
-
-Buffer Occupancy based Lyapunov Algorithm (BOLA) for adaptive bitrate selection. Used
-by [`BolaAbrFactory`](#abr); also exposed for standalone or custom ABR integrations.
-
-| Type | Description |
-|------|-------------|
-| `QualityLevel` | One rung on the bitrate ladder (`label`, `bitrate_bps`, `utility`) |
-| `Bola` | Stateful ABR decision engine |
-| `BolaDecision` | Chosen quality index, estimated segment size, and emergency flag |
-| `BolaParams` | `segment_duration_s` and `buffer_max_s` (defaults: 4 s / 25 s) |
-| `DEFAULT_SEGMENT_DURATION_S` / `DEFAULT_BUFFER_MAX_S` | Fallback timing constants |
-
-| Method | Description |
-|--------|-------------|
-| `Bola::new(qualities, ewma_alpha)` | Build from a quality ladder (default 4 s / 25 s buffer params) |
-| `Bola::with_params(qualities, ewma_alpha, params)` | Build with MPD-derived segment duration / buffer ceiling |
-| `Bola::observe_throughput(bps)` | Update throughput EWMA |
-| `Bola::update_buffer(seconds)` | Update buffer occupancy |
-| `Bola::decide()` | Select the next representation |
-| `Bola::buffer_s()` / `params()` / `throughput_bps()` / `v()` / `qualities()` | Inspect state |
-
----
-
-### `lol_plus`
-
-Low-on-Latency-plus (LoL+) SOM ABR for CMAF low-latency live. Used by
-[`LolPlusAbrFactory`](#abr); also exposed for standalone integrations.
-
-| Type | Description |
-|------|-------------|
-| `LolPlus` | Stateful SOM decision engine |
-| `LolPlusDecision` | Chosen quality index and safety-downshift flag |
-
-```rust
-use dashplayrs::{LolPlusAbrFactory, Player, shared_abr_factory};
-
-let player = Player::new(url, None)?
-    .with_abr_factory(shared_abr_factory(LolPlusAbrFactory::default()));
-```
-
----
-
-### `drm`
-
-Widevine DRM support. With the `drm` feature, segment decryption uses Bento4 and
-supports ISO Common Encryption schemes **`cenc`**, **`cens`**, **`cbc1`**, and **`cbcs`**.
-The active scheme is taken from the media (`schm` / `tenc` / `senc`); MPD
-`ContentProtection` with `schemeIdUri="urn:mpeg:dash:mp4protection:2011"` `@value` is
-parsed into `CommonEncryptionScheme` for diagnostics and does not select a separate
-decrypt path.
-
-**Re-exported at `dashplayrs::drm`:**
-
-| Type | Description |
-|------|-------------|
-| `CommonEncryptionScheme` | ISO CENC 4CC (`cenc` / `cbcs` / `cens` / `cbc1`) |
-| `License` | Widevine session with decrypt capability |
-| `LicenseError` | License acquisition or decryption error |
-| `WidevineLicenseManager` | Cache of ready license sessions |
-| `WidevineSessionKey` | Session identity derived from a PSSH box |
-
-**`dashplayrs::drm::mpd`:**
-
-| Type / function | Description |
-|-----------------|-------------|
-| `MpdDrmInfo` | Parsed DRM metadata for the full MPD |
-| `PeriodDrmInfo` / `AdaptationSetDrmInfo` / `RepresentationDrmInfo` | Per-level DRM with inheritance |
-| `LevelDrmInfo` | Effective PSSH boxes, default KIDs, license URLs, and protection schemes |
-| `parse_mpd_drm_info(xml)` | Parse DRM elements from raw MPD XML |
-
-**`dashplayrs::drm::decrypt`:**
-
-| Function | Description |
-|----------|-------------|
-| `get_cdm()` | Load a Widevine CDM from the `DEVICE_PATH` environment variable |
-| `create_license_request(pssh)` | Build a license challenge from a PSSH box |
-
-**`License` methods:**
-
-```rust
-License::new_from_pssh(pssh) -> Result<License, LicenseError>
-License::challenge() -> Result<Vec<u8>, LicenseError>
-License::set_license(bytes) -> Result<(), LicenseError>
-License::decrypt(ciphertext, init) -> Result<Bytes, LicenseError>
+```bash
+cargo run --example write_stream -- <manifest-url> <output.mp4>
+cargo run --example play_gstreamer --features example-gstreamer -- <manifest-url>
 ```
 
 ## Development
 
-Requires Rust stable.
-
-See [`ROADMAP.md`](ROADMAP.md) for planned work (including the unsupported-feature backlog
-in P6–P9) and [`UNSUPPORTED.md`](UNSUPPORTED.md) for spec references and rationale.
-
-Build:
-
-```bash
-cargo build
-```
-
-Test:
-
-```bash
-cargo test
-```
-
-Format and lint:
-
 ```bash
 cargo fmt --all
 cargo clippy --all-targets -- -D warnings
+cargo test --all
 ```
+
+## License
+
+MIT

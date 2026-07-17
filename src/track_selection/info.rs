@@ -27,6 +27,22 @@ pub struct TrackInfo {
     /// Effective RFC 6381 codec strings advertised by the adaptation set, representations, or
     /// sub-representations.
     pub codecs: Vec<String>,
+    /// `AdaptationSet@minBandwidth` (bps), when present. Metadata only; does not filter ABR.
+    pub min_bandwidth_bps: Option<u64>,
+    /// `AdaptationSet@maxBandwidth` (bps), when present. Metadata only; does not filter ABR.
+    pub max_bandwidth_bps: Option<u64>,
+    /// `AdaptationSet@minWidth`, when present. Metadata only.
+    pub min_width: Option<u64>,
+    /// `AdaptationSet@maxWidth`, when present. Metadata only.
+    pub max_width: Option<u64>,
+    /// `AdaptationSet@minHeight`, when present. Metadata only.
+    pub min_height: Option<u64>,
+    /// `AdaptationSet@maxHeight`, when present. Metadata only.
+    pub max_height: Option<u64>,
+    /// `AdaptationSet@minFrameRate`, when present (e.g. `"30000/1001"`). Metadata only.
+    pub min_frame_rate: Option<String>,
+    /// `AdaptationSet@maxFrameRate`, when present (e.g. `"30000/1001"`). Metadata only.
+    pub max_frame_rate: Option<String>,
     /// Resolved `SubRepresentation` entries under this adaptation set's representations.
     pub sub_tracks: Vec<SubTrackInfo>,
     /// DASH accessibility descriptors as `(schemeIdUri, value)` pairs.

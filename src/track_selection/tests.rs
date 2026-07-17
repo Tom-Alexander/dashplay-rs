@@ -668,3 +668,31 @@ fn image_png_and_bmp_tracks_are_selected_when_enabled() {
     assert_eq!(selected[1].info.mime_type.as_deref(), Some("image/bmp"));
     assert_eq!(selected[1].info.thumbnail_tile, Some((3, 1)));
 }
+
+#[test]
+fn track_info_exposes_adaptation_set_range_attributes() {
+    let period = period(
+        r#"<MPD><Period>
+                <AdaptationSet id="v" contentType="video"
+                               minBandwidth="500000" maxBandwidth="3000000"
+                               minWidth="640" maxWidth="1920"
+                               minHeight="360" maxHeight="1080"
+                               minFrameRate="24" maxFrameRate="30000/1001">
+                  <Representation id="low" bandwidth="800000" width="1280" height="720"/>
+                  <Representation id="high" bandwidth="5000000" width="3840" height="2160"/>
+                </AdaptationSet>
+            </Period></MPD>"#,
+    );
+
+    let selected = select_adaptation_sets(&period, &TrackSelection::default());
+    assert_eq!(selected.len(), 1);
+    let info = &selected[0].info;
+    assert_eq!(info.min_bandwidth_bps, Some(500_000));
+    assert_eq!(info.max_bandwidth_bps, Some(3_000_000));
+    assert_eq!(info.min_width, Some(640));
+    assert_eq!(info.max_width, Some(1920));
+    assert_eq!(info.min_height, Some(360));
+    assert_eq!(info.max_height, Some(1080));
+    assert_eq!(info.min_frame_rate.as_deref(), Some("24"));
+    assert_eq!(info.max_frame_rate.as_deref(), Some("30000/1001"));
+}

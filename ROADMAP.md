@@ -10,12 +10,6 @@ Status: `[ ]` not started · `[~]` partial · `[x]` done.
   *dash.js:* Query mode default + header mode; `nor`/`nrr` and broad v1 key set;
   `includeInRequests` (segment/mpd); CMSD parse with optional ABR cap via `cmsd.abr.applyMb`
   (`mb` / `etp`).
-- [~] **AdaptationSet range attributes.** Enforce `@minBandwidth` / `@maxBandwidth` /
-  `@minWidth` / `@maxWidth` / `@minHeight` / `@maxHeight` / `@minFrameRate` /
-  `@maxFrameRate` against representations and ABR.
-  *dash.js:* AS min/max attrs are modelled/metadata; ABR caps come from settings
-  (`abr.minBitrate` / `maxBitrate`) and capability filters, not hard enforcement of AS
-  range attrs against each Representation.
 - [~] **Pause semantics.** Buffer drain signalling; optional in-flight cancel.
   *dash.js:* `scheduleWhilePaused` (default true); `HTTPLoader.abort()` cancels
   in-flight + pending retries.

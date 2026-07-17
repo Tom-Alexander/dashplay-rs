@@ -138,6 +138,10 @@ pub fn shared(factory: impl AbrFactory + 'static) -> SharedAbrFactory {
 }
 
 /// Build a bandwidth-ordered quality ladder from delivery representations.
+///
+/// AdaptationSet `@minBandwidth` / `@maxBandwidth` / dimension / frame-rate range attributes
+/// are **not** applied here (dash.js parity: those attrs are manifest metadata; ABR caps
+/// come from [`QualityConstraints`] and `ServiceDescription` operating constraints).
 pub fn quality_ladder_from_adaptation_set(adaptation_set: &AdaptationSet) -> Vec<QualityRung> {
     quality_ladder_from_adaptation_sets(&[(0, adaptation_set)])
 }
@@ -366,6 +370,37 @@ mod tests {
         assert_eq!(ladder[0].coding_dependency, Some(true));
         assert_eq!(ladder[1].max_playout_rate, Some(8.0));
         assert_eq!(ladder[1].coding_dependency, Some(false));
+    }
+
+    #[test]
+    fn quality_ladder_ignores_adaptation_set_range_attributes() {
+        let set = AdaptationSet {
+            minBandwidth: Some(1_000_000),
+            maxBandwidth: Some(2_000_000),
+            maxWidth: Some(1280),
+            maxHeight: Some(720),
+            representations: vec![
+                Representation {
+                    id: Some("below-min".into()),
+                    bandwidth: Some(500_000),
+                    width: Some(640),
+                    height: Some(360),
+                    ..Default::default()
+                },
+                Representation {
+                    id: Some("above-max".into()),
+                    bandwidth: Some(5_000_000),
+                    width: Some(3840),
+                    height: Some(2160),
+                    ..Default::default()
+                },
+            ],
+            ..Default::default()
+        };
+        let ladder = quality_ladder_from_adaptation_set(&set);
+        assert_eq!(ladder.len(), 2);
+        assert_eq!(ladder[0].bitrate_bps, 500_000.0);
+        assert_eq!(ladder[1].bitrate_bps, 5_000_000.0);
     }
 
     #[test]

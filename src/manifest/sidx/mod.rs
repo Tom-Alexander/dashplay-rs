@@ -24,6 +24,23 @@ fn index_range_is_exact(exact: Option<bool>) -> bool {
     exact == Some(true)
 }
 
+/// WebM/Matroska indexes (`Cues`, EBML header) share `SegmentBase@indexRange` in some
+/// multi-codec MPDs (e.g. Shaka Angel One) but are not ISO BMFF `sidx` boxes.
+fn looks_like_ebml_index(data: &[u8]) -> bool {
+    // EBML header element ID, or Matroska/WebM `Cues` (`0x1C53BB6B`).
+    data.starts_with(&[0x1A, 0x45, 0xDF, 0xA3]) || data.starts_with(&[0x1C, 0x53, 0xBB, 0x6B])
+}
+
+fn reject_unsupported_index_container(index_bytes: &[u8]) -> Result<(), ManifestError> {
+    if looks_like_ebml_index(index_bytes) {
+        return Err(ManifestError::SidxParse(
+            "WebM/Matroska SegmentBase index (EBML) is not supported; select an ISO BMFF (mp4) representation"
+                .into(),
+        ));
+    }
+    Ok(())
+}
+
 /// Read an ISO BMFF box header at `off`. Returns `(box_size, box_type)`.
 fn read_box_header(data: &[u8], off: usize) -> Result<(usize, [u8; 4]), ManifestError> {
     if data.len().saturating_sub(off) < 8 {
@@ -103,6 +120,14 @@ fn find_sidx_offset(
                 });
             }
             return Ok(off);
+        }
+        // Non-sidx "boxes" with absurd sizes are almost always non-ISO containers
+        // (e.g. EBML) misread as BMFF — do not ask to download hundreds of MB.
+        const MAX_SCAN_SKIP: usize = 16 * 1024 * 1024;
+        if box_size > MAX_SCAN_SKIP || !typ.iter().all(|b| b.is_ascii_graphic()) {
+            return Err(ManifestError::SidxParse(
+                "sidx box not found; index bytes do not look like ISO BMFF".into(),
+            ));
         }
         if off + box_size > index_bytes.len() {
             // Need more bytes to skip past this box before scanning further.
@@ -209,6 +234,7 @@ pub(crate) fn parse_sidx_index(
     let exact = index_range_is_exact(sb.indexRangeExact);
     let file_base = br.start;
 
+    reject_unsupported_index_container(index_bytes)?;
     let sidx_off = find_sidx_offset(index_bytes, exact, file_base)?;
     ensure_index_segment_complete(index_bytes, sidx_off, file_base)?;
 
@@ -303,6 +329,7 @@ pub(crate) fn parse_sidx_index_from_template(
     let exact = index_range_is_exact(st.indexRangeExact);
     let file_base = br.start;
 
+    reject_unsupported_index_container(index_bytes)?;
     let sidx_off = find_sidx_offset(index_bytes, exact, file_base)?;
     ensure_index_segment_complete(index_bytes, sidx_off, file_base)?;
 

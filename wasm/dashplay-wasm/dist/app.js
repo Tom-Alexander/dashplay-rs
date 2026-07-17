@@ -2,6 +2,8 @@ import init, { DashPlayer } from "./pkg/dashplay_wasm.js";
 
 const form = document.getElementById("play-form");
 const manifestInput = document.getElementById("manifest-url");
+const licenseInput = document.getElementById("license-url");
+const deviceInput = document.getElementById("device-wvd");
 const playButton = document.getElementById("play-button");
 const video = document.getElementById("video");
 const statusEl = document.getElementById("status");
@@ -353,7 +355,7 @@ function enqueueFragment(trackIndex, bytes) {
   drainQueue(sink);
 }
 
-async function startPlayback(manifestUrl) {
+async function startPlayback(manifestUrl, { licenseUrl, deviceFile } = {}) {
   setError("");
   setStatus("initializing WASM…");
   playButton.disabled = true;
@@ -400,6 +402,14 @@ async function startPlayback(manifestUrl) {
   });
 
   const player = new DashPlayer(manifestUrl);
+  if (licenseUrl) {
+    player.set_license_url(licenseUrl);
+  }
+  if (deviceFile) {
+    setStatus("loading Widevine device…");
+    const deviceBytes = new Uint8Array(await deviceFile.arrayBuffer());
+    player.set_widevine_device(deviceBytes);
+  }
 
   player.on_track((track) => {
     console.log("track", track);
@@ -462,7 +472,9 @@ async function startPlayback(manifestUrl) {
 
 form.addEventListener("submit", (event) => {
   event.preventDefault();
-  startPlayback(manifestInput.value.trim()).catch((err) => {
+  const licenseUrl = licenseInput?.value?.trim() || undefined;
+  const deviceFile = deviceInput?.files?.[0] || undefined;
+  startPlayback(manifestInput.value.trim(), { licenseUrl, deviceFile }).catch((err) => {
     setError(String(err));
     playButton.disabled = false;
   });

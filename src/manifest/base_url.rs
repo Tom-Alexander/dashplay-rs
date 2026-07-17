@@ -1,12 +1,12 @@
 use std::collections::hash_map::DefaultHasher;
 use std::collections::{BTreeMap, HashSet};
 use std::hash::{Hash, Hasher};
-use std::time::{SystemTime, UNIX_EPOCH};
 
 use dash_mpd::{AdaptationSet, BaseURL, Representation};
 use url::Url;
 
 use crate::manifest::ManifestError;
+use crate::platform;
 
 /// Default `@dvb:priority` when absent (ETSI TS 103 285 §10.8.2.1).
 pub(crate) const DEFAULT_DVB_PRIORITY: u64 = 1;
@@ -29,11 +29,10 @@ pub(crate) struct SegmentBaseContext {
 pub(crate) fn new_dvb_selection_seed(manifest_uri: &Url) -> u64 {
     let mut hasher = DefaultHasher::new();
     manifest_uri.as_str().hash(&mut hasher);
-    let nanos = SystemTime::now()
-        .duration_since(UNIX_EPOCH)
-        .map(|d| d.as_nanos() as u64)
-        .unwrap_or(0);
-    nanos.hash(&mut hasher);
+    // Avoid `std::time::SystemTime` — it panics on `wasm32-unknown-unknown`.
+    let mut entropy = [0u8; 8];
+    platform::fill_random(&mut entropy);
+    u64::from_le_bytes(entropy).hash(&mut hasher);
     hasher.finish()
 }
 

@@ -25,6 +25,8 @@ pub use cenc::CommonEncryptionScheme;
 #[cfg(feature = "drm")]
 pub use coordinator::{DrmSessionCoordinator, WidevineLicenseFetcher};
 #[cfg(feature = "drm")]
+pub use decrypt::{set_widevine_device_bytes, widevine_device_configured};
+#[cfg(feature = "drm")]
 pub use playback_error::DrmError;
 #[cfg(feature = "drm")]
 pub use widevine::{License, LicenseError, WidevineLicenseManager, WidevineSessionKey};

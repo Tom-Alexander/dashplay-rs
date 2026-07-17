@@ -87,6 +87,8 @@ pub use cmcd::{
 pub use dash_mpd::SubtitleType;
 #[cfg(feature = "drm")]
 pub use drm::DrmError;
+#[cfg(feature = "drm")]
+pub use drm::{set_widevine_device_bytes, widevine_device_configured};
 #[cfg(target_arch = "wasm32")]
 pub use http::FetchClient;
 #[cfg(feature = "reqwest-http")]

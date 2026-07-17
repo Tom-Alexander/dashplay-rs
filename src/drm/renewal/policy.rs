@@ -2,7 +2,8 @@
 
 use crate::drm::cdm::Key;
 use crate::drm::widevine::LicenseError;
-use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
+use crate::platform::{Instant, utc_now};
+use std::time::Duration;
 
 /// Minimum lead time before a key or license expiry to start renewal attempts.
 pub(crate) const RENEWAL_LEAD_TIME: Duration = Duration::from_secs(60);
@@ -106,10 +107,7 @@ pub(crate) fn parse_key_control_ttl(block: &[u8]) -> Option<u32> {
 }
 
 fn unix_now() -> i64 {
-    SystemTime::now()
-        .duration_since(UNIX_EPOCH)
-        .map(|d| d.as_secs() as i64)
-        .unwrap_or(0)
+    utc_now().timestamp()
 }
 
 fn unix_to_instant(target_unix: i64, reference_unix: i64, reference_instant: Instant) -> Instant {

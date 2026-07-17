@@ -305,12 +305,7 @@ impl CdmSession {
             .mut_or_insert_default()
             .set_widevine_pssh_data(pd);
         license_request.set_type(RequestType::NEW);
-        license_request.set_request_time(
-            std::time::SystemTime::now()
-                .duration_since(std::time::UNIX_EPOCH)
-                .unwrap()
-                .as_secs() as i64,
-        );
+        license_request.set_request_time(crate::platform::utc_now().timestamp());
         license_request.set_protocol_version(ProtocolVersion::VERSION_2_1);
         license_request.set_key_control_nonce(rand::thread_rng().gen_range(1..2147483648));
 
@@ -382,12 +377,7 @@ impl CdmLicenseRequest {
     pub fn renewal_challenge(&self) -> Result<Vec<u8>, Error> {
         let mut license_request = LicenseRequest::parse_from_bytes(&self.license_request)?;
         license_request.set_type(RequestType::RENEWAL);
-        license_request.set_request_time(
-            std::time::SystemTime::now()
-                .duration_since(std::time::UNIX_EPOCH)
-                .map_err(|e| Error::InvalidInput(e.to_string().into()))?
-                .as_secs() as i64,
-        );
+        license_request.set_request_time(crate::platform::utc_now().timestamp());
         let license_request_bts = license_request.write_to_bytes()?;
 
         let digest = Sha1::digest(&license_request_bts);

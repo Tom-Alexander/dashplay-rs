@@ -1,9 +1,9 @@
 //! Coordinates Widevine license acquisition, key rotation, and renewal during playback.
 
+use crate::platform::Instant;
 use bytes::Bytes;
 use std::collections::HashMap;
 use std::sync::Arc;
-use std::time::Instant;
 use url::Url;
 
 use super::mp4::{InBandDrmInfo, extract_in_band_drm};

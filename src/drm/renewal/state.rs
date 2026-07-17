@@ -2,7 +2,8 @@
 
 use super::policy::{RenewalSchedule, schedule_from_key_control};
 use crate::drm::cdm::Key;
-use std::time::{Duration, Instant};
+use crate::platform::Instant;
+use std::time::Duration;
 
 /// Default retry interval when the license policy omits one.
 const DEFAULT_RETRY_INTERVAL: Duration = Duration::from_secs(30);

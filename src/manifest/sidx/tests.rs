@@ -111,6 +111,30 @@ fn index_range_exact_false_incomplete_sidx_requests_extension() {
 }
 
 #[test]
+fn webm_cues_index_is_rejected_with_clear_error() {
+    // Shaka Angel One VP9 `@indexRange` body begins with Matroska `Cues` (EBML).
+    let cues: &[u8] = &[
+        0x1c, 0x53, 0xbb, 0x6b, 0x40, 0xed, 0xbb, 0x8c, 0xb3, 0x81, 0x00, 0xb7, 0x87, 0xf7, 0x81,
+        0x01,
+    ];
+    let sb = SegmentBase {
+        timescale: Some(1_000_000),
+        indexRange: Some("354-596".into()),
+        ..Default::default()
+    };
+    let err = parse_sidx_index(&sb, cues).unwrap_err();
+    match err {
+        ManifestError::SidxParse(msg) => {
+            assert!(
+                msg.contains("WebM") || msg.contains("EBML"),
+                "unexpected message: {msg}"
+            );
+        }
+        other => panic!("expected SidxParse, got {other:?}"),
+    }
+}
+
+#[test]
 fn index_range_exact_true_rejects_non_sidx_prefix() {
     let mut free = 8u32.to_be_bytes().to_vec();
     free.extend_from_slice(b"free");

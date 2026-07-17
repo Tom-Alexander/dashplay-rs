@@ -3,12 +3,24 @@
 use std::cell::RefCell;
 use std::rc::Rc;
 
-use dashplayrs::{BufferFeedback, MediaPlayer, PlayerError, PlayerEvent, TrackKind};
+use dashplayrs::{
+    BufferFeedback, MediaPlayer, PlayerError, PlayerEvent, TrackKind, TrackPreference,
+    TrackSelection, set_widevine_device_bytes,
+};
 use js_sys::Function;
 use serde::Serialize;
 use tokio::sync::broadcast::error::RecvError;
 use wasm_bindgen::prelude::*;
 use wasm_bindgen_futures::spawn_local;
+
+// Bento4 / wasi-libc is linked for CENC decrypt. Without an explicit
+// `__wasm_call_ctors` call, wasm-ld wraps every export as a WASI *command*
+// entrypoint (`*.command_export`) that runs `__wasm_call_dtors` on return —
+// which hits a null `__funcs_on_exit` slot and traps with `RuntimeError: null
+// function`. Calling ctors once opts into reactor-style linking instead.
+unsafe extern "C" {
+    fn __wasm_call_ctors();
+}
 
 /// Install a panic hook that logs Rust panics to the browser console.
 ///
@@ -16,6 +28,9 @@ use wasm_bindgen_futures::spawn_local;
 /// message instead of a bare `RuntimeError: unreachable`.
 #[wasm_bindgen(start)]
 pub fn start() {
+    unsafe {
+        __wasm_call_ctors();
+    }
     console_error_panic_hook::set_once();
 }
 
@@ -42,6 +57,7 @@ fn kind_label(kind: TrackKind) -> &'static str {
 #[wasm_bindgen]
 pub struct DashPlayer {
     manifest_url: String,
+    license_url: Option<String>,
     on_track: Option<Function>,
     on_fragment: Option<Function>,
     on_status: Option<Function>,
@@ -55,12 +71,26 @@ impl DashPlayer {
     pub fn new(manifest_url: String) -> Self {
         Self {
             manifest_url,
+            license_url: None,
             on_track: None,
             on_fragment: None,
             on_status: None,
             on_error: None,
             started: Rc::new(RefCell::new(false)),
         }
+    }
+
+    /// Optional license server URL override (otherwise taken from the MPD).
+    pub fn set_license_url(&mut self, license_url: Option<String>) {
+        self.license_url = license_url.filter(|s| !s.is_empty());
+    }
+
+    /// Load a Widevine `.wvd` device (pywidevine format) before [`Self::start`].
+    ///
+    /// Required for encrypted playback; clear streams may omit this.
+    pub fn set_widevine_device(&mut self, device_wvd: &[u8]) -> Result<(), JsValue> {
+        set_widevine_device_bytes(device_wvd.to_vec())
+            .map_err(|err| JsValue::from_str(&err.to_string()))
     }
 
     pub fn on_track(&mut self, callback: Function) {
@@ -86,6 +116,7 @@ impl DashPlayer {
         *self.started.borrow_mut() = true;
 
         let manifest_url = self.manifest_url.clone();
+        let license_url = self.license_url.clone();
         let on_track = self.on_track.clone();
         let on_fragment = self.on_fragment.clone();
         let on_status = self.on_status.clone();
@@ -94,6 +125,7 @@ impl DashPlayer {
         spawn_local(async move {
             if let Err(err) = run_playback(
                 &manifest_url,
+                license_url.as_deref(),
                 on_track.as_ref(),
                 on_fragment.as_ref(),
                 on_status.as_ref(),
@@ -111,6 +143,7 @@ impl DashPlayer {
 
 async fn run_playback(
     manifest_url: &str,
+    license_url: Option<&str>,
     on_track: Option<&Function>,
     on_fragment: Option<&Function>,
     on_status: Option<&Function>,
@@ -119,7 +152,25 @@ async fn run_playback(
     let _ = on_error;
     emit_status(on_status, "loading manifest");
 
-    let media_player = MediaPlayer::new(manifest_url, None)?;
+    // Angel One and similar demos ship parallel WebM AdaptationSets; their
+    // SegmentBase@indexRange is EBML Cues, not ISO BMFF sidx. Prefer fMP4.
+    let track_selection = TrackSelection::default()
+        .with_video(
+            TrackPreference::default()
+                .codec("avc1")
+                .codec("hev1")
+                .codec("hvc1")
+                .max_tracks(1),
+        )
+        .with_audio(
+            TrackPreference::default()
+                .codec("mp4a")
+                .language("en")
+                .max_tracks(1),
+        );
+
+    let media_player =
+        MediaPlayer::new(manifest_url, license_url)?.with_track_selection(track_selection);
     let outputs = media_player.start().await?;
 
     let track_count = outputs.tracks.len();

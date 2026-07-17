@@ -57,21 +57,21 @@ Status: `[ ]` not started · `[~]` partial.
   pathway query params.
 - [~] **WASM test player.** MSE demo exists; remaining: real buffer feedback, live MSE
   lifecycle, non-A/V tracks, broader fixtures.
-- [ ] **WASM DRM (CDM + `mp4decrypt`).** Same in-pipeline Widevine path as native: CDM
+- [x] **WASM DRM (CDM + `mp4decrypt`).** Same in-pipeline Widevine path as native: CDM
   device → license challenge/response → content keys → Bento4 CENC decrypt → clear
-  segments to the host. Bento4 can be compiled to WASM, so `mp4decrypt` should work on
-  `wasm32` rather than forcing an EME-only design.
+  segments to the host. Forked [`bento4-rs`](https://github.com/Tom-Alexander/bento4-rs)
+  cross-compiles for `wasm32` via wasi-sdk (`WASI_SDK_PATH`); device bytes via
+  `set_widevine_device_bytes` / demo file picker. Optional EME host path still open.
 
-  **Approach:**
-  1. **Build `mp4decrypt` / Bento4 for `wasm32`.** Ensure the `mp4decrypt` crate (Bento4
-     CENC processor) cross-compiles; fix or vendor any native-only assumptions (sys crates,
-     filesystem, threading). Prefer one decrypt API shared with native.
-  2. **CDM on WASM.** Keep the existing Rust Widevine CDM + session/renewal stack. Replace
-     native-only device loading (`DEVICE_PATH` / filesystem) with a WASM-friendly injector
-     (bytes from JS, `fetch`, or embed). License POSTs already work via `FetchClient` /
-     `WidevineLicenseFetcher`.
-  3. **Wire through `dashplay-wasm`.** Enable `drm` on the WASM crate; demo loads a device,
-     plays encrypted fixtures, appends **decrypted** fMP4 to MSE (same as clear content).
+  **Done:**
+  1. **`mp4decrypt` / Bento4 for `wasm32`.** Fork of `bento4-rs` with wasm stubs outside
+     the Bento4 submodule + wasi-sdk C++ build; shared `Ap4CencDecryptingProcessor` API.
+  2. **CDM on WASM.** Device injector (`set_widevine_device_bytes`); DRM timing uses
+     `platform::{Instant, utc_now}`; `getrandom`/`js` for challenges.
+  3. **`dashplay-wasm`.** `drm` enabled; demo loads `.wvd`, optional license URL,
+     appends decrypted fMP4 to MSE; minimal WASI fd stubs via import map.
+
+  **Remaining:**
   4. **Optional EME host path.** Separate later option for apps that must use the browser
      CDM (`MediaKeys`) instead of a provided device: pass-through encrypted segments + DRM
      signalling events. Not a substitute for the CDM + `mp4decrypt` goal.

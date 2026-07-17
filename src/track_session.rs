@@ -92,7 +92,7 @@ mod tests {
         }
         if let Ok(mut anchor) = session.inband_prt_anchor().lock() {
             *anchor = Some(ProducerReferenceAnchor {
-                wall_clock_time: chrono::Utc::now(),
+                wall_clock_time: crate::platform::utc_now(),
                 pta_ticks: 1,
                 timescale: 1,
             });

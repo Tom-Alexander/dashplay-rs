@@ -1,12 +1,12 @@
 use super::cdm::{CdmLicenseRequest, KeyType};
 use super::decrypt;
 use super::renewal::{RenewalState, schedule_from_license_message};
+use crate::platform::Instant;
 use bytes::Bytes;
 use mp4decrypt::Ap4CencDecryptingProcessor;
 use pssh_box::{PsshBox, ToBytes};
 use std::collections::HashMap;
 use std::sync::{Arc, RwLock};
-use std::time::Instant;
 use thiserror::Error;
 
 #[derive(Clone, Debug, Eq, PartialEq, Hash)]

@@ -95,6 +95,14 @@
           value="https://dash.akamaized.net/akamai/bbb_30fps/bbb_30fps.mpd"
         />
       </label>
+      <label>
+        License URL (optional override)
+        <input id="license-url" type="url" placeholder="from MPD ContentProtection when empty" />
+      </label>
+      <label>
+        Widevine device (.wvd) — required for encrypted streams
+        <input id="device-wvd" type="file" accept=".wvd,application/octet-stream" />
+      </label>
       <button id="play-button" type="submit">Play</button>
     </form>
 
@@ -102,6 +110,14 @@
     <div id="status">Idle</div>
     <div id="error"></div>
 
+    <!-- wasm-bindgen emits bare `wasi_snapshot_preview1` imports for Bento4/libc. -->
+    <script type="importmap">
+      {
+        "imports": {
+          "wasi_snapshot_preview1": "./wasi_snapshot_preview1.js"
+        }
+      }
+    </script>
     <script type="module" src="./app.js"></script>
   </body>
 </html>

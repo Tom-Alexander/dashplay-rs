@@ -124,6 +124,14 @@ pub enum PlayerEvent {
         /// Descriptive MPD metadata (`ProgramInformation`, `Metrics`, period labels, …).
         metadata: ManifestMetadata,
     },
+    /// A live MPD patch fetch/apply failed; the player fell back to a full MPD refresh.
+    ///
+    /// Non-fatal: playback continues with the full manifest. Emitted once per refresh that
+    /// attempted patching and then abandoned it.
+    ManifestPatchFailed {
+        /// Why the patch path was abandoned for this refresh.
+        reason: String,
+    },
     /// Buffer occupancy changed for this track (media-clock estimate or consumer report).
     BufferUpdated {
         /// Seconds of media buffered ahead of the playhead.
@@ -377,6 +385,12 @@ mod tests {
                 is_dynamic: false,
                 media_presentation_duration: None,
                 metadata: Default::default(),
+            }
+            .is_terminal()
+        );
+        assert!(
+            !PlayerEvent::ManifestPatchFailed {
+                reason: "invalid patch".into(),
             }
             .is_terminal()
         );

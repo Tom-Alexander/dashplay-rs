@@ -694,6 +694,7 @@ dependencies = [
  "tokio",
  "tokio-stream",
  "tokio-util",
+ "tracing",
  "url",
  "wasm-bindgen",
  "wasm-bindgen-futures",

@@ -17,7 +17,7 @@ A pure Rust implementation of an MPEG-DASH player library.
 - **Modular API** — High-level [`Player`](#player) wrapper or lower-level [`MediaPlayer`](#mediaplayer) for finer control
 - **Playback control** — `seek`, `pause`, `resume`, `stop`, and a [`PlaybackState`](#playbackstate) lifecycle machine
 - **Async delivery** — Tokio-based fragment delivery via broadcast channels (`Init`, `Segment`, `End` events)
-- **Rich event model** — Lifecycle and observability events (`ManifestLoaded`, `BufferUpdated`, `BitrateChanged`, `PlaybackStarted`/`PlaybackEnded`, `Error`) plus MPD/in-band timed events (`MediaEvent`, including SCTE-35 ad markers) alongside fragment events
+- **Rich event model** — Lifecycle and observability events (`ManifestLoaded`, `ManifestPatchFailed`, `BufferUpdated`, `BitrateChanged`, `PlaybackStarted`/`PlaybackEnded`, `Error`) plus MPD/in-band timed events (`MediaEvent`, including SCTE-35 ad markers) alongside fragment events
 - **Metrics API** — Per-track throughput, buffer level, startup delay, rebuffer events, and bitrate-switch history via [`TrackMetrics`](#metrics)
 
 ## Usage
@@ -459,6 +459,7 @@ Events emitted on a single adaptation-set stream. **Fragment** events carry medi
 | `Init(Bytes)` | Fragment | Initialization segment when declared (`ftyp` + `moov`, TTML header, fMP4 text init, etc.) |
 | `Segment { number, time, presentation_time, sub_number, data }` | Fragment | Media segment; `presentation_time` is seconds from the start of the presentation |
 | `ManifestLoaded { is_dynamic, media_presentation_duration, metadata }` | Lifecycle | An MPD was fetched and parsed (initial load or live refresh) |
+| `ManifestPatchFailed { reason }` | Observability | Live MPD patch failed; player fell back to a full MPD refresh (non-fatal) |
 | `BufferUpdated { buffer_s }` | Observability | Buffer occupancy changed (media-clock estimate or [`BufferFeedback::report`](#bufferfeedback)) |
 | `PlayheadUpdated { presentation_time }` | Observability | Session presentation time changed (media clock, seek target, or clock init) |
 | `BitrateChanged { from_quality_index, to_quality_index, from_bitrate_bps, to_bitrate_bps }` | Observability | The active representation changed on the ladder |

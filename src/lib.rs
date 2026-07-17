@@ -24,6 +24,7 @@
 //!             PlayerEvent::BufferUpdated { .. }
 //!             | PlayerEvent::BitrateChanged { .. }
 //!             | PlayerEvent::ManifestLoaded { .. }
+//!             | PlayerEvent::ManifestPatchFailed { .. }
 //!             | PlayerEvent::PlaybackStarted
 //!             | PlayerEvent::PlayheadUpdated { .. }
 //!             | PlayerEvent::PlaybackRateSuggested { .. }

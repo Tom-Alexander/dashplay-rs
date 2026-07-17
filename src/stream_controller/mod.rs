@@ -30,8 +30,8 @@ use super::track_session::TrackSessionState;
 use super::types::{PeriodTransitionKind, PlayerEvent};
 
 use manifest_loop::{
-    broadcast_manifest_loaded, manifest_tick, periods_to_play, refresh_manifest,
-    should_end_after_tick,
+    broadcast_manifest_loaded, broadcast_manifest_patch_failed, manifest_tick, periods_to_play,
+    refresh_manifest, should_end_after_tick,
 };
 use mpd_events::MpdEventDedup;
 use period_context::{
@@ -89,7 +89,7 @@ impl PlaybackLoopState {
                 playback.set_state(PlaybackState::LoadingManifest);
 
                 let steering_hints = steering_sync_hints(&tracks, &manifest_session);
-                refresh_manifest(
+                let refresh = refresh_manifest(
                     &mut manifest_session,
                     &client,
                     &manifest_uri,
@@ -98,6 +98,9 @@ impl PlaybackLoopState {
                     &steering_hints,
                 )
                 .await?;
+                if let Some(reason) = refresh.patch_fallback.as_deref() {
+                    broadcast_manifest_patch_failed(&tracks, reason);
+                }
                 let tick = manifest_tick(&manifest_session, &client).await?;
                 broadcast_manifest_loaded(&tracks, tick.mpd, tick.xml);
 

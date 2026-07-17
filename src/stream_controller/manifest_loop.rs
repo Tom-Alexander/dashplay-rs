@@ -10,7 +10,9 @@ use super::super::PlayerError;
 use super::super::clock::utc_timing;
 use super::super::http::SharedHttpClient;
 use super::super::manifest::{self, SegmentTemplateEndNumbers};
-use super::super::manifest_lifecycle::{ContentSteeringState, ManifestSession, SteeringSyncHints};
+use super::super::manifest_lifecycle::{
+    ContentSteeringState, ManifestRefreshOutcome, ManifestSession, SteeringSyncHints,
+};
 use super::super::types::{PlayerEvent, PlayerTrack};
 
 /// Parsed manifest state produced by one refresh cycle.
@@ -33,11 +35,24 @@ pub(crate) async fn refresh_manifest(
     cmcd: Option<&crate::cmcd::CmcdSession>,
     http_retry: &crate::http::HttpRetryConfig,
     steering_hints: &SteeringSyncHints,
-) -> Result<(), PlayerError> {
-    session
+) -> Result<ManifestRefreshOutcome, PlayerError> {
+    let outcome = session
         .refresh(client, manifest_uri, cmcd, http_retry)
         .await?;
-    session.sync_steering(client, steering_hints).await
+    session.sync_steering(client, steering_hints).await?;
+    Ok(outcome)
+}
+
+pub(crate) fn broadcast_manifest_patch_failed(tracks: &[PlayerTrack], reason: &str) {
+    tracing::warn!(
+        reason = %reason,
+        "MPD patch failed; falling back to full manifest"
+    );
+    for t in tracks {
+        let _ = t.tx.send(PlayerEvent::ManifestPatchFailed {
+            reason: reason.to_string(),
+        });
+    }
 }
 
 pub(crate) async fn manifest_tick<'a>(

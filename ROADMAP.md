@@ -14,9 +14,9 @@ Status: `[ ]` not started · `[~]` partial.
 
 ## Correctness & standards
 
-- [~] **Content steering / MPD updates.** `Location`, steering reorder, and MPD patch
-  done; remaining: `PatchLocation@ttl`, multiple patch locations, patch failure
-  surfacing, conditional GET.
+- [~] **Content steering / MPD updates.** `Location`, steering reorder, MPD patch,
+  `PatchLocation@ttl`, multi-location select, and invalid-patch → full refresh with
+  `ManifestPatchFailed` done; remaining: conditional GET.
   *dash.js:* MPD patch with `PatchLocation` (+ ttl), multi-location select, invalid-patch
   → full refresh; content steering with DCSM TTL / `PATHWAY-PRIORITY` / `RELOAD-URI`.
   No dedicated player-side conditional GET (browser cache may 304).

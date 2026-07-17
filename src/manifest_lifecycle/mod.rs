@@ -8,5 +8,5 @@ mod xlink;
 pub(crate) use content_steering::{
     ContentSteeringState, SteeringSyncHints, next_refresh_sleep, order_base_urls_for_steering,
 };
-pub(crate) use update::ManifestSession;
+pub(crate) use update::{ManifestRefreshOutcome, ManifestSession};
 pub(crate) use xlink::resolve_period_xlinks;

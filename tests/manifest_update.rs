@@ -225,7 +225,7 @@ async fn serve_patch_manifest(State(state): State<PatchLiveState>) -> Response {
      timeShiftBufferDepth="PT20S"
      suggestedPresentationDelay="PT2S"
      minBufferTime="PT2S">
-  <PatchLocation ttl="60">patch.mpp</PatchLocation>
+  <PatchLocation ttl="315360000">patch.mpp</PatchLocation>
   <UTCTiming schemeIdUri="urn:mpeg:dash:utc:direct:2014" value="{wall_now}"/>
   <Period>
     <AdaptationSet mimeType="video/mp4" contentType="video">

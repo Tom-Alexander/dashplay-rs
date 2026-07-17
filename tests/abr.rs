@@ -30,8 +30,8 @@ async fn abr_starts_at_high_representation_with_full_buffer() {
 
 #[tokio::test]
 async fn quality_constraints_max_bitrate_selects_low_representation()
--> Result<(), dashplayrs::PlayerError> {
-    use dashplayrs::{Player, QualityConstraints};
+-> Result<(), dashplay::PlayerError> {
+    use dashplay::{Player, QualityConstraints};
 
     let server = FixtureServer::spawn("vod_abr").await;
     let player = Player::new(server.manifest_url.as_str(), None)?
@@ -66,8 +66,8 @@ async fn quality_constraints_max_bitrate_selects_low_representation()
 
 #[tokio::test]
 async fn quality_constraints_data_saver_selects_lowest_representation()
--> Result<(), dashplayrs::PlayerError> {
-    use dashplayrs::{Player, QualityConstraints};
+-> Result<(), dashplay::PlayerError> {
+    use dashplay::{Player, QualityConstraints};
 
     let server = FixtureServer::spawn("vod_abr").await;
     let player = Player::new(server.manifest_url.as_str(), None)?
@@ -94,9 +94,9 @@ async fn quality_constraints_data_saver_selects_lowest_representation()
 }
 
 #[tokio::test]
-async fn quality_constraints_fixed_quality_pins_representation()
--> Result<(), dashplayrs::PlayerError> {
-    use dashplayrs::{Player, QualityConstraints};
+async fn quality_constraints_fixed_quality_pins_representation() -> Result<(), dashplay::PlayerError>
+{
+    use dashplay::{Player, QualityConstraints};
 
     let server = FixtureServer::spawn("vod_abr").await;
     // Ladder is low(0) then high(1); pin to low even with a full buffer.
@@ -191,14 +191,14 @@ async fn abr_downgrades_and_re_emits_init_when_buffer_drains() {
 }
 
 #[tokio::test]
-async fn dropped_frames_cap_forces_quality_downswitch() -> Result<(), dashplayrs::PlayerError> {
-    use dashplayrs::{PlaybackQualitySample, Player, PlayerEvent};
+async fn dropped_frames_cap_forces_quality_downswitch() -> Result<(), dashplay::PlayerError> {
+    use dashplay::{PlaybackQualitySample, Player, PlayerEvent};
     use std::time::Duration as StdDuration;
 
     let server = FixtureServer::spawn("vod_abr").await;
     // Pin ABR to the high rung so only the dropped-frames rule can force a down-switch.
     let player = Player::new(server.manifest_url.as_str(), None)?
-        .with_abr_factory(dashplayrs::shared_abr_factory(FixedHighAbrFactory));
+        .with_abr_factory(dashplay::shared_abr_factory(FixedHighAbrFactory));
     let outputs = player.start_tracks().await?;
     let buffer_feedback = outputs.buffer_feedback(0).expect("one track");
     let quality_feedback = outputs.playback_quality_feedback(0).expect("one track");
@@ -289,19 +289,19 @@ async fn dropped_frames_cap_forces_quality_downswitch() -> Result<(), dashplayrs
 struct FixedHighAbrFactory;
 
 struct FixedHighAbrController {
-    rungs: Vec<dashplayrs::QualityRung>,
+    rungs: Vec<dashplay::QualityRung>,
 }
 
-impl dashplayrs::AbrFactory for FixedHighAbrFactory {
+impl dashplay::AbrFactory for FixedHighAbrFactory {
     fn create(
         &self,
         adaptation_set: &dash_mpd::AdaptationSet,
-        ctx: &dashplayrs::AbrCreateContext<'_>,
-    ) -> Option<Box<dyn dashplayrs::AbrController>> {
+        ctx: &dashplay::AbrCreateContext<'_>,
+    ) -> Option<Box<dyn dashplay::AbrController>> {
         let rungs = if let Some(ladder) = ctx.quality_ladder {
             ladder.to_vec()
         } else {
-            dashplayrs::quality_ladder_from_adaptation_set(adaptation_set)
+            dashplay::quality_ladder_from_adaptation_set(adaptation_set)
         };
         if rungs.is_empty() {
             return None;
@@ -310,7 +310,7 @@ impl dashplayrs::AbrFactory for FixedHighAbrFactory {
     }
 }
 
-impl dashplayrs::AbrController for FixedHighAbrController {
+impl dashplay::AbrController for FixedHighAbrController {
     fn update_buffer(&mut self, _buffer_s: f64) {}
 
     fn observe_segment_download(
@@ -321,15 +321,15 @@ impl dashplayrs::AbrController for FixedHighAbrController {
     ) {
     }
 
-    fn decide(&mut self) -> dashplayrs::AbrDecision {
+    fn decide(&mut self) -> dashplay::AbrDecision {
         let quality_index = self.rungs.len().saturating_sub(1);
-        dashplayrs::AbrDecision {
+        dashplay::AbrDecision {
             quality_index,
             bitrate_bps: self.rungs[quality_index].bitrate_bps,
         }
     }
 
-    fn rung_for_quality_index(&self, quality_index: usize) -> &dashplayrs::QualityRung {
+    fn rung_for_quality_index(&self, quality_index: usize) -> &dashplay::QualityRung {
         &self.rungs[quality_index]
     }
 
@@ -339,9 +339,9 @@ impl dashplayrs::AbrController for FixedHighAbrController {
 }
 
 #[tokio::test]
-async fn custom_abr_factory_selects_fixed_representation() -> Result<(), dashplayrs::PlayerError> {
+async fn custom_abr_factory_selects_fixed_representation() -> Result<(), dashplay::PlayerError> {
     use dash_mpd::AdaptationSet;
-    use dashplayrs::{
+    use dashplay::{
         AbrController, AbrDecision, AbrFactory, Player, QualityRung,
         quality_ladder_from_adaptation_set, shared_abr_factory,
     };
@@ -359,7 +359,7 @@ async fn custom_abr_factory_selects_fixed_representation() -> Result<(), dashpla
         fn create(
             &self,
             adaptation_set: &AdaptationSet,
-            ctx: &dashplayrs::AbrCreateContext<'_>,
+            ctx: &dashplay::AbrCreateContext<'_>,
         ) -> Option<Box<dyn AbrController>> {
             let rungs = if let Some(ladder) = ctx.quality_ladder {
                 ladder.to_vec()
@@ -437,8 +437,8 @@ async fn custom_abr_factory_selects_fixed_representation() -> Result<(), dashpla
 }
 
 #[tokio::test]
-async fn lol_plus_abr_factory_plays_fixture() -> Result<(), dashplayrs::PlayerError> {
-    use dashplayrs::{LolPlusAbrFactory, Player, shared_abr_factory};
+async fn lol_plus_abr_factory_plays_fixture() -> Result<(), dashplay::PlayerError> {
+    use dashplay::{LolPlusAbrFactory, Player, shared_abr_factory};
 
     let server = FixtureServer::spawn("vod_abr").await;
     let player = Player::new(server.manifest_url.as_str(), None)?.with_abr_factory(
@@ -471,9 +471,9 @@ async fn lol_plus_abr_factory_plays_fixture() -> Result<(), dashplayrs::PlayerEr
 
 #[tokio::test]
 async fn adaptation_set_switching_merges_ladder_and_fetches_peer_as()
--> Result<(), dashplayrs::PlayerError> {
+-> Result<(), dashplay::PlayerError> {
     use dash_mpd::AdaptationSet;
-    use dashplayrs::{
+    use dashplay::{
         AbrController, AbrDecision, AbrFactory, Player, QualityRung, TrackInfo, TrackKind,
         quality_ladder_from_adaptation_set, shared_abr_factory,
     };
@@ -492,7 +492,7 @@ async fn adaptation_set_switching_merges_ladder_and_fetches_peer_as()
         fn create(
             &self,
             adaptation_set: &AdaptationSet,
-            ctx: &dashplayrs::AbrCreateContext<'_>,
+            ctx: &dashplay::AbrCreateContext<'_>,
         ) -> Option<Box<dyn AbrController>> {
             let rungs = if let Some(ladder) = ctx.quality_ladder {
                 ladder.to_vec()

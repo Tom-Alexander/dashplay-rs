@@ -3,7 +3,7 @@
 use std::cell::RefCell;
 use std::rc::Rc;
 
-use dashplayrs::{
+use dashplay::{
     BufferFeedback, MediaPlayer, PlayerError, PlayerEvent, TrackKind, TrackPreference,
     TrackSelection, set_widevine_device_bytes,
 };
@@ -201,8 +201,8 @@ async fn run_playback(
 
         if let Some(callback) = on_track {
             let value = serde_wasm_bindgen::to_value(&info).map_err(|err| {
-                PlayerError::Segment(dashplayrs::SegmentError::Request(
-                    dashplayrs::HttpError::Transport(err.to_string()),
+                PlayerError::Segment(dashplay::SegmentError::Request(
+                    dashplay::HttpError::Transport(err.to_string()),
                 ))
             })?;
             let _ = callback.call1(callback, &value);
@@ -286,14 +286,14 @@ async fn consume_track_events(
                             break;
                         }
                         Ok(PlayerEvent::Error(err)) => {
-                            return Err(PlayerError::Segment(dashplayrs::SegmentError::Request(
-                                dashplayrs::HttpError::Transport(err.0),
+                            return Err(PlayerError::Segment(dashplay::SegmentError::Request(
+                                dashplay::HttpError::Transport(err.0),
                             )));
                         }
                         Ok(_) => {}
                         Err(RecvError::Lagged(_)) => {
-                            return Err(PlayerError::Segment(dashplayrs::SegmentError::Request(
-                                dashplayrs::HttpError::Transport(
+                            return Err(PlayerError::Segment(dashplay::SegmentError::Request(
+                                dashplay::HttpError::Transport(
                                     "event receiver lagged; increase consumer throughput".into(),
                                 ),
                             )));

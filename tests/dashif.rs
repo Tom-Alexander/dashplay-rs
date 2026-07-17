@@ -17,7 +17,7 @@ use common::{
     segment_numbers, segment_payloads,
 };
 use conformance::validate_iop;
-use dashplayrs::drm::mpd::parse_mpd_drm_info;
+use dashplay::drm::mpd::parse_mpd_drm_info;
 
 const VOD_TIMEOUT: std::time::Duration = std::time::Duration::from_secs(10);
 const LIVE_TIMEOUT: std::time::Duration = std::time::Duration::from_millis(800);
@@ -458,7 +458,7 @@ async fn dashif_drm_playback_requires_device() {
     assert!(
         matches!(
             err,
-            dashplayrs::PlayerError::Drm(dashplayrs::DrmError::License(_))
+            dashplay::PlayerError::Drm(dashplay::DrmError::License(_))
         ),
         "unexpected error: {err:?}"
     );
@@ -511,7 +511,7 @@ fn dashif_trick_play_mpd_parses() {
         })
         .expect("trick-mode adaptation set");
     assert_eq!(trick.representations[0].maxPlayoutRate, Some(24.0));
-    let ladder = dashplayrs::quality_ladder_from_adaptation_set(trick);
+    let ladder = dashplay::quality_ladder_from_adaptation_set(trick);
     assert_eq!(ladder.len(), 1);
     assert_eq!(ladder[0].max_playout_rate, Some(24.0));
     assert_eq!(ladder[0].coding_dependency, None);
@@ -535,18 +535,18 @@ async fn dashif_trick_play_plays_main_video_track() {
 #[tokio::test]
 async fn dashif_trick_play_track_delivers_when_enabled() {
     let server = FixtureServer::spawn("dashif_trick_play").await;
-    let player = dashplayrs::Player::new(server.manifest_url.as_str(), None)
+    let player = dashplay::Player::new(server.manifest_url.as_str(), None)
         .expect("player")
         .with_track_selection(
-            dashplayrs::TrackSelection::default()
-                .with_video(dashplayrs::TrackPreference::default().max_tracks(0))
-                .with_trick_play(dashplayrs::TrackPreference::default().max_tracks(1)),
+            dashplay::TrackSelection::default()
+                .with_video(dashplay::TrackPreference::default().max_tracks(0))
+                .with_trick_play(dashplay::TrackPreference::default().max_tracks(1)),
         );
     let outputs = player.start_tracks().await.expect("start");
 
     assert_eq!(
         outputs.tracks[0].info().kind,
-        dashplayrs::TrackKind::TrickPlay
+        dashplay::TrackKind::TrickPlay
     );
     let mut rx = outputs.tracks.into_iter().next().unwrap().into_receiver();
     let events = common::collect_events(&mut rx, VOD_TIMEOUT).await;
@@ -594,7 +594,7 @@ fn dashif_encrypted_vector_mpd_parses_and_validates_iop() {
         info.periods[0].adaptation_sets[0]
             .effective
             .protection_schemes,
-        vec![dashplayrs::drm::CommonEncryptionScheme::Cenc]
+        vec![dashplay::drm::CommonEncryptionScheme::Cenc]
     );
 }
 
@@ -638,7 +638,7 @@ async fn dashif_remote_widevine_encrypted_playback() {
         "https://media.axprod.net/TestVectors/v7-MultiDRM-SingleKey/Manifest_1080p.mpd".to_string()
     });
 
-    let player = dashplayrs::Player::new(&manifest_url, Some(&license_url)).expect("player");
+    let player = dashplay::Player::new(&manifest_url, Some(&license_url)).expect("player");
     let outputs = player.start_tracks().await.expect("start");
     let buffer_feedback = outputs.buffer_feedback(0).expect("track");
     let drain = common::spawn_playback_buffer_simulation(buffer_feedback, 25.0);

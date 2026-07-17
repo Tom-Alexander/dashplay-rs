@@ -1,6 +1,6 @@
 # dashplay-wasm
 
-Browser proof-of-concept for [`dashplayrs`](../../): compiles the DASH segment pipeline to
+Browser proof-of-concept for [`dashplay`](../../): compiles the DASH segment pipeline to
 WebAssembly, fetches fMP4 fragments with the browser `fetch` API, optionally decrypts
 Widevine/CENC in-pipeline (CDM + Bento4 `mp4decrypt`), and renders clear media with
 [Media Source Extensions](https://developer.mozilla.org/en-US/docs/Web/API/Media_Source_Extensions_API).
@@ -51,13 +51,13 @@ Open http://localhost:8080.
   Browser                         WASM (dashplay-wasm)
   -------                         --------------------
   .wvd file ────────────────────► set_widevine_device_bytes
-  fetch ◄──────────────────────── dashplayrs::FetchClient (+ license POST)
+  fetch ◄──────────────────────── dashplay::FetchClient (+ license POST)
   Bento4 mp4decrypt ───────────── CENC decrypt (wasi-sdk build)
   MSE SourceBuffer ◄─ on_fragment ─ clear init + media fMP4
   <video>            ◄────────────── decrypted bytes only
 ```
 
-- **`FetchClient`** — library [`dashplayrs::FetchClient`](../../src/http/fetch.rs) (default on
+- **`FetchClient`** — library [`dashplay::FetchClient`](../../src/http/fetch.rs) (default on
   `wasm32` without `reqwest-http`) uses `window.fetch`.
 - **`DashPlayer`** wraps [`MediaPlayer::start`](../../src/media_player.rs) + [`PlayerOutputs::run`](../../src/types.rs).
 - **`dist/app.js`** maps each audio/video track to a `SourceBuffer` and loads an optional

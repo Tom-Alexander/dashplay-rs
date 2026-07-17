@@ -17,7 +17,7 @@
 use std::path::{Path, PathBuf};
 use std::process::Command;
 
-use dashplayrs::{PlayerEvent, PlayerTrackOutput};
+use dashplay::{PlayerEvent, PlayerTrackOutput};
 use tokio::sync::broadcast;
 
 #[derive(Debug)]
@@ -96,7 +96,7 @@ async fn remux_to_mp4(
     output: &Path,
 ) -> Result<(), Box<dyn std::error::Error>> {
     let temp_dir =
-        std::env::temp_dir().join(format!("dashplayrs-write-stream-{}", std::process::id()));
+        std::env::temp_dir().join(format!("dashplay-write-stream-{}", std::process::id()));
     tokio::fs::create_dir_all(&temp_dir).await?;
 
     let mut inputs = Vec::new();
@@ -152,7 +152,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     let args =
         parse_args().map_err(|e| std::io::Error::new(std::io::ErrorKind::InvalidInput, e))?;
 
-    let player = dashplayrs::Player::new(&args.manifest_url, args.license_url.as_deref())?;
+    let player = dashplay::Player::new(&args.manifest_url, args.license_url.as_deref())?;
     let outputs = player.start_tracks().await?;
 
     let collectors = outputs

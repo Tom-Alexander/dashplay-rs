@@ -7,7 +7,7 @@ use common::{
     play_single_track, play_single_track_live, playback_rate_suggestions, recv_matching,
     segment_numbers, segment_payloads,
 };
-use dashplayrs::PlayerEvent;
+use dashplay::PlayerEvent;
 
 const LIVE_TIMEOUT: std::time::Duration = std::time::Duration::from_millis(800);
 const REFRESH_TIMEOUT: std::time::Duration = std::time::Duration::from_secs(2);
@@ -299,7 +299,7 @@ async fn live_partial_segment_transfer_emits_chunked_cmaf_fragments() {
 #[tokio::test]
 async fn live_dvr_seek_repositions_within_time_shift_buffer() {
     let server = FixtureServer::spawn("live_duration").await;
-    let player = dashplayrs::Player::new(server.manifest_url.as_str(), None).expect("player");
+    let player = dashplay::Player::new(server.manifest_url.as_str(), None).expect("player");
     let outputs = player.start_tracks().await.expect("start");
     let buffer = outputs.buffer_feedback(0).expect("track");
     let _ = buffer.report(25.0);

@@ -3,7 +3,7 @@ name = "dashplay-wasm"
 version = "0.1.0"
 edition = "2024"
 publish = false
-description = "Browser WASM proof-of-concept renderer for dashplayrs (clear + Widevine DRM)"
+description = "Browser WASM proof-of-concept renderer for dashplay (clear + Widevine DRM)"
 
 [lib]
 crate-type = ["cdylib", "rlib"]
@@ -11,7 +11,7 @@ crate-type = ["cdylib", "rlib"]
 [dependencies]
 bytes = "1"
 console_error_panic_hook = "0.1"
-dashplayrs = { path = "../..", default-features = false, features = ["drm"] }
+dashplay = { path = "../..", default-features = false, features = ["drm"] }
 futures-util = "0.3"
 getrandom = { version = "0.2", features = ["js"] }
 js-sys = "0.3"

@@ -1,6 +1,6 @@
 # Architecture
 
-`dashplayrs` is a pure Rust implementation of an MPEG-DASH player.
+`dashplay` is a pure Rust implementation of an MPEG-DASH player.
 
 Its architecture is heavily inspired by the concepts used in `dash.js`, but it is **not** a port of the JavaScript implementation.
 
@@ -424,7 +424,7 @@ This avoids string-based event names.
 
 Many concepts correspond directly.
 
-| dash.js | dashplayrs |
+| dash.js | dashplay |
 |----------|------------|
 | MediaPlayer | Player |
 | StreamProcessor | Scheduler + Timeline |

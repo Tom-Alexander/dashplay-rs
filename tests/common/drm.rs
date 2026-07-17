@@ -10,7 +10,7 @@ use axum::{
     routing::{get, post},
 };
 use bytes::Bytes;
-use dashplayrs::Player;
+use dashplay::Player;
 use std::collections::HashMap;
 use std::future::Future;
 use std::pin::Pin;
@@ -133,8 +133,8 @@ async fn serve_media(
 pub async fn play_single_track_with_license_fetcher(
     manifest_url: &Url,
     timeout: std::time::Duration,
-    fetcher: dashplayrs::WidevineLicenseFetcher,
-) -> Result<Vec<dashplayrs::PlayerEvent>, dashplayrs::PlayerError> {
+    fetcher: dashplay::WidevineLicenseFetcher,
+) -> Result<Vec<dashplay::PlayerEvent>, dashplay::PlayerError> {
     let player = Player::new(manifest_url.as_str(), None)?.with_license_fetcher(fetcher);
     let outputs = player.start_tracks().await?;
     let buffer_feedback = outputs.buffer_feedback(0).expect("one track");
@@ -153,12 +153,12 @@ pub async fn play_single_track_with_license_fetcher(
 }
 
 /// Build a license fetcher that always returns `response` regardless of URL/challenge.
-pub fn static_license_fetcher(response: Vec<u8>) -> dashplayrs::WidevineLicenseFetcher {
+pub fn static_license_fetcher(response: Vec<u8>) -> dashplay::WidevineLicenseFetcher {
     let bytes = Bytes::from(response);
     Arc::new(move |_url: Url, _challenge: Vec<u8>| {
         let payload = bytes.clone();
         Box::pin(async move { Ok(payload) })
-            as Pin<Box<dyn Future<Output = Result<Bytes, dashplayrs::DrmError>> + Send>>
+            as Pin<Box<dyn Future<Output = Result<Bytes, dashplay::DrmError>> + Send>>
     })
 }
 
@@ -291,7 +291,7 @@ async fn serve_rotating_media(
 pub fn counting_license_fetcher(
     response: Vec<u8>,
     counter: Arc<AtomicUsize>,
-) -> dashplayrs::WidevineLicenseFetcher {
+) -> dashplay::WidevineLicenseFetcher {
     let bytes = Bytes::from(response);
     Arc::new(move |_url: Url, _challenge: Vec<u8>| {
         let payload = bytes.clone();
@@ -299,6 +299,6 @@ pub fn counting_license_fetcher(
         Box::pin(async move {
             counter.fetch_add(1, Ordering::Relaxed);
             Ok(payload)
-        }) as Pin<Box<dyn Future<Output = Result<Bytes, dashplayrs::DrmError>> + Send>>
+        }) as Pin<Box<dyn Future<Output = Result<Bytes, dashplay::DrmError>> + Send>>
     })
 }

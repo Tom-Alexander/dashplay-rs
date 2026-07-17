@@ -1,15 +1,15 @@
 //! Pure Rust MPEG-DASH player library.
 //!
-//! `dashplayrs` implements a modular playback pipeline for MPEG-DASH manifests:
+//! `dashplay` implements a modular playback pipeline for MPEG-DASH manifests:
 //! manifest parsing, timeline resolution, adaptive bitrate selection, segment
 //! scheduling, HTTP download, and optional Widevine decryption.
 //!
 //! # Quick start
 //!
 //! ```no_run
-//! use dashplayrs::{Player, PlayerEvent};
+//! use dashplay::{Player, PlayerEvent};
 //!
-//! # async fn example() -> Result<(), dashplayrs::PlayerError> {
+//! # async fn example() -> Result<(), dashplay::PlayerError> {
 //! let player = Player::new("https://example.com/manifest.mpd", None)?;
 //! let outputs = player.start_tracks().await?;
 //!
@@ -42,7 +42,7 @@
 //! # }
 //! ```
 //!
-//! See [`ARCHITECTURE.md`](https://github.com/dashplayrs/dashplayrs/blob/main/ARCHITECTURE.md)
+//! See [`ARCHITECTURE.md`](https://github.com/dashplay/dashplay/blob/main/ARCHITECTURE.md)
 //! for the component layout and design goals.
 
 use thiserror::Error;

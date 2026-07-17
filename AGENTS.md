@@ -1,8 +1,8 @@
 # AGENTS.md
 
-# dashplayrs
+# dashplay
 
-`dashplayrs` is a pure Rust MPEG-DASH player library.
+`dashplay` is a pure Rust MPEG-DASH player library.
 
 This repository should follow Rust community best practices and produce production-quality, maintainable code.
 

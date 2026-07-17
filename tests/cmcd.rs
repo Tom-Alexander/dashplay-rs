@@ -11,7 +11,7 @@ use axum::{
     routing::get,
 };
 use common::{fixture_dir, load_fixture_files_public, spawn_playback_buffer_simulation};
-use dashplayrs::{CmcdConfig, HttpClient, HttpRequest, HttpResponse, Player, PlayerEvent, shared};
+use dashplay::{CmcdConfig, HttpClient, HttpRequest, HttpResponse, Player, PlayerEvent, shared};
 use std::collections::HashMap;
 use std::sync::{Arc, Mutex};
 use std::time::Duration;
@@ -192,7 +192,7 @@ async fn http_stream_response_preserves_headers_via_default() {
         fn send<'a>(
             &'a self,
             request: HttpRequest,
-        ) -> dashplayrs::HttpFuture<'a, Result<HttpResponse, dashplayrs::HttpError>> {
+        ) -> dashplay::HttpFuture<'a, Result<HttpResponse, dashplay::HttpError>> {
             Box::pin(async move {
                 Ok(HttpResponse::new(
                     200,

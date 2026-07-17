@@ -4,8 +4,8 @@ use common::drm::{
     RotatingDrmMockServer, counting_license_fetcher, play_single_track_with_license_fetcher,
 };
 use common::read_fixture;
-use dashplayrs::drm::mpd::parse_mpd_drm_info;
-use dashplayrs::drm::{License, WidevineSessionKey};
+use dashplay::drm::mpd::parse_mpd_drm_info;
+use dashplay::drm::{License, WidevineSessionKey};
 use std::sync::Arc;
 use std::sync::atomic::AtomicUsize;
 
@@ -68,7 +68,7 @@ async fn drm_playback_without_device_path_fails_before_network() {
     assert!(
         matches!(
             err,
-            dashplayrs::PlayerError::Drm(dashplayrs::DrmError::License(_))
+            dashplay::PlayerError::Drm(dashplay::DrmError::License(_))
         ),
         "unexpected error: {err:?}"
     );
@@ -166,7 +166,7 @@ async fn live_key_rotation_mpd_refresh_acquires_both_pssh_sessions() {
 #[test]
 fn in_band_init_fixture_exposes_widevine_pssh() {
     let init = common::read_fixture_bytes("drm_in_band_init", "init.mp4");
-    let info = dashplayrs::drm::mp4::extract_in_band_drm(&init, None).expect("parse init");
+    let info = dashplay::drm::mp4::extract_in_band_drm(&init, None).expect("parse init");
     assert_eq!(info.widevine_pssh.len(), 1);
 }
 
@@ -263,7 +263,7 @@ async fn license_manager_reuses_session_on_unchanged_pssh() {
 
 #[test]
 fn mpd_parses_cbcs_mp4protection_scheme() {
-    use dashplayrs::drm::CommonEncryptionScheme;
+    use dashplay::drm::CommonEncryptionScheme;
 
     let xml = read_fixture("drm_cbcs", "manifest.mpd");
     let info = parse_mpd_drm_info(&xml).expect("parse drm");
@@ -282,7 +282,7 @@ fn mpd_parses_cbcs_mp4protection_scheme() {
 
 #[test]
 fn mpd_parses_cenc_mp4protection_scheme() {
-    use dashplayrs::drm::CommonEncryptionScheme;
+    use dashplay::drm::CommonEncryptionScheme;
 
     let xml = read_fixture("drm_cenc", "manifest.mpd");
     let info = parse_mpd_drm_info(&xml).expect("parse drm");
@@ -296,8 +296,8 @@ fn mpd_parses_cenc_mp4protection_scheme() {
 
 #[test]
 fn in_band_schm_reports_cbcs() {
-    use dashplayrs::drm::CommonEncryptionScheme;
-    use dashplayrs::drm::mp4::extract_in_band_drm;
+    use dashplay::drm::CommonEncryptionScheme;
+    use dashplay::drm::mp4::extract_in_band_drm;
 
     let init = common::read_fixture_bytes("drm_cbcs", "init.mp4");
     let info = extract_in_band_drm(&init, None).expect("parse init");

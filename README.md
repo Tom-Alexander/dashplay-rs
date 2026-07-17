@@ -1,10 +1,7 @@
-# dashplayrs
+# dashplay-rs
 
 A pure Rust MPEG-DASH player library: manifest parsing, timeline resolution, ABR,
 segment scheduling, HTTP download, and optional Widevine decryption.
-
-See [ARCHITECTURE.md](ARCHITECTURE.md) for the pipeline layout and design goals.
-Full API docs are on [docs.rs](https://docs.rs/dashplayrs) (or `cargo doc --open`).
 
 ## Features
 
@@ -27,14 +24,14 @@ Full API docs are on [docs.rs](https://docs.rs/dashplayrs) (or `cargo doc --open
 ## Usage
 
 ```toml
-dashplayrs = "0.1"
+dashplay = "0.1"
 ```
 
 ```rust
-use dashplayrs::{Player, PlayerEvent};
+use dashplay::{Player, PlayerEvent};
 
 #[tokio::main]
-async fn main() -> Result<(), dashplayrs::PlayerError> {
+async fn main() -> Result<(), dashplay::PlayerError> {
     let player = Player::new("https://example.com/manifest.mpd", None)?;
     let outputs = player.start_tracks().await?;
 
@@ -47,7 +44,7 @@ async fn main() -> Result<(), dashplayrs::PlayerError> {
                 PlayerEvent::BitrateChanged { to_bitrate_bps, .. } => {
                     println!("switched to {to_bitrate_bps} bps");
                 }
-                ev if ev.is_terminal() => break, // End, PlaybackEnded, or Error
+                ev if ev.is_terminal() => break,
                 _ => {}
             }
         }
@@ -68,21 +65,22 @@ Audio and video are enabled by default; text, trick-play, and image tracks are
 not. Prefer languages, roles, codecs, and caps with `TrackSelection`:
 
 ```rust
-use dashplayrs::{Player, TrackPreference, TrackSelection};
+use dashplay::{Player, TrackPreference, TrackSelection};
 
-# async fn example() -> Result<(), dashplayrs::PlayerError> {
-let selection = TrackSelection::default()
+async fn example() -> Result<(), dashplay::PlayerError> {
+  let selection = TrackSelection::default()
     .with_audio(TrackPreference::default().language("en").max_tracks(2))
     .with_video(TrackPreference::default().codec("avc1").max_tracks(1))
     .with_text(TrackPreference::default().language("en").max_tracks(1));
-
-let outputs = Player::new("https://example.com/manifest.mpd", None)?
+  
+  let outputs = Player::new("https://example.com/manifest.mpd", None)?
     .with_track_selection(selection)
     .start_tracks()
     .await?;
-# outputs.stop()?;
-# Ok(())
-# }
+
+  outputs.stop()?;
+  Ok(())
+}
 ```
 
 Text and image payloads are delivered as `Init` / `Segment` bytes — the library
@@ -92,9 +90,9 @@ does not parse or render captions or thumbnail tiles.
 
 ```rust
 use std::time::Duration;
-use dashplayrs::Player;
+use dashplay::Player;
 
-# async fn example() -> Result<(), dashplayrs::PlayerError> {
+# async fn example() -> Result<(), dashplay::PlayerError> {
 let outputs = Player::new("https://example.com/manifest.mpd", None)?
     .start_tracks()
     .await?;
@@ -119,13 +117,13 @@ device (native: `DEVICE_PATH`; wasm: `set_widevine_device_bytes`).
 ### HTTP and ABR
 
 ```rust
-use dashplayrs::{
+use dashplay::{
     LolPlusAbrFactory, Player, QualityConstraints, ReqwestClient, shared,
     shared_abr_factory,
 };
 
-# async fn example() -> Result<(), dashplayrs::PlayerError> {
-let reqwest = reqwest::Client::builder()
+async fn example() -> Result<(), dashplay::PlayerError> {
+  let reqwest = reqwest::Client::builder()
     .user_agent("my-app/1.0")
     .build()
     .expect("http client");
@@ -140,9 +138,9 @@ let outputs = Player::new("https://example.com/manifest.mpd", None)?
     )
     .start_tracks()
     .await?;
-# outputs.stop()?;
-# Ok(())
-# }
+  outputs.stop()?;
+  Ok(())
+}
 ```
 
 Implement `HttpClient` or `AbrFactory` for fully custom stacks. On `wasm32`

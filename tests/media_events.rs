@@ -3,11 +3,11 @@
 mod common;
 
 use common::{FixtureServer, play_single_track, recv_matching};
-use dashplayrs::{MediaEventSource, PlayerEvent};
+use dashplay::{MediaEventSource, PlayerEvent};
 
 const TIMEOUT: std::time::Duration = std::time::Duration::from_secs(10);
 
-fn media_events(events: &[PlayerEvent]) -> Vec<&dashplayrs::MediaEvent> {
+fn media_events(events: &[PlayerEvent]) -> Vec<&dashplay::MediaEvent> {
     events
         .iter()
         .filter_map(|ev| match ev {
@@ -49,14 +49,14 @@ async fn mpd_and_inband_media_events_are_emitted() {
 #[tokio::test]
 async fn mpd_media_event_arrives_before_first_segment() {
     let server = FixtureServer::spawn("events_vod").await;
-    let player = dashplayrs::Player::new(server.manifest_url.as_str(), None).expect("player");
+    let player = dashplay::Player::new(server.manifest_url.as_str(), None).expect("player");
     let outputs = player.start_tracks().await.expect("start");
     let mut rx = outputs.subscribe(0).expect("track");
 
     let mpd_event = recv_matching(&mut rx, TIMEOUT, |ev| {
         matches!(
             ev,
-            PlayerEvent::MediaEvent(dashplayrs::MediaEvent {
+            PlayerEvent::MediaEvent(dashplay::MediaEvent {
                 source: MediaEventSource::Mpd,
                 ..
             })

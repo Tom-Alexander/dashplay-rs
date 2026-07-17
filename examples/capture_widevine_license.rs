@@ -47,7 +47,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
 
     let rt = tokio::runtime::Runtime::new()?;
     rt.block_on(async {
-        let license = dashplayrs::drm::License::new_from_pssh(&pssh)?;
+        let license = dashplay::drm::License::new_from_pssh(&pssh)?;
         let challenge = license.challenge()?;
         let client = reqwest::Client::new();
         let response = client

@@ -4,7 +4,7 @@ default-members = ["."]
 resolver = "2"
 
 [package]
-name = "dashplayrs"
+name = "dashplay"
 version = "0.1.0"
 edition = "2024"
 description = "A pure Rust MPEG-DASH player library"
@@ -96,7 +96,7 @@ roxmltree = "0.20"
 tokio = { version = "1", features = ["macros", "rt-multi-thread"] }
 
 [lib]
-name = "dashplayrs"
+name = "dashplay"
 path = "src/lib.rs"
 
 [[example]]

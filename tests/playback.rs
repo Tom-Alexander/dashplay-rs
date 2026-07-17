@@ -4,7 +4,7 @@ use common::{
     FixtureServer, has_end, init_payload, init_payloads, play_all_tracks, play_single_track,
     segment_payloads, trim_payload,
 };
-use dashplayrs::{PeriodTransitionKind, PlayerEvent};
+use dashplay::{PeriodTransitionKind, PlayerEvent};
 use std::time::Duration;
 
 const TIMEOUT: Duration = Duration::from_secs(10);
@@ -66,14 +66,14 @@ async fn vod_webm_delivers_init_and_webm_segments() {
 #[tokio::test]
 async fn vod_ac4_profile_playback() {
     let server = FixtureServer::spawn("vod_ac4").await;
-    let selection = dashplayrs::TrackSelection::default()
-        .with_video(dashplayrs::TrackPreference::default().max_tracks(0))
+    let selection = dashplay::TrackSelection::default()
+        .with_video(dashplay::TrackPreference::default().max_tracks(0))
         .with_audio(
-            dashplayrs::TrackPreference::default()
+            dashplay::TrackPreference::default()
                 .codec("ac-4")
                 .max_tracks(1),
         );
-    let player = dashplayrs::Player::new(server.manifest_url.as_str(), None)
+    let player = dashplay::Player::new(server.manifest_url.as_str(), None)
         .expect("player")
         .with_track_selection(selection);
     let outputs = player.start_tracks().await.expect("start");
@@ -101,14 +101,14 @@ async fn vod_ac4_profile_playback() {
 #[tokio::test]
 async fn vod_mha1_profile_playback() {
     let server = FixtureServer::spawn("vod_mha1").await;
-    let selection = dashplayrs::TrackSelection::default()
-        .with_video(dashplayrs::TrackPreference::default().max_tracks(0))
+    let selection = dashplay::TrackSelection::default()
+        .with_video(dashplay::TrackPreference::default().max_tracks(0))
         .with_audio(
-            dashplayrs::TrackPreference::default()
+            dashplay::TrackPreference::default()
                 .codec("mha1")
                 .max_tracks(1),
         );
-    let player = dashplayrs::Player::new(server.manifest_url.as_str(), None)
+    let player = dashplay::Player::new(server.manifest_url.as_str(), None)
         .expect("player")
         .with_track_selection(selection);
     let outputs = player.start_tracks().await.expect("start");
@@ -135,12 +135,12 @@ async fn vod_mha1_profile_playback() {
 #[tokio::test]
 async fn vod_vp9_hdr_profile_playback() {
     let server = FixtureServer::spawn("vod_vp9_hdr").await;
-    let selection = dashplayrs::TrackSelection::default().with_video(
-        dashplayrs::TrackPreference::default()
+    let selection = dashplay::TrackSelection::default().with_video(
+        dashplay::TrackPreference::default()
             .codec("vp09")
             .max_tracks(1),
     );
-    let player = dashplayrs::Player::new(server.manifest_url.as_str(), None)
+    let player = dashplay::Player::new(server.manifest_url.as_str(), None)
         .expect("player")
         .with_track_selection(selection);
     let outputs = player.start_tracks().await.expect("start");
@@ -419,20 +419,20 @@ async fn vod_audio_video_parallel_tracks() {
 #[tokio::test]
 async fn track_preferences_limit_outputs_and_expose_metadata() {
     let server = FixtureServer::spawn("vod_av").await;
-    let selection = dashplayrs::TrackSelection::default()
-        .with_video(dashplayrs::TrackPreference::default().max_tracks(0))
+    let selection = dashplay::TrackSelection::default()
+        .with_video(dashplay::TrackPreference::default().max_tracks(0))
         .with_audio(
-            dashplayrs::TrackPreference::default()
+            dashplay::TrackPreference::default()
                 .codec("mp4a")
                 .max_tracks(1),
         );
-    let player = dashplayrs::Player::new(server.manifest_url.as_str(), None)
+    let player = dashplay::Player::new(server.manifest_url.as_str(), None)
         .expect("player")
         .with_track_selection(selection);
     let outputs = player.start_tracks().await.expect("start");
 
     assert_eq!(outputs.track_count(), 1);
-    assert_eq!(outputs.tracks[0].info().kind, dashplayrs::TrackKind::Audio);
+    assert_eq!(outputs.tracks[0].info().kind, dashplay::TrackKind::Audio);
     assert_eq!(outputs.tracks[0].info().codecs, vec!["mp4a.40.2"]);
 
     let mut rx = outputs
@@ -728,7 +728,7 @@ async fn missing_segment_surfaces_request_error() {
     assert!(
         matches!(
             err,
-            dashplayrs::PlayerError::Segment(dashplayrs::SegmentError::RequestFailed {
+            dashplay::PlayerError::Segment(dashplay::SegmentError::RequestFailed {
                 status: 404,
                 ..
             })
@@ -739,12 +739,12 @@ async fn missing_segment_surfaces_request_error() {
 
 #[tokio::test]
 async fn player_rejects_invalid_manifest_url() {
-    let err = dashplayrs::Player::new("not-a-valid-url", None)
+    let err = dashplay::Player::new("not-a-valid-url", None)
         .err()
         .expect("invalid url");
     assert!(matches!(
         err,
-        dashplayrs::PlayerError::Manifest(dashplayrs::ManifestError::Url(_))
+        dashplay::PlayerError::Manifest(dashplay::ManifestError::Url(_))
     ));
 }
 
@@ -777,7 +777,7 @@ async fn all_base_urls_fail_surfaces_segment_error() {
     assert!(
         matches!(
             err,
-            dashplayrs::PlayerError::Segment(dashplayrs::SegmentError::RequestFailed {
+            dashplay::PlayerError::Segment(dashplay::SegmentError::RequestFailed {
                 status: 404,
                 ..
             })
@@ -791,7 +791,7 @@ async fn vod_merged_stream_emits_fragments() {
     use futures_util::StreamExt;
 
     let server = FixtureServer::spawn("vod_single").await;
-    let player = dashplayrs::Player::new(server.manifest_url.as_str(), None).expect("player");
+    let player = dashplay::Player::new(server.manifest_url.as_str(), None).expect("player");
     let mut merged = player.start_merged().await.expect("start merged");
 
     let mut chunks = Vec::new();
@@ -822,7 +822,7 @@ async fn vod_merged_async_read_pipes_bytes() {
     use tokio::io::AsyncReadExt;
 
     let server = FixtureServer::spawn("vod_single").await;
-    let player = dashplayrs::Player::new(server.manifest_url.as_str(), None).expect("player");
+    let player = dashplay::Player::new(server.manifest_url.as_str(), None).expect("player");
     let merged = player.start_merged().await.expect("start merged");
     let mut async_read = merged.into_async_read();
 
@@ -849,26 +849,26 @@ async fn track_subscription_helpers_expose_receivers() {
     use futures_util::StreamExt;
 
     let server = FixtureServer::spawn("vod_single").await;
-    let player = dashplayrs::Player::new(server.manifest_url.as_str(), None).expect("player");
+    let player = dashplay::Player::new(server.manifest_url.as_str(), None).expect("player");
     let outputs = player.start_tracks().await.expect("start");
 
     assert_eq!(outputs.track_count(), 1);
 
     let mut subscribe_rx = outputs.subscribe(0).expect("track");
     let first = common::recv_matching(&mut subscribe_rx, TIMEOUT, |ev| {
-        matches!(ev, dashplayrs::PlayerEvent::Init(_))
+        matches!(ev, dashplay::PlayerEvent::Init(_))
     })
     .await
     .expect("init from subscribe");
     assert!(
-        matches!(first, dashplayrs::PlayerEvent::Init(_)),
+        matches!(first, dashplay::PlayerEvent::Init(_)),
         "subscribe should receive init"
     );
 
     let track_out = outputs.tracks.first().expect("one track output");
     let mut segment_stream = track_out.events().filter(|res| {
         futures::future::ready(match res {
-            Ok(ev) => matches!(ev, dashplayrs::PlayerEvent::Segment { .. }),
+            Ok(ev) => matches!(ev, dashplay::PlayerEvent::Segment { .. }),
             Err(_) => false,
         })
     });
@@ -878,7 +878,7 @@ async fn track_subscription_helpers_expose_receivers() {
         .expect("stream item")
         .expect("event");
     assert!(
-        matches!(next_from_stream, dashplayrs::PlayerEvent::Segment { .. }),
+        matches!(next_from_stream, dashplay::PlayerEvent::Segment { .. }),
         "events() should receive segments after init"
     );
 
@@ -898,10 +898,10 @@ async fn track_subscription_helpers_expose_receivers() {
 #[tokio::test]
 async fn track_metrics_collect_playback_observations() {
     use common::recv_matching;
-    use dashplayrs::PlayerEvent;
+    use dashplay::PlayerEvent;
 
     let server = FixtureServer::spawn("vod_single").await;
-    let player = dashplayrs::Player::new(server.manifest_url.as_str(), None).expect("player");
+    let player = dashplay::Player::new(server.manifest_url.as_str(), None).expect("player");
     let outputs = player.start_tracks().await.expect("start");
     let metrics = outputs.metrics(0).expect("track metrics");
 
@@ -940,10 +940,10 @@ async fn track_metrics_collect_playback_observations() {
 #[tokio::test]
 async fn richer_lifecycle_events_are_emitted() {
     use common::recv_matching;
-    use dashplayrs::PlayerEvent;
+    use dashplay::PlayerEvent;
 
     let server = FixtureServer::spawn("vod_single").await;
-    let player = dashplayrs::Player::new(server.manifest_url.as_str(), None).expect("player");
+    let player = dashplay::Player::new(server.manifest_url.as_str(), None).expect("player");
     let outputs = player.start_tracks().await.expect("start");
     let mut rx = outputs.subscribe(0).expect("track");
 
@@ -1001,11 +1001,11 @@ async fn richer_lifecycle_events_are_emitted() {
     outputs.join.await.unwrap().expect("join");
 }
 
-fn text_track_selection() -> dashplayrs::TrackSelection {
-    dashplayrs::TrackSelection::default()
-        .with_video(dashplayrs::TrackPreference::default().max_tracks(0))
+fn text_track_selection() -> dashplay::TrackSelection {
+    dashplay::TrackSelection::default()
+        .with_video(dashplay::TrackPreference::default().max_tracks(0))
         .with_text(
-            dashplayrs::TrackPreference::default()
+            dashplay::TrackPreference::default()
                 .language("en")
                 .max_tracks(1),
         )
@@ -1014,16 +1014,16 @@ fn text_track_selection() -> dashplayrs::TrackSelection {
 #[tokio::test]
 async fn ttml_subtitle_track_delivers_init_and_segments() {
     let server = FixtureServer::spawn("subtitle_ttml").await;
-    let player = dashplayrs::Player::new(server.manifest_url.as_str(), None)
+    let player = dashplay::Player::new(server.manifest_url.as_str(), None)
         .expect("player")
         .with_track_selection(text_track_selection());
     let outputs = player.start_tracks().await.expect("start");
 
     assert_eq!(outputs.track_count(), 1);
-    assert_eq!(outputs.tracks[0].info().kind, dashplayrs::TrackKind::Text);
+    assert_eq!(outputs.tracks[0].info().kind, dashplay::TrackKind::Text);
     assert_eq!(
         outputs.tracks[0].info().subtitle_type,
-        Some(dashplayrs::SubtitleType::Ttml)
+        Some(dashplay::SubtitleType::Ttml)
     );
 
     let mut rx = outputs
@@ -1052,14 +1052,14 @@ async fn ttml_subtitle_track_delivers_init_and_segments() {
 #[tokio::test]
 async fn vtt_subtitle_track_delivers_segments_without_init() {
     let server = FixtureServer::spawn("subtitle_vtt").await;
-    let player = dashplayrs::Player::new(server.manifest_url.as_str(), None)
+    let player = dashplay::Player::new(server.manifest_url.as_str(), None)
         .expect("player")
         .with_track_selection(text_track_selection());
     let outputs = player.start_tracks().await.expect("start");
 
     assert_eq!(
         outputs.tracks[0].info().subtitle_type,
-        Some(dashplayrs::SubtitleType::Vtt)
+        Some(dashplay::SubtitleType::Vtt)
     );
 
     let mut rx = outputs
@@ -1085,14 +1085,14 @@ async fn vtt_subtitle_track_delivers_segments_without_init() {
 #[tokio::test]
 async fn inband_stpp_subtitle_track_delivers_fragments() {
     let server = FixtureServer::spawn("subtitle_inband_stpp").await;
-    let player = dashplayrs::Player::new(server.manifest_url.as_str(), None)
+    let player = dashplay::Player::new(server.manifest_url.as_str(), None)
         .expect("player")
         .with_track_selection(text_track_selection());
     let outputs = player.start_tracks().await.expect("start");
 
     assert_eq!(
         outputs.tracks[0].info().subtitle_type,
-        Some(dashplayrs::SubtitleType::Stpp)
+        Some(dashplay::SubtitleType::Stpp)
     );
     assert_eq!(
         outputs.tracks[0].info().mime_type.as_deref(),
@@ -1125,19 +1125,19 @@ async fn inband_stpp_subtitle_track_delivers_fragments() {
 #[tokio::test]
 async fn subtitle_and_video_tracks_play_in_parallel() {
     let server = FixtureServer::spawn("subtitle_ttml").await;
-    let selection = dashplayrs::TrackSelection::default().with_text(
-        dashplayrs::TrackPreference::default()
+    let selection = dashplay::TrackSelection::default().with_text(
+        dashplay::TrackPreference::default()
             .language("en")
             .max_tracks(1),
     );
-    let player = dashplayrs::Player::new(server.manifest_url.as_str(), None)
+    let player = dashplay::Player::new(server.manifest_url.as_str(), None)
         .expect("player")
         .with_track_selection(selection);
     let outputs = player.start_tracks().await.expect("start");
 
     assert_eq!(outputs.track_count(), 2);
-    assert_eq!(outputs.tracks[0].info().kind, dashplayrs::TrackKind::Text);
-    assert_eq!(outputs.tracks[1].info().kind, dashplayrs::TrackKind::Video);
+    assert_eq!(outputs.tracks[0].info().kind, dashplay::TrackKind::Text);
+    assert_eq!(outputs.tracks[1].info().kind, dashplay::TrackKind::Video);
 
     let all = play_all_tracks_with_outputs(outputs, TIMEOUT)
         .await
@@ -1157,16 +1157,16 @@ async fn subtitle_and_video_tracks_play_in_parallel() {
     assert!(has_end(video));
 }
 
-fn trick_play_track_selection() -> dashplayrs::TrackSelection {
-    dashplayrs::TrackSelection::default()
-        .with_video(dashplayrs::TrackPreference::default().max_tracks(0))
-        .with_trick_play(dashplayrs::TrackPreference::default().max_tracks(1))
+fn trick_play_track_selection() -> dashplay::TrackSelection {
+    dashplay::TrackSelection::default()
+        .with_video(dashplay::TrackPreference::default().max_tracks(0))
+        .with_trick_play(dashplay::TrackPreference::default().max_tracks(1))
 }
 
 #[tokio::test]
 async fn trick_play_track_delivers_init_and_segments() {
     let server = FixtureServer::spawn("dashif_trick_play").await;
-    let player = dashplayrs::Player::new(server.manifest_url.as_str(), None)
+    let player = dashplay::Player::new(server.manifest_url.as_str(), None)
         .expect("player")
         .with_track_selection(trick_play_track_selection());
     let outputs = player.start_tracks().await.expect("start");
@@ -1174,7 +1174,7 @@ async fn trick_play_track_delivers_init_and_segments() {
     assert_eq!(outputs.track_count(), 1);
     assert_eq!(
         outputs.tracks[0].info().kind,
-        dashplayrs::TrackKind::TrickPlay
+        dashplay::TrackKind::TrickPlay
     );
     assert_eq!(
         outputs.tracks[0].info().mime_type.as_deref(),
@@ -1201,22 +1201,22 @@ async fn trick_play_track_delivers_init_and_segments() {
     assert!(has_end(&events));
 }
 
-fn image_track_selection() -> dashplayrs::TrackSelection {
-    dashplayrs::TrackSelection::default()
-        .with_video(dashplayrs::TrackPreference::default().max_tracks(0))
-        .with_image(dashplayrs::TrackPreference::default().max_tracks(1))
+fn image_track_selection() -> dashplay::TrackSelection {
+    dashplay::TrackSelection::default()
+        .with_video(dashplay::TrackPreference::default().max_tracks(0))
+        .with_image(dashplay::TrackPreference::default().max_tracks(1))
 }
 
 #[tokio::test]
 async fn image_thumbnail_track_delivers_init_and_segments() {
     let server = FixtureServer::spawn("thumbnail_jpeg").await;
-    let player = dashplayrs::Player::new(server.manifest_url.as_str(), None)
+    let player = dashplay::Player::new(server.manifest_url.as_str(), None)
         .expect("player")
         .with_track_selection(image_track_selection());
     let outputs = player.start_tracks().await.expect("start");
 
     assert_eq!(outputs.track_count(), 1);
-    assert_eq!(outputs.tracks[0].info().kind, dashplayrs::TrackKind::Image);
+    assert_eq!(outputs.tracks[0].info().kind, dashplay::TrackKind::Image);
     assert_eq!(outputs.tracks[0].info().thumbnail_tile, Some((4, 2)));
     assert_eq!(
         outputs.tracks[0].info().mime_type.as_deref(),
@@ -1249,13 +1249,13 @@ async fn image_thumbnail_track_delivers_init_and_segments() {
 #[tokio::test]
 async fn image_png_thumbnail_track_delivers_via_ext_template() {
     let server = FixtureServer::spawn("thumbnail_png").await;
-    let player = dashplayrs::Player::new(server.manifest_url.as_str(), None)
+    let player = dashplay::Player::new(server.manifest_url.as_str(), None)
         .expect("player")
         .with_track_selection(image_track_selection());
     let outputs = player.start_tracks().await.expect("start");
 
     assert_eq!(outputs.track_count(), 1);
-    assert_eq!(outputs.tracks[0].info().kind, dashplayrs::TrackKind::Image);
+    assert_eq!(outputs.tracks[0].info().kind, dashplay::TrackKind::Image);
     assert_eq!(outputs.tracks[0].info().thumbnail_tile, Some((4, 2)));
     assert_eq!(
         outputs.tracks[0].info().mime_type.as_deref(),
@@ -1288,13 +1288,13 @@ async fn image_png_thumbnail_track_delivers_via_ext_template() {
 #[tokio::test]
 async fn image_bmp_thumbnail_track_accepts_legacy_tile_scheme() {
     let server = FixtureServer::spawn("thumbnail_bmp").await;
-    let player = dashplayrs::Player::new(server.manifest_url.as_str(), None)
+    let player = dashplay::Player::new(server.manifest_url.as_str(), None)
         .expect("player")
         .with_track_selection(image_track_selection());
     let outputs = player.start_tracks().await.expect("start");
 
     assert_eq!(outputs.track_count(), 1);
-    assert_eq!(outputs.tracks[0].info().kind, dashplayrs::TrackKind::Image);
+    assert_eq!(outputs.tracks[0].info().kind, dashplay::TrackKind::Image);
     assert_eq!(outputs.tracks[0].info().thumbnail_tile, Some((2, 2)));
     assert_eq!(
         outputs.tracks[0].info().mime_type.as_deref(),
@@ -1327,18 +1327,18 @@ async fn image_bmp_thumbnail_track_accepts_legacy_tile_scheme() {
 #[tokio::test]
 async fn trick_play_and_video_tracks_play_in_parallel() {
     let server = FixtureServer::spawn("dashif_trick_play").await;
-    let selection = dashplayrs::TrackSelection::default()
-        .with_trick_play(dashplayrs::TrackPreference::default().max_tracks(1));
-    let player = dashplayrs::Player::new(server.manifest_url.as_str(), None)
+    let selection = dashplay::TrackSelection::default()
+        .with_trick_play(dashplay::TrackPreference::default().max_tracks(1));
+    let player = dashplay::Player::new(server.manifest_url.as_str(), None)
         .expect("player")
         .with_track_selection(selection);
     let outputs = player.start_tracks().await.expect("start");
 
     assert_eq!(outputs.track_count(), 2);
-    assert_eq!(outputs.tracks[0].info().kind, dashplayrs::TrackKind::Video);
+    assert_eq!(outputs.tracks[0].info().kind, dashplay::TrackKind::Video);
     assert_eq!(
         outputs.tracks[1].info().kind,
-        dashplayrs::TrackKind::TrickPlay
+        dashplay::TrackKind::TrickPlay
     );
 
     let all = play_all_tracks_with_outputs(outputs, TIMEOUT)
@@ -1360,9 +1360,9 @@ async fn trick_play_and_video_tracks_play_in_parallel() {
 }
 
 async fn play_all_tracks_with_outputs(
-    outputs: dashplayrs::PlayerTrackOutputs,
+    outputs: dashplay::PlayerTrackOutputs,
     timeout: std::time::Duration,
-) -> Result<Vec<Vec<dashplayrs::PlayerEvent>>, dashplayrs::PlayerError> {
+) -> Result<Vec<Vec<dashplay::PlayerEvent>>, dashplay::PlayerError> {
     let track_count = outputs.track_count();
     let mut drains = Vec::with_capacity(track_count);
     for i in 0..track_count {

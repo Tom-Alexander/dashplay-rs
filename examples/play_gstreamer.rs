@@ -1,6 +1,6 @@
 //! Play a DASH stream with GStreamer.
 //!
-//! `dashplayrs` fetches and (when needed) decrypts ISOBMFF fragments; GStreamer demuxes,
+//! `dashplay` fetches and (when needed) decrypts ISOBMFF fragments; GStreamer demuxes,
 //! decodes, and renders via `appsrc` → `decodebin` → auto sinks.
 //!
 //! Usage:
@@ -19,7 +19,7 @@
 //! (`appsrc`, `decodebin`, `qtdemux`, `autovideosink`, `autoaudiosink`).
 
 use bytes::Bytes;
-use dashplayrs::{PlayerEvent, TrackInfo, TrackKind};
+use dashplay::{PlayerEvent, TrackInfo, TrackKind};
 use gstreamer as gst;
 use gstreamer::prelude::*;
 use gstreamer_app as gst_app;
@@ -277,10 +277,10 @@ async fn async_main() -> Result<(), Box<dyn std::error::Error>> {
 
     gst::init()?;
 
-    let player = dashplayrs::Player::new(&args.manifest_url, args.license_url.as_deref())?;
+    let player = dashplay::Player::new(&args.manifest_url, args.license_url.as_deref())?;
     let mut outputs = player.start_tracks().await?;
 
-    let pipeline = gst::Pipeline::with_name("dashplayrs-play");
+    let pipeline = gst::Pipeline::with_name("dashplay-play");
     let mut feeders = Vec::new();
     let tracks = std::mem::take(&mut outputs.tracks);
 

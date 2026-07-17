@@ -1204,9 +1204,9 @@ fn collect_files(root: &FsPath, dir: &FsPath, out: &mut HashMap<String, Vec<u8>>
 }
 
 pub async fn collect_events(
-    rx: &mut tokio::sync::broadcast::Receiver<dashplayrs::PlayerEvent>,
+    rx: &mut tokio::sync::broadcast::Receiver<dashplay::PlayerEvent>,
     timeout: std::time::Duration,
-) -> Vec<dashplayrs::PlayerEvent> {
+) -> Vec<dashplay::PlayerEvent> {
     let mut events = Vec::new();
     let deadline = tokio::time::Instant::now() + timeout;
 
@@ -1232,10 +1232,10 @@ pub async fn collect_events(
 
 /// Receive the next event matching `pred`, skipping others until `timeout` elapses.
 pub async fn recv_matching(
-    rx: &mut tokio::sync::broadcast::Receiver<dashplayrs::PlayerEvent>,
+    rx: &mut tokio::sync::broadcast::Receiver<dashplay::PlayerEvent>,
     timeout: std::time::Duration,
-    mut pred: impl FnMut(&dashplayrs::PlayerEvent) -> bool,
-) -> Option<dashplayrs::PlayerEvent> {
+    mut pred: impl FnMut(&dashplay::PlayerEvent) -> bool,
+) -> Option<dashplay::PlayerEvent> {
     let deadline = tokio::time::Instant::now() + timeout;
     while tokio::time::Instant::now() < deadline {
         let remaining = deadline.saturating_duration_since(tokio::time::Instant::now());
@@ -1251,7 +1251,7 @@ pub async fn recv_matching(
 
 /// Simulates 1× playback consumption by draining buffer occupancy over wall-clock time.
 pub fn spawn_playback_buffer_simulation(
-    buffer_feedback: dashplayrs::BufferFeedback,
+    buffer_feedback: dashplay::BufferFeedback,
     initial_buffer_s: f64,
 ) -> JoinHandle<()> {
     tokio::spawn(async move {
@@ -1272,7 +1272,7 @@ pub fn spawn_playback_buffer_simulation(
 pub async fn play_single_track(
     manifest_url: &Url,
     timeout: std::time::Duration,
-) -> Result<Vec<dashplayrs::PlayerEvent>, dashplayrs::PlayerError> {
+) -> Result<Vec<dashplay::PlayerEvent>, dashplay::PlayerError> {
     play_single_track_with_options(manifest_url, timeout, false).await
 }
 
@@ -1281,7 +1281,7 @@ pub async fn play_single_track(
 pub async fn play_single_track_live(
     manifest_url: &Url,
     timeout: std::time::Duration,
-) -> Result<Vec<dashplayrs::PlayerEvent>, dashplayrs::PlayerError> {
+) -> Result<Vec<dashplay::PlayerEvent>, dashplay::PlayerError> {
     play_single_track_with_options(manifest_url, timeout, true).await
 }
 
@@ -1289,7 +1289,7 @@ async fn play_single_track_with_options(
     manifest_url: &Url,
     timeout: std::time::Duration,
     drop_receiver_before_join: bool,
-) -> Result<Vec<dashplayrs::PlayerEvent>, dashplayrs::PlayerError> {
+) -> Result<Vec<dashplay::PlayerEvent>, dashplay::PlayerError> {
     play_single_track_with_buffer(manifest_url, timeout, drop_receiver_before_join, 25.0).await
 }
 
@@ -1298,8 +1298,8 @@ pub async fn play_single_track_with_buffer(
     timeout: std::time::Duration,
     drop_receiver_before_join: bool,
     initial_buffer_s: f64,
-) -> Result<Vec<dashplayrs::PlayerEvent>, dashplayrs::PlayerError> {
-    let player = dashplayrs::Player::new(manifest_url.as_str(), None)?;
+) -> Result<Vec<dashplay::PlayerEvent>, dashplay::PlayerError> {
+    let player = dashplay::Player::new(manifest_url.as_str(), None)?;
     let outputs = player.start_tracks().await?;
     let buffer_feedback = outputs.buffer_feedback(0).expect("one track");
     let _ = buffer_feedback.report(initial_buffer_s);
@@ -1322,8 +1322,8 @@ pub async fn play_single_track_with_buffer(
 pub async fn play_all_tracks(
     manifest_url: &Url,
     timeout: std::time::Duration,
-) -> Result<Vec<Vec<dashplayrs::PlayerEvent>>, dashplayrs::PlayerError> {
-    let player = dashplayrs::Player::new(manifest_url.as_str(), None)?;
+) -> Result<Vec<Vec<dashplay::PlayerEvent>>, dashplay::PlayerError> {
+    let player = dashplay::Player::new(manifest_url.as_str(), None)?;
     let outputs = player.start_tracks().await?;
     let track_count = outputs.tracks.len();
     let mut drains = Vec::with_capacity(track_count);
@@ -1350,25 +1350,25 @@ pub async fn play_all_tracks(
     Ok(all_events)
 }
 
-pub fn init_payload(events: &[dashplayrs::PlayerEvent]) -> Option<Vec<u8>> {
+pub fn init_payload(events: &[dashplay::PlayerEvent]) -> Option<Vec<u8>> {
     init_payloads(events).into_iter().next()
 }
 
-pub fn init_payloads(events: &[dashplayrs::PlayerEvent]) -> Vec<Vec<u8>> {
+pub fn init_payloads(events: &[dashplay::PlayerEvent]) -> Vec<Vec<u8>> {
     events
         .iter()
         .filter_map(|ev| match ev {
-            dashplayrs::PlayerEvent::Init(data) => Some(trim_payload(data.as_ref())),
+            dashplay::PlayerEvent::Init(data) => Some(trim_payload(data.as_ref())),
             _ => None,
         })
         .collect()
 }
 
-pub fn segment_payloads(events: &[dashplayrs::PlayerEvent]) -> Vec<Vec<u8>> {
+pub fn segment_payloads(events: &[dashplay::PlayerEvent]) -> Vec<Vec<u8>> {
     events
         .iter()
         .filter_map(|ev| match ev {
-            dashplayrs::PlayerEvent::Segment { data, .. } => Some(trim_payload(data.as_ref())),
+            dashplay::PlayerEvent::Segment { data, .. } => Some(trim_payload(data.as_ref())),
             _ => None,
         })
         .collect()
@@ -1383,26 +1383,26 @@ pub fn trim_payload(bytes: &[u8]) -> Vec<u8> {
     bytes[..end].to_vec()
 }
 
-pub fn has_end(events: &[dashplayrs::PlayerEvent]) -> bool {
+pub fn has_end(events: &[dashplay::PlayerEvent]) -> bool {
     events.iter().any(|ev| ev.is_terminal())
 }
 
-pub fn segment_numbers(events: &[dashplayrs::PlayerEvent]) -> Vec<u64> {
+pub fn segment_numbers(events: &[dashplay::PlayerEvent]) -> Vec<u64> {
     events
         .iter()
         .filter_map(|ev| match ev {
-            dashplayrs::PlayerEvent::Segment { number, .. } => Some(*number),
+            dashplay::PlayerEvent::Segment { number, .. } => Some(*number),
             _ => None,
         })
         .collect()
 }
 
 /// Unique `(number, time, sub_number)` keys for delivered segments.
-pub fn segment_keys(events: &[dashplayrs::PlayerEvent]) -> Vec<(u64, u64, Option<u64>)> {
+pub fn segment_keys(events: &[dashplay::PlayerEvent]) -> Vec<(u64, u64, Option<u64>)> {
     events
         .iter()
         .filter_map(|ev| match ev {
-            dashplayrs::PlayerEvent::Segment {
+            dashplay::PlayerEvent::Segment {
                 number,
                 time,
                 sub_number,
@@ -1413,7 +1413,7 @@ pub fn segment_keys(events: &[dashplayrs::PlayerEvent]) -> Vec<(u64, u64, Option
         .collect()
 }
 
-pub fn assert_no_duplicate_segments(events: &[dashplayrs::PlayerEvent]) {
+pub fn assert_no_duplicate_segments(events: &[dashplay::PlayerEvent]) {
     let keys = segment_keys(events);
     let mut seen = std::collections::HashSet::new();
     for key in keys {
@@ -1426,12 +1426,12 @@ pub fn assert_no_duplicate_segments(events: &[dashplayrs::PlayerEvent]) {
 }
 
 pub fn partial_segment_payloads(
-    events: &[dashplayrs::PlayerEvent],
-) -> Vec<(Option<dashplayrs::PartialSegmentChunk>, Vec<u8>)> {
+    events: &[dashplay::PlayerEvent],
+) -> Vec<(Option<dashplay::PartialSegmentChunk>, Vec<u8>)> {
     events
         .iter()
         .filter_map(|ev| match ev {
-            dashplayrs::PlayerEvent::Segment { partial, data, .. } => {
+            dashplay::PlayerEvent::Segment { partial, data, .. } => {
                 Some((*partial, trim_payload(data.as_ref())))
             }
             _ => None,
@@ -1439,11 +1439,11 @@ pub fn partial_segment_payloads(
         .collect()
 }
 
-pub fn playback_rate_suggestions(events: &[dashplayrs::PlayerEvent]) -> Vec<(f64, StdDuration)> {
+pub fn playback_rate_suggestions(events: &[dashplay::PlayerEvent]) -> Vec<(f64, StdDuration)> {
     events
         .iter()
         .filter_map(|ev| match ev {
-            dashplayrs::PlayerEvent::PlaybackRateSuggested {
+            dashplay::PlayerEvent::PlaybackRateSuggested {
                 rate,
                 latency,
                 target_latency: _,

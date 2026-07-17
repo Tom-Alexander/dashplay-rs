@@ -1,7 +1,7 @@
 mod common;
 
 use common::{FixtureServer, recv_matching};
-use dashplayrs::{PlaybackState, Player, PlayerEvent};
+use dashplay::{PlaybackState, Player, PlayerEvent};
 
 const TIMEOUT: std::time::Duration = std::time::Duration::from_secs(15);
 

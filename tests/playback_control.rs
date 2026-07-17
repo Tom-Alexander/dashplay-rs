@@ -3,7 +3,7 @@ mod common;
 use std::time::Duration;
 
 use common::{FixtureServer, init_payload, recv_matching, segment_payloads};
-use dashplayrs::{PlaybackState, PlayerEvent};
+use dashplay::{PlaybackState, PlayerEvent};
 
 const TIMEOUT: Duration = Duration::from_secs(10);
 
@@ -20,7 +20,7 @@ async fn recv_event(
 #[tokio::test]
 async fn stop_halts_segment_delivery() {
     let server = FixtureServer::spawn("vod_single").await;
-    let player = dashplayrs::Player::new(server.manifest_url.as_str(), None).expect("player");
+    let player = dashplay::Player::new(server.manifest_url.as_str(), None).expect("player");
     let outputs = player.start_tracks().await.expect("start");
     let mut rx = outputs.subscribe(0).expect("one track");
 
@@ -56,9 +56,9 @@ async fn stop_halts_segment_delivery() {
 #[tokio::test]
 async fn pause_and_resume_delay_delivery() {
     let server = FixtureServer::spawn("vod_single").await;
-    let player = dashplayrs::Player::new(server.manifest_url.as_str(), None)
+    let player = dashplay::Player::new(server.manifest_url.as_str(), None)
         .expect("player")
-        .with_pause_policy(dashplayrs::PausePolicy::stop_while_paused());
+        .with_pause_policy(dashplay::PausePolicy::stop_while_paused());
     let outputs = player.start_tracks().await.expect("start");
     outputs.pause().expect("pause");
     let mut rx = outputs.subscribe(0).expect("one track");
@@ -96,7 +96,7 @@ async fn pause_and_resume_delay_delivery() {
 async fn schedule_while_paused_delivers_segments_during_pause() {
     let server = FixtureServer::spawn("vod_single").await;
     // Default PausePolicy keeps scheduling while paused (dash.js scheduleWhilePaused).
-    let player = dashplayrs::Player::new(server.manifest_url.as_str(), None).expect("player");
+    let player = dashplay::Player::new(server.manifest_url.as_str(), None).expect("player");
     let outputs = player.start_tracks().await.expect("start");
     let mut rx = outputs.subscribe(0).expect("one track");
 
@@ -128,7 +128,7 @@ async fn schedule_while_paused_delivers_segments_during_pause() {
 #[tokio::test]
 async fn seek_repositions_to_later_segment() {
     let server = FixtureServer::spawn("vod_time").await;
-    let player = dashplayrs::Player::new(server.manifest_url.as_str(), None).expect("player");
+    let player = dashplay::Player::new(server.manifest_url.as_str(), None).expect("player");
     let outputs = player.start_tracks().await.expect("start");
     let mut rx = outputs.subscribe(0).expect("one track");
 
@@ -177,7 +177,7 @@ async fn seek_repositions_to_later_segment() {
 #[tokio::test]
 async fn presentation_time_tracks_delivery_and_seek() {
     let server = FixtureServer::spawn("vod_time").await;
-    let player = dashplayrs::Player::new(server.manifest_url.as_str(), None).expect("player");
+    let player = dashplay::Player::new(server.manifest_url.as_str(), None).expect("player");
     let outputs = player.start_tracks().await.expect("start");
     let mut rx = outputs.subscribe(0).expect("one track");
 
@@ -243,12 +243,12 @@ async fn presentation_time_tracks_delivery_and_seek() {
 #[tokio::test]
 async fn set_track_selection_switches_audio_language() {
     let server = FixtureServer::spawn("vod_multi_audio").await;
-    let selection = dashplayrs::TrackSelection::default().with_audio(
-        dashplayrs::TrackPreference::default()
+    let selection = dashplay::TrackSelection::default().with_audio(
+        dashplay::TrackPreference::default()
             .language("en")
             .max_tracks(1),
     );
-    let player = dashplayrs::Player::new(server.manifest_url.as_str(), None)
+    let player = dashplay::Player::new(server.manifest_url.as_str(), None)
         .expect("player")
         .with_track_selection(selection);
     let outputs = player.start_tracks().await.expect("start");
@@ -257,7 +257,7 @@ async fn set_track_selection_switches_audio_language() {
     let audio_idx = outputs
         .tracks
         .iter()
-        .position(|t| t.info().kind == dashplayrs::TrackKind::Audio)
+        .position(|t| t.info().kind == dashplay::TrackKind::Audio)
         .expect("audio track");
     let mut rx = outputs.subscribe(audio_idx).expect("audio rx");
 
@@ -279,8 +279,8 @@ async fn set_track_selection_switches_audio_language() {
         vec![b"dashplay-audio-en-1".to_vec()]
     );
 
-    let switched = dashplayrs::TrackSelection::default().with_audio(
-        dashplayrs::TrackPreference::default()
+    let switched = dashplay::TrackSelection::default().with_audio(
+        dashplay::TrackPreference::default()
             .language("fr")
             .max_tracks(1),
     );
@@ -330,7 +330,7 @@ async fn set_track_selection_switches_audio_language() {
 #[tokio::test]
 async fn control_errors_when_stopped() {
     let server = FixtureServer::spawn("vod_single").await;
-    let player = dashplayrs::Player::new(server.manifest_url.as_str(), None).expect("player");
+    let player = dashplay::Player::new(server.manifest_url.as_str(), None).expect("player");
     let outputs = player.start_tracks().await.expect("start");
     outputs.stop().expect("stop");
     assert!(outputs.pause().is_err());

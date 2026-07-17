@@ -88,7 +88,7 @@ impl PausePolicy {
         Self::default()
     }
 
-    /// Stop scheduling while paused (historical dashplayrs default before v1).
+    /// Stop scheduling while paused (historical dashplay default before v1).
     pub fn stop_while_paused() -> Self {
         Self {
             schedule_while_paused: false,

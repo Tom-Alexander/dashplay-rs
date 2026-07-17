@@ -77,9 +77,11 @@ mod track_session;
 mod types;
 
 pub use abr::{
-    AbrController, AbrCreateContext, AbrDecision, AbrFactory, BolaAbrFactory, LolPlusAbrFactory,
-    QualityConstraints, QualityRung, SharedAbrFactory, quality_ladder_from_adaptation_set,
-    quality_ladder_from_adaptation_sets, shared as shared_abr_factory,
+    AbrController, AbrCreateContext, AbrDecision, AbrFactory, BolaAbrFactory,
+    DEFAULT_DROPPED_FRAMES_PERCENTAGE_THRESHOLD, DEFAULT_MINIMUM_SAMPLE_SIZE, DroppedFramesHistory,
+    DroppedFramesParams, LolPlusAbrFactory, QualityConstraints, QualityRung, SharedAbrFactory,
+    quality_ladder_from_adaptation_set, quality_ladder_from_adaptation_sets,
+    shared as shared_abr_factory,
 };
 pub use cmcd::{
     CmcdConfig, CmcdHeaders, CmcdObjectType, CmcdRequestContext, CmcdStreamType, CmsdHop,
@@ -118,7 +120,8 @@ pub use track_selection::{
     SubTrackInfo, TrackDescriptor, TrackInfo, TrackKind, TrackPreference, TrackSelection,
 };
 pub use types::{
-    BufferFeedback, BufferFeedbackError, PartialSegmentChunk, PeriodTransitionKind, PlayerEvent,
+    BufferFeedback, BufferFeedbackError, PartialSegmentChunk, PeriodTransitionKind,
+    PlaybackQualityFeedback, PlaybackQualityFeedbackError, PlaybackQualitySample, PlayerEvent,
     PlayerEventError, PlayerOutputs, PlayerTrack,
 };
 

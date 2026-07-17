@@ -242,6 +242,7 @@ impl PlaybackLoopState {
                         let drm = drm.clone();
                         let buffer_rx = tracks[track_idx].buffer_rx.clone();
                         let buffer_tx = tracks[track_idx].buffer_tx.clone();
+                        let dropped_frames = tracks[track_idx].dropped_frames_history();
                         let metrics = tracks[track_idx].metrics.clone();
                         let track_kind = tracks[track_idx].info().kind;
                         let playback = playback.clone();
@@ -292,6 +293,7 @@ impl PlaybackLoopState {
                                 drm,
                                 buffer_rx,
                                 buffer_tx,
+                                dropped_frames,
                                 buffer_target,
                                 metrics,
                                 playback,

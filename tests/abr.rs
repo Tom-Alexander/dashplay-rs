@@ -191,6 +191,154 @@ async fn abr_downgrades_and_re_emits_init_when_buffer_drains() {
 }
 
 #[tokio::test]
+async fn dropped_frames_cap_forces_quality_downswitch() -> Result<(), dashplayrs::PlayerError> {
+    use dashplayrs::{PlaybackQualitySample, Player, PlayerEvent};
+    use std::time::Duration as StdDuration;
+
+    let server = FixtureServer::spawn("vod_abr").await;
+    // Pin ABR to the high rung so only the dropped-frames rule can force a down-switch.
+    let player = Player::new(server.manifest_url.as_str(), None)?
+        .with_abr_factory(dashplayrs::shared_abr_factory(FixedHighAbrFactory));
+    let outputs = player.start_tracks().await?;
+    let buffer_feedback = outputs.buffer_feedback(0).expect("one track");
+    let quality_feedback = outputs.playback_quality_feedback(0).expect("one track");
+    // Hold buffer at/above the high-water mark so the second segment cannot schedule
+    // until after we report dropped frames (avoids racing the planner).
+    let hold = {
+        let bf = buffer_feedback.clone();
+        tokio::spawn(async move {
+            let mut interval = tokio::time::interval(StdDuration::from_millis(50));
+            interval.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Skip);
+            loop {
+                interval.tick().await;
+                if bf.report(30.0).is_err() {
+                    break;
+                }
+            }
+        })
+    };
+    let mut rx = outputs
+        .tracks
+        .into_iter()
+        .next()
+        .expect("one track")
+        .into_receiver();
+
+    let mut events = Vec::new();
+    let mut saw_first_media = false;
+    let mut _drain = None;
+    let deadline = tokio::time::Instant::now() + ABR_TIMEOUT;
+    while tokio::time::Instant::now() < deadline {
+        let remaining = deadline.saturating_duration_since(tokio::time::Instant::now());
+        match tokio::time::timeout(remaining, rx.recv()).await {
+            Ok(Ok(ev)) => {
+                let is_media = matches!(ev, PlayerEvent::Segment { .. });
+                events.push(ev);
+                if is_media && !saw_first_media {
+                    saw_first_media = true;
+                    let _ = quality_feedback.report(PlaybackQualitySample {
+                        dropped_video_frames: 0,
+                        total_video_frames: 0,
+                    });
+                    let _ = quality_feedback.report(PlaybackQualitySample {
+                        dropped_video_frames: 100,
+                        total_video_frames: 400,
+                    });
+                    hold.abort();
+                    let _ = buffer_feedback.report(5.0);
+                    _drain = Some(common::spawn_playback_buffer_simulation(
+                        buffer_feedback.clone(),
+                        5.0,
+                    ));
+                }
+                if matches!(
+                    events.last(),
+                    Some(PlayerEvent::End | PlayerEvent::PlaybackEnded | PlayerEvent::Error(_))
+                ) {
+                    break;
+                }
+            }
+            Ok(Err(_)) => break,
+            Err(_) => break,
+        }
+    }
+    hold.abort();
+    outputs.join.await.unwrap()?;
+
+    assert!(
+        saw_first_media,
+        "expected at least one media segment before reporting drops"
+    );
+    let segments = segment_payloads(&events);
+    assert!(
+        segments
+            .iter()
+            .any(|seg| seg.starts_with(b"dashplay-abr-high-seg-")),
+        "expected high-rep segment before dropped-frames cap, got {segments:?}"
+    );
+    assert!(
+        segments
+            .iter()
+            .any(|seg| seg.starts_with(b"dashplay-abr-low-seg-")),
+        "expected low-rep segment after dropped-frames cap, got {segments:?}"
+    );
+    assert!(has_end(&events));
+    Ok(())
+}
+
+struct FixedHighAbrFactory;
+
+struct FixedHighAbrController {
+    rungs: Vec<dashplayrs::QualityRung>,
+}
+
+impl dashplayrs::AbrFactory for FixedHighAbrFactory {
+    fn create(
+        &self,
+        adaptation_set: &dash_mpd::AdaptationSet,
+        ctx: &dashplayrs::AbrCreateContext<'_>,
+    ) -> Option<Box<dyn dashplayrs::AbrController>> {
+        let rungs = if let Some(ladder) = ctx.quality_ladder {
+            ladder.to_vec()
+        } else {
+            dashplayrs::quality_ladder_from_adaptation_set(adaptation_set)
+        };
+        if rungs.is_empty() {
+            return None;
+        }
+        Some(Box::new(FixedHighAbrController { rungs }))
+    }
+}
+
+impl dashplayrs::AbrController for FixedHighAbrController {
+    fn update_buffer(&mut self, _buffer_s: f64) {}
+
+    fn observe_segment_download(
+        &mut self,
+        _throughput_bps: f64,
+        _downloaded_bytes: usize,
+        _quality_index: usize,
+    ) {
+    }
+
+    fn decide(&mut self) -> dashplayrs::AbrDecision {
+        let quality_index = self.rungs.len().saturating_sub(1);
+        dashplayrs::AbrDecision {
+            quality_index,
+            bitrate_bps: self.rungs[quality_index].bitrate_bps,
+        }
+    }
+
+    fn rung_for_quality_index(&self, quality_index: usize) -> &dashplayrs::QualityRung {
+        &self.rungs[quality_index]
+    }
+
+    fn rung_count(&self) -> usize {
+        self.rungs.len()
+    }
+}
+
+#[tokio::test]
 async fn custom_abr_factory_selects_fixed_representation() -> Result<(), dashplayrs::PlayerError> {
     use dash_mpd::AdaptationSet;
     use dashplayrs::{

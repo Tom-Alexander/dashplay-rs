@@ -135,7 +135,7 @@ pub(crate) async fn prefetch_next_period_first_segment(
     let mut encrypted_init_by_rep: HashMap<(usize, String), Bytes> = HashMap::new();
     // Prefetch holds events until PeriodChanged; Init is emitted then via held events when needed.
     let mut init_signal = InitSignalState::new(true);
-    let init_plan = plan_init(abr.as_mut(), 0.0, &QualityConstraints::default());
+    let init_plan = plan_init(abr.as_mut(), 0.0, &QualityConstraints::default(), None);
     let _ = fetch_init_with_rep_fallback(
         &fetch_env,
         abr.as_ref(),
@@ -160,6 +160,7 @@ pub(crate) async fn prefetch_next_period_first_segment(
             cached_inits: &encrypted_init_by_rep,
             last_quality_index: None,
             quality_constraints: QualityConstraints::default(),
+            dropped_frames: None,
         },
     );
 

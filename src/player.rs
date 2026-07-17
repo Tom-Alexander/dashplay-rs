@@ -15,7 +15,7 @@ use super::media_player::{MediaPlayer, WidevineLicenseFetcher};
 use super::metrics::TrackMetrics;
 use super::playback_control::{PlaybackControlError, PlaybackController, PlaybackState};
 use super::track_selection::{TrackInfo, TrackSelection};
-use super::types::BufferFeedback;
+use super::types::{BufferFeedback, PlaybackQualityFeedback};
 use super::{PlayerError, PlayerEvent, PlayerOutputs, PlayerTrack};
 
 type MergedByteStream = Pin<Box<dyn Stream<Item = Result<Bytes, std::io::Error>> + Send>>;
@@ -165,6 +165,7 @@ impl Player {
                 rx: t.tx.subscribe(),
                 tx: t.tx.clone(),
                 buffer_feedback: t.buffer_feedback(),
+                playback_quality_feedback: t.playback_quality_feedback(),
                 metrics: t.metrics(),
                 track: t.clone(),
             });
@@ -359,6 +360,11 @@ impl PlayerTrackOutputs {
         self.senders.get(idx).map(|t| t.buffer_feedback())
     }
 
+    /// Playback-quality feedback handle for a track (dropped-frame ABR input).
+    pub fn playback_quality_feedback(&self, idx: usize) -> Option<PlaybackQualityFeedback> {
+        self.senders.get(idx).map(|t| t.playback_quality_feedback())
+    }
+
     /// Metrics handle for a track (same index as [`Self::tracks`] / [`Self::subscribe`]).
     pub fn metrics(&self, idx: usize) -> Option<TrackMetrics> {
         self.senders.get(idx).map(|t| t.metrics())
@@ -389,6 +395,7 @@ pub struct PlayerTrackOutput {
     rx: broadcast::Receiver<PlayerEvent>,
     tx: broadcast::Sender<PlayerEvent>,
     buffer_feedback: BufferFeedback,
+    playback_quality_feedback: PlaybackQualityFeedback,
     metrics: TrackMetrics,
     track: PlayerTrack,
 }
@@ -415,6 +422,11 @@ impl PlayerTrackOutput {
     /// Report buffer occupancy for this track's adaptive bitrate controller.
     pub fn buffer_feedback(&self) -> BufferFeedback {
         self.buffer_feedback.clone()
+    }
+
+    /// Report decoder / MSE dropped-frame counters for this track's ABR rule.
+    pub fn playback_quality_feedback(&self) -> PlaybackQualityFeedback {
+        self.playback_quality_feedback.clone()
     }
 
     /// Playback metrics for this track.

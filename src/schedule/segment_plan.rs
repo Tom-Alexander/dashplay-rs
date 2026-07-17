@@ -9,7 +9,10 @@ use std::collections::HashMap;
 use bytes::Bytes;
 use dash_mpd::AdaptationSet;
 
-use crate::abr::{AbrController, QualityConstraints, clamp_quality_index};
+use crate::abr::{
+    AbrController, DroppedFramesHistory, QualityConstraints, apply_dropped_frames_cap,
+    clamp_quality_index,
+};
 use crate::manifest::{
     self, ByteRange, SegmentAddressing, SegmentAvailability, SwitchingHint, TimelineBuildContext,
     TimelineSegment, is_switch_opportunity, switching_hints_for,
@@ -40,6 +43,8 @@ pub(crate) struct SegmentPlanContext<'a> {
     pub last_quality_index: Option<usize>,
     /// User quality constraints applied after each ABR decision (fixed quality / autoswitch).
     pub quality_constraints: QualityConstraints,
+    /// Host-reported dropped-frame history for the ABR down-switch rule.
+    pub dropped_frames: Option<&'a DroppedFramesHistory>,
 }
 
 /// Download plan for one media segment, produced synchronously before fetch/decrypt/emit.
@@ -73,10 +78,12 @@ pub(crate) fn plan_init(
     abr: &mut dyn AbrController,
     buffer_s: f64,
     constraints: &QualityConstraints,
+    dropped_frames: Option<&DroppedFramesHistory>,
 ) -> InitPlan {
     abr.update_buffer(buffer_s);
+    let decided = clamp_quality_index(abr.decide().quality_index, abr.rung_count(), constraints);
     let quality_index =
-        clamp_quality_index(abr.decide().quality_index, abr.rung_count(), constraints);
+        apply_dropped_frames_cap(decided, abr.rung_count(), constraints, dropped_frames);
     InitPlan { quality_index }
 }
 
@@ -119,6 +126,12 @@ pub(crate) fn plan_segment(
         abr.decide().quality_index,
         abr.rung_count(),
         &ctx.quality_constraints,
+    );
+    quality_index = apply_dropped_frames_cap(
+        quality_index,
+        abr.rung_count(),
+        &ctx.quality_constraints,
+        ctx.dropped_frames,
     );
 
     // ISO/IEC 23009-1 §5.3.3.4: when `Switching` is present, only change representation
@@ -326,7 +339,7 @@ mod tests {
             .create(&set, &crate::abr::AbrCreateContext::default())
             .expect("controller");
         abr.update_buffer(10.0);
-        let plan = plan_init(abr.as_mut(), 10.0, &QualityConstraints::default());
+        let plan = plan_init(abr.as_mut(), 10.0, &QualityConstraints::default(), None);
         assert_eq!(plan.quality_index, abr.decide().quality_index);
     }
 
@@ -349,6 +362,7 @@ mod tests {
             cached_inits: &cached,
             last_quality_index: None,
             quality_constraints: QualityConstraints::default(),
+            dropped_frames: None,
         };
         let plan = plan_segment(abr.as_mut(), 5.0, &segment(1), 2, &ctx);
         assert_eq!(plan.list_index, 12);
@@ -379,6 +393,7 @@ mod tests {
             cached_inits: &cached,
             last_quality_index: None,
             quality_constraints: QualityConstraints::default(),
+            dropped_frames: None,
         };
         let plan = plan_segment(abr.as_mut(), 5.0, &segment(1), 0, &ctx);
         assert!(!plan.init_needed);
@@ -419,6 +434,7 @@ mod tests {
             cached_inits: &cached,
             last_quality_index: None,
             quality_constraints: QualityConstraints::default(),
+            dropped_frames: None,
         };
         let plan = plan_segment(abr.as_mut(), 5.0, &segment(1), 0, &ctx);
         assert!(plan.init_needed);
@@ -486,11 +502,84 @@ mod tests {
             cached_inits: &cached,
             last_quality_index: Some(0),
             quality_constraints: QualityConstraints::default(),
+            dropped_frames: None,
         };
         let held = plan_segment(abr.as_mut(), 5.0, &segment_at(2000), 0, &ctx);
         assert_eq!(held.quality_index, 0);
         let switched = plan_segment(abr.as_mut(), 5.0, &segment_at(4000), 1, &ctx);
         assert_eq!(switched.quality_index, 1);
+    }
+
+    #[test]
+    fn plan_segment_applies_dropped_frames_cap() {
+        use crate::abr::{DroppedFramesHistory, DroppedFramesParams};
+
+        let set = AdaptationSet {
+            representations: vec![
+                Representation {
+                    id: Some("low".into()),
+                    bandwidth: Some(100_000),
+                    ..Default::default()
+                },
+                Representation {
+                    id: Some("high".into()),
+                    bandwidth: Some(500_000),
+                    ..Default::default()
+                },
+            ],
+            ..Default::default()
+        };
+        let sets = single_set_map(set);
+        let bitstream = no_bitstream();
+        let mut abr = Box::new(IndexedAbr {
+            desired_quality: 1,
+            rungs: vec![
+                QualityRung {
+                    period_adaptation_index: 0,
+                    representation_index: 0,
+                    label: "low".into(),
+                    bitrate_bps: 100_000.0,
+                    quality_ranking: None,
+                    max_playout_rate: None,
+                    coding_dependency: None,
+                },
+                QualityRung {
+                    period_adaptation_index: 0,
+                    representation_index: 1,
+                    label: "high".into(),
+                    bitrate_bps: 500_000.0,
+                    quality_ranking: None,
+                    max_playout_rate: None,
+                    coding_dependency: None,
+                },
+            ],
+        }) as Box<dyn AbrController>;
+        let cached = HashMap::new();
+        let timeline = timeline_ctx(false);
+        let addressing = SegmentAddressing::Template(Default::default());
+        let history = DroppedFramesHistory::with_params(DroppedFramesParams {
+            minimum_sample_size: 10,
+            dropped_frames_percentage_threshold: 0.15,
+        });
+        history.set_active_quality(1);
+        history.push(0, 0);
+        history.push(40, 100);
+        assert_eq!(history.quality_cap(), Some(0));
+        let ctx = SegmentPlanContext {
+            segment_start_index: 0,
+            primary_period_adaptation_index: 0,
+            adaptation_sets: &sets,
+            bitstream_switching: &bitstream,
+            addressing: &addressing,
+            timeline_ctx: &timeline,
+            cached_inits: &cached,
+            last_quality_index: None,
+            quality_constraints: QualityConstraints::default(),
+            dropped_frames: Some(&history),
+        };
+        let plan = plan_segment(abr.as_mut(), 20.0, &segment(1), 0, &ctx);
+        assert_eq!(plan.quality_index, 0);
+        assert_eq!(plan.representation_index, 0);
     }
 
     fn segment_at(time: u64) -> TimelineSegment {

@@ -6,6 +6,7 @@
 
 pub mod bola;
 pub mod constraints;
+pub mod dropped_frames;
 pub mod lol_plus;
 
 use std::sync::Arc;
@@ -14,7 +15,13 @@ use dash_mpd::AdaptationSet;
 
 pub use bola::BolaAbrFactory;
 pub use constraints::QualityConstraints;
+pub use dropped_frames::{
+    DEFAULT_DROPPED_FRAMES_PERCENTAGE_THRESHOLD, DEFAULT_MINIMUM_SAMPLE_SIZE, DroppedFramesHistory,
+    DroppedFramesParams,
+};
 pub use lol_plus::LolPlusAbrFactory;
+
+pub(crate) use dropped_frames::apply_dropped_frames_cap;
 
 use crate::clock::service_description::ResolvedOperatingConstraints;
 use crate::track_selection::descriptors::is_delivery_representation;

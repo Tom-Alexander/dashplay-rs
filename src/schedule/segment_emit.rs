@@ -207,6 +207,7 @@ pub(super) async fn record_quality_switch_and_throughput(
     byte_len: usize,
     download_duration: Duration,
     buffer_rx: &watch::Receiver<f64>,
+    dropped_frames: &crate::abr::DroppedFramesHistory,
 ) -> Result<(), PlayerError> {
     let _ = env;
     metrics.record_throughput(throughput_bps, byte_len, download_duration);
@@ -231,6 +232,7 @@ pub(super) async fn record_quality_switch_and_throughput(
         metrics.set_quality_index(used_quality_index);
     }
     *last_quality_index = Some(used_quality_index);
+    dropped_frames.set_active_quality(used_quality_index);
 
     abr.observe_segment_download(throughput_bps, byte_len, used_quality_index);
     abr.update_buffer(latest_buffer_s(buffer_rx));

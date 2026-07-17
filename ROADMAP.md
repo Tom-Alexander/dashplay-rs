@@ -1,6 +1,6 @@
 # Roadmap
 
-Status: `[ ]` not started · `[~]` partial.
+Status: `[ ]` not started · `[~]` partial · `[x]` done.
 
 ---
 
@@ -16,8 +16,9 @@ Status: `[ ]` not started · `[~]` partial.
   *dash.js:* AS min/max attrs are modelled/metadata; ABR caps come from settings
   (`abr.minBitrate` / `maxBitrate`) and capability filters, not hard enforcement of AS
   range attrs against each Representation.
-- [~] **ABR inputs.** Live latency / playback rate done (LoL+); dropped-frame signals
-  still pending.
+- [x] **ABR inputs.** Live latency / playback rate (LoL+); dropped-frame signals via
+  host `PlaybackQualityFeedback` (dash.js `DroppedFramesRule` /
+  `getVideoPlaybackQuality()`).
   *dash.js:* `droppedFramesRule` uses `getVideoPlaybackQuality()`; LL catch-up feeds
   latency into playback rate.
 - [~] **Pause semantics.** Buffer drain signalling; optional in-flight cancel.

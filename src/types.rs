@@ -8,6 +8,7 @@ use tokio::sync::watch;
 use tokio::task::JoinHandle;
 
 use super::PlayerError;
+use super::abr::DroppedFramesHistory;
 use super::manifest::ManifestMetadata;
 use super::metrics::TrackMetrics;
 use super::playback_control::PlaybackController;
@@ -97,6 +98,60 @@ impl BufferFeedback {
         self.tx
             .send(buffer_s)
             .map_err(|_| BufferFeedbackError::StreamEnded)
+    }
+}
+
+/// Absolute video frame counters from the host decoder / MSE pipeline.
+///
+/// Matches HTML5 [`VideoPlaybackQuality`](https://developer.mozilla.org/en-US/docs/Web/API/VideoPlaybackQuality)
+/// (`droppedVideoFrames` / `totalVideoFrames`). Report periodically via
+/// [`PlaybackQualityFeedback::report`] so ABR can down-switch when the platform cannot
+/// render the current representation without dropping frames.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct PlaybackQualitySample {
+    /// Frames dropped since the media was loaded (absolute counter).
+    pub dropped_video_frames: u64,
+    /// Total frames processed since the media was loaded (absolute counter).
+    pub total_video_frames: u64,
+}
+
+/// Error returned when playback-quality feedback can no longer reach the playback pipeline.
+#[derive(Debug, Error)]
+pub enum PlaybackQualityFeedbackError {
+    #[error("playback stream ended")]
+    StreamEnded,
+}
+
+/// Reports decoder / MSE video playback quality to the ABR dropped-frames rule.
+///
+/// Optional: when omitted, ABR does not consider dropped frames. Values should be absolute
+/// counters (as from `HTMLVideoElement.getVideoPlaybackQuality()`); the library diffs
+/// intervals and attributes them to the currently playing quality.
+#[derive(Clone)]
+pub struct PlaybackQualityFeedback {
+    history: DroppedFramesHistory,
+}
+
+impl PlaybackQualityFeedback {
+    pub(crate) fn new(history: DroppedFramesHistory) -> Self {
+        Self { history }
+    }
+
+    /// Shared dropped-frames history used by ABR scheduling for this track.
+    pub(crate) fn history(&self) -> &DroppedFramesHistory {
+        &self.history
+    }
+
+    /// Report absolute frame counters from the host playback pipeline.
+    ///
+    /// Intervals are attributed to the quality currently marked active by the scheduler.
+    pub fn report(
+        &self,
+        sample: PlaybackQualitySample,
+    ) -> Result<(), PlaybackQualityFeedbackError> {
+        self.history
+            .push(sample.dropped_video_frames, sample.total_video_frames);
+        Ok(())
     }
 }
 
@@ -245,6 +300,7 @@ pub struct PlayerTrack {
     meta: Arc<Mutex<TrackMeta>>,
     pub(crate) tx: broadcast::Sender<PlayerEvent>,
     pub(crate) buffer_feedback: BufferFeedback,
+    pub(crate) playback_quality_feedback: PlaybackQualityFeedback,
     pub(crate) buffer_tx: watch::Sender<f64>,
     pub(crate) buffer_rx: watch::Receiver<f64>,
     pub(crate) metrics: TrackMetrics,
@@ -255,6 +311,7 @@ impl PlayerTrack {
         info: TrackInfo,
         tx: broadcast::Sender<PlayerEvent>,
         buffer_feedback: BufferFeedback,
+        playback_quality_feedback: PlaybackQualityFeedback,
         buffer_tx: watch::Sender<f64>,
         buffer_rx: watch::Receiver<f64>,
         metrics: TrackMetrics,
@@ -266,6 +323,7 @@ impl PlayerTrack {
             })),
             tx,
             buffer_feedback,
+            playback_quality_feedback,
             buffer_tx,
             buffer_rx,
             metrics,
@@ -310,6 +368,16 @@ impl PlayerTrack {
     /// Send buffer occupancy updates for this track's ABR controller.
     pub fn buffer_feedback(&self) -> BufferFeedback {
         self.buffer_feedback.clone()
+    }
+
+    /// Report decoder / MSE dropped-frame counters for this track's ABR rule.
+    pub fn playback_quality_feedback(&self) -> PlaybackQualityFeedback {
+        self.playback_quality_feedback.clone()
+    }
+
+    /// Shared dropped-frames history for ABR scheduling (same handle as feedback).
+    pub(crate) fn dropped_frames_history(&self) -> DroppedFramesHistory {
+        self.playback_quality_feedback.history().clone()
     }
 
     /// Playback metrics for this track (throughput, buffer, startup delay, rebuffer, switches).

@@ -226,6 +226,8 @@ pub(crate) struct AdaptationStreamContext {
     pub buffer_rx: watch::Receiver<f64>,
     /// Sender used to publish estimated buffer occupancy.
     pub buffer_tx: watch::Sender<f64>,
+    /// Host-reported dropped-frame history for the ABR down-switch rule.
+    pub dropped_frames: crate::abr::DroppedFramesHistory,
     /// Prefetch thresholds from `MPD@minBufferTime`; ceiling is scaled to segment duration.
     pub buffer_target: BufferTarget,
     pub metrics: TrackMetrics,
@@ -273,6 +275,7 @@ pub(crate) async fn run_adaptation_stream(
         drm,
         mut buffer_rx,
         buffer_tx,
+        dropped_frames,
         buffer_target,
         metrics,
         playback,
@@ -494,6 +497,7 @@ pub(crate) async fn run_adaptation_stream(
             abr.as_mut(),
             latest_buffer_s(&buffer_rx),
             &playback.quality_constraints(),
+            Some(&dropped_frames),
         );
         let init_res: Result<(), PlayerError> = async {
             let (_, rep_id) = fetch_init_with_rep_fallback(
@@ -506,6 +510,7 @@ pub(crate) async fn run_adaptation_stream(
             .await?;
             let _ = rep_id;
             metrics.set_quality_index(init_plan.quality_index);
+            dropped_frames.set_active_quality(init_plan.quality_index);
             update_max_playout_rate_cap(
                 &playback,
                 abr.as_ref(),
@@ -525,6 +530,9 @@ pub(crate) async fn run_adaptation_stream(
     let mut per_segment_index_ranges_by_rep: HashMap<String, HashMap<u64, manifest::ByteRange>> =
         HashMap::new();
     let mut last_quality_index = metrics.last_quality_index();
+    if let Some(qi) = last_quality_index {
+        dropped_frames.set_active_quality(qi);
+    }
     let mut playback_started_emitted = false;
     let mut media_segments_delivered = 0usize;
     let mut held: Option<Vec<PlayerEvent>> = None;
@@ -628,6 +636,7 @@ pub(crate) async fn run_adaptation_stream(
             cached_inits: &encrypted_init_by_rep,
             last_quality_index,
             quality_constraints: playback.quality_constraints(),
+            dropped_frames: Some(&dropped_frames),
         };
 
         let first_plan = plan_segment(abr.as_mut(), buffer_s, &segments[cursor], cursor, &plan_ctx);
@@ -666,6 +675,7 @@ pub(crate) async fn run_adaptation_stream(
                 total_bytes,
                 download_duration,
                 &buffer_rx,
+                &dropped_frames,
             )
             .await?;
             update_max_playout_rate_cap(&playback, abr.as_ref(), track_kind, used_quality_index);
@@ -766,6 +776,7 @@ pub(crate) async fn run_adaptation_stream(
                 cached_inits: &encrypted_init_by_rep,
                 last_quality_index: speculative_last_q,
                 quality_constraints: playback.quality_constraints(),
+                dropped_frames: Some(&dropped_frames),
             };
             let plan = plan_segment(abr.as_mut(), buffer_s, &segments[look], look, &plan_ctx);
             if plan.chunked {
@@ -865,6 +876,7 @@ pub(crate) async fn run_adaptation_stream(
                 bytes.len(),
                 download_duration,
                 &buffer_rx,
+                &dropped_frames,
             )
             .await?;
             update_max_playout_rate_cap(&playback, abr.as_ref(), track_kind, used_quality_index);

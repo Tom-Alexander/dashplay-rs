@@ -209,6 +209,7 @@ impl MediaPlayer {
             let (tx, _rx) = broadcast::channel(256);
             let (buffer_tx, buffer_rx) = watch::channel(0.0);
             let metrics = super::metrics::TrackMetrics::new();
+            let dropped_frames = super::abr::DroppedFramesHistory::new();
             tracks.push(super::types::PlayerTrack::new(
                 selected.info,
                 tx.clone(),
@@ -219,6 +220,7 @@ impl MediaPlayer {
                     playback.clone(),
                     track_idx,
                 ),
+                super::types::PlaybackQualityFeedback::new(dropped_frames),
                 buffer_tx,
                 buffer_rx,
                 metrics,

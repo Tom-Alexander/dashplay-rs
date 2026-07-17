@@ -334,6 +334,8 @@ wrappers around the same controller. Clone handles (`outputs.playback.clone()`) 
 | [`TrackMetrics`](#metrics) | Per-track playback metrics collector |
 | [`TrackMetricsSnapshot`](#metrics) | Point-in-time metrics view (throughput, buffer, switches, rebuffers) |
 | [`ThroughputSample`](#metrics) / [`BufferSample`](#metrics) / [`BitrateSwitch`](#metrics) / [`RebufferEvent`](#metrics) | Individual metric samples |
+| [`BufferFeedback`](#bufferfeedback) | Optional decoder buffer occupancy reports for ABR |
+| [`PlaybackQualityFeedback`](#playbackqualityfeedback) / [`PlaybackQualitySample`](#playbackqualityfeedback) | Optional dropped-frame counters for ABR |
 | `TrackSelection` / `TrackPreference` | Ordered adaptation-set preferences and per-kind limits (audio, video, text) |
 | `TrackInfo` / `TrackKind` / `SubTrackInfo` | Metadata and media kind for a selected track; `SubTrackInfo` includes `@maxPlayoutRate` / `@codingDependency` |
 | [`ManifestMetadata`](#track-selection) | MPD `ProgramInformation`, reporting `Metrics`, period asset ids / labels |
@@ -515,6 +517,7 @@ One DASH adaptation set exposed as a `tokio::sync::broadcast` channel.
 | `subscribe()` | Create a new event receiver |
 | `receiver_count()` | Number of active subscribers |
 | `buffer_feedback()` | Report playback buffer occupancy for ABR |
+| `playback_quality_feedback()` | Report decoder / MSE dropped-frame counters for ABR |
 | `metrics()` | [`TrackMetrics`](#metrics) collector for this track |
 
 ---
@@ -532,6 +535,40 @@ actual occupancy.
 | Method | Description |
 |--------|-------------|
 | `report(buffer_s)` | Override the buffer level seen by ABR for this track and resync the media clock |
+
+---
+
+### `PlaybackQualityFeedback`
+
+Optional decoder / MSE video playback quality input for the dropped-frames ABR rule
+(dash.js: `DroppedFramesRule` / `getVideoPlaybackQuality()`).
+
+Report absolute `dropped_video_frames` / `total_video_frames` counters periodically. The
+library diffs intervals, attributes them to the currently playing quality, and caps ABR
+one rung below any quality whose drop ratio exceeds 15% after at least 375 frames
+(dash.js defaults). Fixed quality / disabled autoswitch take precedence over this cap.
+
+| Type / method | Description |
+|---------------|-------------|
+| `PlaybackQualitySample` | Absolute frame counters (`dropped_video_frames`, `total_video_frames`) |
+| `report(sample)` | Push a sample into the track's dropped-frames history |
+
+```rust
+use dashplayrs::{PlaybackQualitySample, Player};
+
+# async fn example() -> Result<(), dashplayrs::PlayerError> {
+let outputs = Player::new("https://example.com/manifest.mpd", None)?
+    .start_tracks()
+    .await?;
+let quality = outputs.playback_quality_feedback(0).expect("track 0");
+// From HTMLVideoElement.getVideoPlaybackQuality() or an equivalent decoder API:
+let _ = quality.report(PlaybackQualitySample {
+    dropped_video_frames: 12,
+    total_video_frames: 480,
+});
+# Ok(())
+# }
+```
 
 ---
 
@@ -609,6 +646,7 @@ Returned by [`Player::start_tracks`](#player):
 | `playback_state` / `subscribe_playback_state` | Current or watched [`PlaybackState`](#playbackstate) |
 | `presentation_time` / `subscribe_presentation_time` | Current or watched session presentation time |
 | `buffer_feedback(idx)` | [`BufferFeedback`](#bufferfeedback) for a track index |
+| `playback_quality_feedback(idx)` | [`PlaybackQualityFeedback`](#playbackqualityfeedback) for a track index |
 | `metrics(idx)` | [`TrackMetrics`](#metrics) for a track index |
 | `subscribe(idx)` | Subscribe to a track's broadcast channel |
 | `track_count()` | Number of adaptation-set tracks in this session |
@@ -698,6 +736,7 @@ Per-track handle returned in `PlayerTrackOutputs.tracks`:
 | `info()` | Selected-track language, roles, codecs, accessibility, ID, and media kind |
 | `into_receiver()` | Take ownership of the broadcast receiver |
 | `buffer_feedback()` | Report playback buffer occupancy for ABR |
+| `playback_quality_feedback()` | Report decoder / MSE dropped-frame counters for ABR |
 | `metrics()` | [`TrackMetrics`](#metrics) collector for this track |
 | `events()` | Stream wrapper over track events |
 
@@ -770,6 +809,8 @@ low-latency live, use [`LolPlusAbrFactory`](src/abr/lol_plus/) (LoL+ SOM).
 | `AbrDecision` | Chosen quality index and nominal bitrate |
 | `BolaAbrFactory` | Default BOLA backend; configure `ewma_alpha` / fallback timing on the struct |
 | `LolPlusAbrFactory` | LoL+ SOM backend for low-latency live; configure duration/latency/seed |
+| `DroppedFramesHistory` / `DroppedFramesParams` | Host-reported dropped-frame accumulators and rule thresholds |
+| `PlaybackQualityFeedback` / `PlaybackQualitySample` | Report `getVideoPlaybackQuality()`-style counters for the dropped-frames cap |
 | `SharedAbrFactory` | `Arc<dyn AbrFactory>` shared across playback tasks |
 | `shared_abr_factory(factory)` | Wrap a concrete factory for use with `with_abr_factory` |
 | `quality_ladder_from_adaptation_set` | Build a bandwidth-ordered ladder from an adaptation set |

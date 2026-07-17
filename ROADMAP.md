@@ -14,12 +14,6 @@ Status: `[ ]` not started · `[~]` partial.
 
 ## Correctness & standards
 
-- [x] **In-band / MPD events.** Period-level `EventStream` + in-band `emsg` (filtered by
-  AS/Rep `InbandEventStream`); SCTE-35 payload bytes exposed to the app via
-  `MediaEvent` / `Scte35Cue`. No AS/Rep MPD `EventStream`, no splice-command decode.
-  *dash.js:* Period `EventStream` + in-band `emsg` only (AS/Rep expose
-  `InbandEventStream`, not MPD `EventStream`). SCTE-35 bytes are dispatched to the app;
-  no splice-command decode.
 - [~] **Content steering / MPD updates.** `Location`, steering reorder, and MPD patch
   done; remaining: `PatchLocation@ttl`, multiple patch locations, patch failure
   surfacing, conditional GET, DCSM TTL reload, steering beyond BaseURL reorder.
@@ -38,24 +32,9 @@ Status: `[ ]` not started · `[~]` partial.
   *dash.js:* AS min/max attrs are modelled/metadata; ABR caps come from settings
   (`abr.minBitrate` / `maxBitrate`) and capability filters, not hard enforcement of AS
   range attrs against each Representation.
-- [x] **CBCS / pattern encryption.** MPD `mp4protection` `@value` and in-band `schm`
-  parsed; decrypt covers `cenc`/`cens`/`cbc1`/`cbcs` via Bento4 (documented + fixtures).
-  *dash.js:* Recognises `cenc`/`cbcs` in `ContentProtection`; decryption via EME/CDM.
 
 ## Scheduling & ABR
 
-- [x] **Manifest-derived BOLA parameters.** Segment duration and buffer limits from MPD
-  instead of hardcoded 4 s / 25 s.
-  *dash.js:* `bolaRule` uses measured buffer / fragment timing rather than fixed 4 s /
-  25 s constants.
-- [x] **User quality constraints.** Max/min bitrate, fixed quality, data-saver mode.
-  *dash.js:* `abr.minBitrate` / `maxBitrate`, `autoSwitchBitrate`,
-  `limitBitrateByPortal`; fixed rung via `setQualityFor` / disable autoswitch.
-- [x] **Playback rate / fast-forward.** `@maxPlayoutRate` and `@codingDependency` on
-  `QualityRung` / `SubTrackInfo`; `set_playback_rate` + effective rate capped by active
-  video/trick `@maxPlayoutRate`. Trick AS remapping remains via `TrackSelection`.
-  *dash.js:* `setPlaybackRate` + LL catch-up rate limits; `@maxPlayoutRate` on the
-  Representation model. `@codingDependency` is not a driver for trick-play.
 - [~] **ABR inputs.** Live latency / playback rate done (LoL+); dropped-frame signals
   still pending.
   *dash.js:* `droppedFramesRule` uses `getVideoPlaybackQuality()`; LL catch-up feeds
@@ -69,9 +48,6 @@ Status: `[ ]` not started · `[~]` partial.
 
 ## Networking & platform
 
-- [x] **HTTP retry with backoff.** Transient failures (failover only today).
-  *dash.js:* Fixed per-type delay (`retryIntervals`), not exponential backoff; default
-  ~3 attempts (`retryAttempts`), scaled in low-latency mode.
 - [~] **`BaseURL@availabilityTimeOffset`.** Honour BaseURL-level ATO.
   *dash.js:* Uses BaseURL ATO when segment-level ATO is absent; core LL availability.
 - [x] **DVB / namespace BaseURL extensions.** e.g. `@dvb:priority` beyond deserialize.
@@ -81,4 +57,21 @@ Status: `[ ]` not started · `[~]` partial.
   pathway query params.
 - [~] **WASM test player.** MSE demo exists; remaining: real buffer feedback, live MSE
   lifecycle, non-A/V tracks, broader fixtures.
+- [ ] **WASM DRM (CDM + `mp4decrypt`).** Same in-pipeline Widevine path as native: CDM
+  device → license challenge/response → content keys → Bento4 CENC decrypt → clear
+  segments to the host. Bento4 can be compiled to WASM, so `mp4decrypt` should work on
+  `wasm32` rather than forcing an EME-only design.
 
+  **Approach:**
+  1. **Build `mp4decrypt` / Bento4 for `wasm32`.** Ensure the `mp4decrypt` crate (Bento4
+     CENC processor) cross-compiles; fix or vendor any native-only assumptions (sys crates,
+     filesystem, threading). Prefer one decrypt API shared with native.
+  2. **CDM on WASM.** Keep the existing Rust Widevine CDM + session/renewal stack. Replace
+     native-only device loading (`DEVICE_PATH` / filesystem) with a WASM-friendly injector
+     (bytes from JS, `fetch`, or embed). License POSTs already work via `FetchClient` /
+     `WidevineLicenseFetcher`.
+  3. **Wire through `dashplay-wasm`.** Enable `drm` on the WASM crate; demo loads a device,
+     plays encrypted fixtures, appends **decrypted** fMP4 to MSE (same as clear content).
+  4. **Optional EME host path.** Separate later option for apps that must use the browser
+     CDM (`MediaKeys`) instead of a provided device: pass-through encrypted segments + DRM
+     signalling events. Not a substitute for the CDM + `mp4decrypt` goal.

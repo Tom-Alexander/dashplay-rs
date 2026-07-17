@@ -40,7 +40,9 @@ pub(crate) use availability::{
     target_presentation_time_at, target_presentation_time_from_since,
     uses_chunked_segment_transfer,
 };
-pub(crate) use base_url::{SegmentBaseContext, merge_base_url, segment_bases_for_representation};
+pub(crate) use base_url::{
+    SegmentBaseContext, merge_base_url, new_dvb_selection_seed, segment_bases_for_representation,
+};
 pub(crate) use bitstream_switching::bitstream_switching_enabled;
 pub(crate) use end_numbers::{SegmentTemplateEndNumbers, parse_segment_template_end_numbers};
 pub(crate) use fetch::{

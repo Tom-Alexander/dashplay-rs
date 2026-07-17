@@ -92,6 +92,7 @@ pub(super) fn build_sync_prefetch_plans(
                     .segment_base_ctx
                     .default_service_location
                     .clone(),
+                dvb_selection_seed: period_ctx.segment_base_ctx.dvb_selection_seed,
             },
             period_target_time: None,
             since_ast_utc: period_ctx.since_ast_utc,

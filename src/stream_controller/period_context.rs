@@ -82,6 +82,7 @@ pub(crate) fn build_period_context<'a>(
             .config
             .as_ref()
             .and_then(|c| c.default_service_location.clone()),
+        dvb_selection_seed: manifest::new_dvb_selection_seed(manifest_uri),
     };
 
     let since_ast_utc = manifest::since_availability_start_at(mpd, wall_now)?;

@@ -74,7 +74,7 @@ Status: `[ ]` not started · `[~]` partial.
   ~3 attempts (`retryAttempts`), scaled in low-latency mode.
 - [~] **`BaseURL@availabilityTimeOffset`.** Honour BaseURL-level ATO.
   *dash.js:* Uses BaseURL ATO when segment-level ATO is absent; core LL availability.
-- [ ] **DVB / namespace BaseURL extensions.** e.g. `@dvb:priority` beyond deserialize.
+- [x] **DVB / namespace BaseURL extensions.** e.g. `@dvb:priority` beyond deserialize.
   *dash.js:* Parses/uses `dvbPriority` / `dvbWeight` for BaseURL selection.
 - [ ] **Steering beyond BaseURL reorder.** DCSM features past `SERVICE-LOCATION-PRIORITY`.
   *dash.js:* Full DCSM client: TTL reload, `PATHWAY-PRIORITY`, optional `RELOAD-URI`,

@@ -10,7 +10,7 @@ use super::super::PlayerError;
 use super::super::clock::utc_timing;
 use super::super::http::SharedHttpClient;
 use super::super::manifest::{self, SegmentTemplateEndNumbers};
-use super::super::manifest_lifecycle::{ContentSteeringState, ManifestSession};
+use super::super::manifest_lifecycle::{ContentSteeringState, ManifestSession, SteeringSyncHints};
 use super::super::types::{PlayerEvent, PlayerTrack};
 
 /// Parsed manifest state produced by one refresh cycle.
@@ -32,11 +32,12 @@ pub(crate) async fn refresh_manifest(
     manifest_uri: &Url,
     cmcd: Option<&crate::cmcd::CmcdSession>,
     http_retry: &crate::http::HttpRetryConfig,
+    steering_hints: &SteeringSyncHints,
 ) -> Result<(), PlayerError> {
     session
         .refresh(client, manifest_uri, cmcd, http_retry)
         .await?;
-    session.sync_steering(client).await
+    session.sync_steering(client, steering_hints).await
 }
 
 pub(crate) async fn manifest_tick<'a>(

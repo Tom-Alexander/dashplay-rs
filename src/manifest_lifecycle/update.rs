@@ -11,7 +11,7 @@ use crate::http::{
 use crate::manifest::ManifestError;
 use crate::manifest::merge_base_url;
 
-use super::content_steering::ContentSteeringState;
+use super::content_steering::{ContentSteeringState, SteeringSyncHints};
 use super::patch::{self, MpdPatchError};
 use super::xlink::{self, XlinkError};
 
@@ -66,10 +66,13 @@ impl ManifestSession {
     pub(crate) async fn sync_steering(
         &mut self,
         client: &SharedHttpClient,
+        hints: &SteeringSyncHints,
     ) -> Result<(), PlayerError> {
         let xml = self.xml()?.to_string();
         let uri = self.manifest_uri()?.clone();
-        self.steering.sync_from_mpd_xml(client, &xml, &uri).await
+        self.steering
+            .sync_from_mpd_xml(client, &xml, &uri, hints)
+            .await
     }
 
     fn resolve_fetch_uri(&self, initial_uri: &Url) -> Result<Url, ManifestError> {

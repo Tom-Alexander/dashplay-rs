@@ -21,7 +21,7 @@ use super::abr::SharedAbrFactory;
 use super::clock::latency_control::LatencyPolicy;
 use super::http::SharedHttpClient;
 use super::manifest::{self, PeriodLink};
-use super::manifest_lifecycle::ManifestSession;
+use super::manifest_lifecycle::{ManifestSession, SteeringSyncHints, next_refresh_sleep};
 use super::playback_control::{PlaybackController, PlaybackState};
 use super::schedule::{AdaptationStreamContext, BufferTarget, run_adaptation_stream};
 use super::segment_blacklist::SegmentBlacklist;
@@ -88,12 +88,14 @@ impl PlaybackLoopState {
 
                 playback.set_state(PlaybackState::LoadingManifest);
 
+                let steering_hints = steering_sync_hints(&tracks, &manifest_session);
                 refresh_manifest(
                     &mut manifest_session,
                     &client,
                     &manifest_uri,
                     cmcd.as_ref(),
                     &http_retry,
+                    &steering_hints,
                 )
                 .await?;
                 let tick = manifest_tick(&manifest_session, &client).await?;
@@ -352,7 +354,11 @@ impl PlaybackLoopState {
                     break;
                 }
 
-                sleep(tick.min_update_period).await;
+                sleep(next_refresh_sleep(
+                    tick.min_update_period,
+                    tick.steering.ttl_remaining(),
+                ))
+                .await;
             }
 
             Ok(())
@@ -374,6 +380,23 @@ fn send_playback_ended(tracks: &[super::types::PlayerTrack]) {
     for t in tracks {
         let _ = t.tx.send(PlayerEvent::PlaybackEnded);
         let _ = t.tx.send(PlayerEvent::End);
+    }
+}
+
+fn steering_sync_hints(
+    tracks: &[super::types::PlayerTrack],
+    session: &ManifestSession,
+) -> SteeringSyncHints {
+    let pathway = session.steering.current_pathway().map(str::to_string);
+    let throughput_bps = tracks
+        .iter()
+        .map(|t| t.metrics.snapshot().throughput_bps)
+        .filter(|bps| bps.is_finite() && *bps > 0.0)
+        .map(|bps| bps.round() as u64)
+        .max();
+    SteeringSyncHints {
+        pathway,
+        throughput_bps,
     }
 }
 

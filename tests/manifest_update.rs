@@ -268,19 +268,29 @@ async fn serve_patch_path(
 #[derive(Clone)]
 struct SteeringLiveState {
     beta_files: Arc<HashMap<String, Vec<u8>>>,
+    dcsm_hits: Arc<AtomicUsize>,
+    ttl_secs: u64,
 }
 
 struct SteeringLiveServer {
     pub manifest_url: Url,
+    pub dcsm_hits: Arc<AtomicUsize>,
     shutdown: Option<oneshot::Sender<()>>,
     handle: JoinHandle<()>,
 }
 
 impl SteeringLiveServer {
     async fn spawn() -> Self {
+        Self::spawn_with_ttl(300).await
+    }
+
+    async fn spawn_with_ttl(ttl_secs: u64) -> Self {
         let beta = common::fixture_dir("live_duration");
+        let dcsm_hits = Arc::new(AtomicUsize::new(0));
         let state = SteeringLiveState {
             beta_files: Arc::new(common::load_fixture_files_public(&beta)),
+            dcsm_hits: dcsm_hits.clone(),
+            ttl_secs,
         };
 
         let app = Router::new()
@@ -306,6 +316,7 @@ impl SteeringLiveServer {
 
         Self {
             manifest_url: Url::parse(&format!("http://{addr}/manifest.mpd")).unwrap(),
+            dcsm_hits,
             shutdown: Some(shutdown_tx),
             handle,
         }
@@ -345,8 +356,12 @@ async fn serve_steering_manifest() -> Response {
     xml_ok(body.to_string())
 }
 
-async fn serve_steering_dcsm() -> Response {
-    let body = r#"{"VERSION":1,"TTL":300,"SERVICE-LOCATION-PRIORITY":["beta"]}"#;
+async fn serve_steering_dcsm(State(state): State<SteeringLiveState>) -> Response {
+    state.dcsm_hits.fetch_add(1, Ordering::SeqCst);
+    let body = format!(
+        r#"{{"VERSION":1,"TTL":{},"PATHWAY-PRIORITY":["beta"],"RELOAD-URI":"steering.json"}}"#,
+        state.ttl_secs
+    );
     Response::builder()
         .status(StatusCode::OK)
         .header("Content-Type", "application/json")
@@ -425,5 +440,9 @@ async fn content_steering_selects_preferred_base_url() {
     assert!(
         !segments.is_empty(),
         "expected segments from steered beta base URL"
+    );
+    assert!(
+        server.dcsm_hits.load(Ordering::SeqCst) >= 1,
+        "expected at least one DCSM fetch"
     );
 }

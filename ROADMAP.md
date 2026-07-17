@@ -16,7 +16,7 @@ Status: `[ ]` not started · `[~]` partial.
 
 - [~] **Content steering / MPD updates.** `Location`, steering reorder, and MPD patch
   done; remaining: `PatchLocation@ttl`, multiple patch locations, patch failure
-  surfacing, conditional GET, DCSM TTL reload, steering beyond BaseURL reorder.
+  surfacing, conditional GET.
   *dash.js:* MPD patch with `PatchLocation` (+ ttl), multi-location select, invalid-patch
   → full refresh; content steering with DCSM TTL / `PATHWAY-PRIORITY` / `RELOAD-URI`.
   No dedicated player-side conditional GET (browser cache may 304).
@@ -52,7 +52,9 @@ Status: `[ ]` not started · `[~]` partial.
   *dash.js:* Uses BaseURL ATO when segment-level ATO is absent; core LL availability.
 - [x] **DVB / namespace BaseURL extensions.** e.g. `@dvb:priority` beyond deserialize.
   *dash.js:* Parses/uses `dvbPriority` / `dvbWeight` for BaseURL selection.
-- [ ] **Steering beyond BaseURL reorder.** DCSM features past `SERVICE-LOCATION-PRIORITY`.
+- [x] **Steering beyond BaseURL reorder.** DCSM features past `SERVICE-LOCATION-PRIORITY`:
+  TTL-gated reload, `PATHWAY-PRIORITY`, optional `RELOAD-URI`, `_DASH_pathway` /
+  `_DASH_throughput` query params.
   *dash.js:* Full DCSM client: TTL reload, `PATHWAY-PRIORITY`, optional `RELOAD-URI`,
   pathway query params.
 - [~] **WASM test player.** MSE demo exists; remaining: real buffer feedback, live MSE

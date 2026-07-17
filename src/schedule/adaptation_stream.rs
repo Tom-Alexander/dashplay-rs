@@ -504,6 +504,7 @@ pub(crate) async fn run_adaptation_stream(
         track_kind,
         cmcd: cmcd.as_ref(),
         http_retry: &http_retry,
+        playback: &playback,
         emit_init: init_taken,
     };
     if init_taken {
@@ -659,7 +660,7 @@ pub(crate) async fn run_adaptation_stream(
         // LL-DASH chunked segments stay sequential (progressive emit).
         if first_plan.chunked {
             let t0 = Instant::now();
-            let (fragments, used_quality_index, seg_for_fetch) = with_media_clock_ticks(
+            let cmaf_result = with_media_clock_ticks(
                 fetch_cmaf_media_with_rep_fallback(
                     &fetch_env,
                     abr.as_ref(),
@@ -673,7 +674,15 @@ pub(crate) async fn run_adaptation_stream(
                 &metrics,
                 &tx,
             )
-            .await?;
+            .await;
+            let (fragments, used_quality_index, seg_for_fetch) = match cmaf_result {
+                Ok(v) => v,
+                Err(PlayerError::Segment(SegmentError::Cancelled)) => {
+                    playback.wait_while_paused().await;
+                    continue;
+                }
+                Err(err) => return Err(err),
+            };
             let elapsed_s = t0.elapsed().as_secs_f64().max(1e-6);
             let download_duration = t0.elapsed();
             let total_bytes: usize = fragments.iter().map(|f| f.len()).sum();
@@ -735,7 +744,7 @@ pub(crate) async fn run_adaptation_stream(
                 )
                 .await?;
 
-                if playback.is_paused() {
+                if playback.is_paused() && !playback.schedule_while_paused() {
                     continue;
                 }
 
@@ -838,6 +847,7 @@ pub(crate) async fn run_adaptation_stream(
         .await;
         let _batch_elapsed = t0.elapsed();
 
+        let mut batch_cancelled = false;
         for ((plan, prepared_item), (download_duration, download_result)) in
             plans.into_iter().zip(prepared).zip(download_results)
         {
@@ -854,6 +864,11 @@ pub(crate) async fn run_adaptation_stream(
                         prepared_item.quality_index,
                         prepared_item.seg_for_fetch,
                     ),
+                    Err(PlayerError::Segment(SegmentError::Cancelled)) => {
+                        playback.wait_while_paused().await;
+                        batch_cancelled = true;
+                        break;
+                    }
                     Err(err) if prepared_item.quality_index == 0 => {
                         return Err(err);
                     }
@@ -862,18 +877,27 @@ pub(crate) async fn run_adaptation_stream(
                         let mut fallback_plan = plan;
                         fallback_plan.quality_index = prepared_item.quality_index - 1;
                         let retry_t0 = Instant::now();
-                        let (bytes, used_quality_index, seg_for_fetch) =
-                            fetch_media_with_rep_fallback(
-                                &fetch_env,
-                                abr.as_ref(),
-                                &fallback_plan,
-                                &mut encrypted_init_by_rep,
-                                &mut sidx_segments_by_rep,
-                                &mut per_segment_index_ranges_by_rep,
-                                &mut init_signal,
-                            )
-                            .await?;
-                        (retry_t0.elapsed(), bytes, used_quality_index, seg_for_fetch)
+                        let fallback = fetch_media_with_rep_fallback(
+                            &fetch_env,
+                            abr.as_ref(),
+                            &fallback_plan,
+                            &mut encrypted_init_by_rep,
+                            &mut sidx_segments_by_rep,
+                            &mut per_segment_index_ranges_by_rep,
+                            &mut init_signal,
+                        )
+                        .await;
+                        match fallback {
+                            Ok((bytes, used_quality_index, seg_for_fetch)) => {
+                                (retry_t0.elapsed(), bytes, used_quality_index, seg_for_fetch)
+                            }
+                            Err(PlayerError::Segment(SegmentError::Cancelled)) => {
+                                playback.wait_while_paused().await;
+                                batch_cancelled = true;
+                                break;
+                            }
+                            Err(err) => return Err(err),
+                        }
                     }
                 };
 
@@ -923,7 +947,7 @@ pub(crate) async fn run_adaptation_stream(
             if playback.is_stopped() || playback.seek_generation() != seek_generation_at_start {
                 return Ok(None);
             }
-            if playback.is_paused() {
+            if playback.is_paused() && !playback.schedule_while_paused() {
                 continue;
             }
 
@@ -950,7 +974,9 @@ pub(crate) async fn run_adaptation_stream(
             media_segments_delivered += 1;
         }
 
-        cursor += batch_len;
+        if !batch_cancelled {
+            cursor += batch_len;
+        }
     }
 
     Ok(held.map(|events| (track_idx, events)))

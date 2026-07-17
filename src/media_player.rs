@@ -40,6 +40,7 @@ pub struct MediaPlayer {
     quality_constraints: QualityConstraints,
     cmcd: Option<CmcdSession>,
     http_retry: HttpRetryConfig,
+    pause_policy: crate::playback_control::PausePolicy,
 }
 
 impl MediaPlayer {
@@ -64,6 +65,7 @@ impl MediaPlayer {
             quality_constraints: QualityConstraints::default(),
             cmcd: None,
             http_retry: HttpRetryConfig::default(),
+            pause_policy: crate::playback_control::PausePolicy::default(),
         })
     }
 
@@ -127,6 +129,19 @@ impl MediaPlayer {
     /// (`~3` attempts, fixed intervals; scaled for low-latency CMAF fetches).
     pub fn with_http_retry(mut self, config: HttpRetryConfig) -> Self {
         self.http_retry = config;
+        self
+    }
+
+    /// Configure pause scheduling and optional in-flight cancel (dash.js:
+    /// `streaming.scheduling.scheduleWhilePaused`).
+    ///
+    /// Defaults keep downloading while paused. Use
+    /// [`PausePolicy::stop_while_paused`](crate::PausePolicy::stop_while_paused) to
+    /// suspend fetch/delivery on pause, or
+    /// [`PausePolicy::stop_and_cancel_inflight`](crate::PausePolicy::stop_and_cancel_inflight)
+    /// to also abort in-flight segment requests and pending retries.
+    pub fn with_pause_policy(mut self, policy: crate::playback_control::PausePolicy) -> Self {
+        self.pause_policy = policy;
         self
     }
 
@@ -211,6 +226,7 @@ impl MediaPlayer {
 
         let playback = PlaybackController::new();
         playback.set_quality_constraints_unchecked(self.quality_constraints);
+        playback.set_pause_policy_unchecked(self.pause_policy);
         playback.mark_started();
 
         let mut tracks = Vec::with_capacity(adaptation_sets.len());

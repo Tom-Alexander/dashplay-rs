@@ -31,7 +31,10 @@ pub enum PlaybackState {
     Buffering,
     /// Segments are being delivered for active consumption.
     Playing,
-    /// Delivery is suspended until [`PlaybackController::resume`].
+    /// Consumption is suspended until [`PlaybackController::resume`].
+    ///
+    /// Segment fetch/delivery may continue when
+    /// [`PausePolicy::schedule_while_paused`] is `true` (default).
     Paused,
     /// Repositioning to a new presentation time.
     Seeking,
@@ -50,6 +53,94 @@ pub enum PlaybackControlError {
     Stopped,
     #[error("playback rate must be a finite value greater than zero")]
     InvalidPlaybackRate,
+}
+
+/// Pause scheduling and cancel policy (dash.js: `streaming.scheduling`).
+///
+/// Defaults match dash.js: keep downloading while paused; do not abort in-flight
+/// requests unless [`Self::cancel_inflight_on_pause`] is enabled.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct PausePolicy {
+    /// Keep fetching and delivering segments while [`PlaybackState::Paused`].
+    ///
+    /// When `false`, the scheduler blocks on pause (no new downloads or delivery)
+    /// until [`PlaybackController::resume`]. Default `true`.
+    pub schedule_while_paused: bool,
+    /// When [`Self::schedule_while_paused`] is `false`, abort in-flight segment
+    /// requests and pending HTTP retries on [`PlaybackController::pause`].
+    ///
+    /// Default `false`. Has no effect when `schedule_while_paused` is `true`.
+    pub cancel_inflight_on_pause: bool,
+}
+
+impl Default for PausePolicy {
+    fn default() -> Self {
+        Self {
+            schedule_while_paused: true,
+            cancel_inflight_on_pause: false,
+        }
+    }
+}
+
+impl PausePolicy {
+    /// Dash.js-aligned defaults (`scheduleWhilePaused: true`).
+    pub fn new() -> Self {
+        Self::default()
+    }
+
+    /// Stop scheduling while paused (historical dashplayrs default before v1).
+    pub fn stop_while_paused() -> Self {
+        Self {
+            schedule_while_paused: false,
+            cancel_inflight_on_pause: false,
+        }
+    }
+
+    /// Stop scheduling while paused and abort in-flight segment GETs / retries.
+    pub fn stop_and_cancel_inflight() -> Self {
+        Self {
+            schedule_while_paused: false,
+            cancel_inflight_on_pause: true,
+        }
+    }
+
+    /// Keep scheduling while paused (dash.js default).
+    pub fn with_schedule_while_paused(mut self, enabled: bool) -> Self {
+        self.schedule_while_paused = enabled;
+        self
+    }
+
+    /// Abort in-flight requests when pausing with scheduling stopped.
+    pub fn with_cancel_inflight_on_pause(mut self, enabled: bool) -> Self {
+        self.cancel_inflight_on_pause = enabled;
+        self
+    }
+}
+
+/// Snapshot used to detect fetch cancellation across pause/retry boundaries.
+#[derive(Debug, Clone)]
+pub(crate) struct FetchCancelGuard {
+    rx: watch::Receiver<u64>,
+    at_start: u64,
+}
+
+impl FetchCancelGuard {
+    /// `true` when [`PlaybackController::pause`] cancelled fetches since this guard was taken.
+    pub fn is_cancelled(&self) -> bool {
+        *self.rx.borrow() != self.at_start
+    }
+
+    /// Resolve when cancelled (or the cancel channel closes).
+    pub async fn cancelled(&mut self) {
+        loop {
+            if self.is_cancelled() {
+                return;
+            }
+            if self.rx.changed().await.is_err() {
+                return;
+            }
+        }
+    }
 }
 
 /// Result of advancing the internal media clock.
@@ -76,6 +167,10 @@ struct Inner {
     started: AtomicBool,
     paused: AtomicBool,
     stopped: AtomicBool,
+    pause_policy: Mutex<PausePolicy>,
+    /// Bumped when pause cancels in-flight segment fetches (see [`PausePolicy`]).
+    fetch_cancel_tx: watch::Sender<u64>,
+    fetch_cancel_rx: watch::Receiver<u64>,
     seek_target: Mutex<Option<Duration>>,
     seek_generation: AtomicU64,
     pending_track_selection: Mutex<Option<TrackSelection>>,
@@ -112,6 +207,7 @@ impl PlaybackController {
         let (playhead_tx, playhead_rx) = watch::channel(None);
         let (suggested_rate_tx, suggested_rate_rx) = watch::channel(1.0);
         let (live_latency_tx, live_latency_rx) = watch::channel(None);
+        let (fetch_cancel_tx, fetch_cancel_rx) = watch::channel(0u64);
         Self {
             inner: Arc::new(Inner {
                 state_tx,
@@ -121,6 +217,9 @@ impl PlaybackController {
                 started: AtomicBool::new(false),
                 paused: AtomicBool::new(false),
                 stopped: AtomicBool::new(false),
+                pause_policy: Mutex::new(PausePolicy::default()),
+                fetch_cancel_tx,
+                fetch_cancel_rx,
                 seek_target: Mutex::new(None),
                 seek_generation: AtomicU64::new(0),
                 pending_track_selection: Mutex::new(None),
@@ -247,13 +346,44 @@ impl PlaybackController {
         self.inner.live_latency_tx.subscribe()
     }
 
-    /// Suspend segment delivery until [`Self::resume`].
+    /// Suspend consumption until [`Self::resume`].
+    ///
+    /// The media clock freezes so automatic buffer drain stops. Whether segment
+    /// fetch/delivery continues depends on [`PausePolicy::schedule_while_paused`].
+    /// When scheduling is stopped and [`PausePolicy::cancel_inflight_on_pause`] is
+    /// set, in-flight segment requests and pending retries are aborted.
     pub fn pause(&self) -> Result<(), PlaybackControlError> {
         self.require_active()?;
         self.inner.paused.store(true, Ordering::Release);
         self.clear_media_clock_wall();
+        let policy = self.pause_policy();
+        if !policy.schedule_while_paused && policy.cancel_inflight_on_pause {
+            self.bump_fetch_cancel();
+        }
         let _ = self.inner.state_tx.send(PlaybackState::Paused);
         Ok(())
+    }
+
+    /// Current pause scheduling / cancel policy.
+    pub fn pause_policy(&self) -> PausePolicy {
+        *self
+            .inner
+            .pause_policy
+            .lock()
+            .unwrap_or_else(|e| e.into_inner())
+    }
+
+    /// Update pause scheduling / cancel policy for this session.
+    pub fn set_pause_policy(&self, policy: PausePolicy) {
+        *self
+            .inner
+            .pause_policy
+            .lock()
+            .unwrap_or_else(|e| e.into_inner()) = policy;
+    }
+
+    pub(crate) fn set_pause_policy_unchecked(&self, policy: PausePolicy) {
+        self.set_pause_policy(policy);
     }
 
     /// Resume delivery after [`Self::pause`].
@@ -910,6 +1040,23 @@ impl PlaybackController {
         self.inner.paused.load(Ordering::Acquire)
     }
 
+    /// Whether the scheduler should keep fetching/delivering while paused.
+    pub(crate) fn schedule_while_paused(&self) -> bool {
+        self.pause_policy().schedule_while_paused
+    }
+
+    /// Guard that observes in-flight fetch cancellation for the current attempt.
+    pub(crate) fn fetch_cancel_guard(&self) -> FetchCancelGuard {
+        let rx = self.inner.fetch_cancel_tx.subscribe();
+        let at_start = *rx.borrow();
+        FetchCancelGuard { rx, at_start }
+    }
+
+    fn bump_fetch_cancel(&self) {
+        let next = self.inner.fetch_cancel_rx.borrow().saturating_add(1);
+        let _ = self.inner.fetch_cancel_tx.send(next);
+    }
+
     pub(crate) fn seek_generation(&self) -> u64 {
         self.inner.seek_generation.load(Ordering::Acquire)
     }
@@ -932,7 +1079,11 @@ impl PlaybackController {
             .take()
     }
 
+    /// Block while paused when [`PausePolicy::schedule_while_paused`] is `false`.
     pub(crate) async fn wait_while_paused(&self) {
+        if self.schedule_while_paused() {
+            return;
+        }
         while self.is_paused() && !self.is_stopped() {
             crate::platform::sleep(Duration::from_millis(50)).await;
         }
@@ -1265,5 +1416,26 @@ mod tests {
                 .playhead_changed
         );
         assert!((playback.estimated_buffer_s(0) - before).abs() < 1e-9);
+    }
+
+    #[test]
+    fn pause_with_cancel_bumps_fetch_cancel_generation() {
+        let playback = PlaybackController::new();
+        playback.mark_started();
+        playback.set_pause_policy(PausePolicy::stop_and_cancel_inflight());
+        let guard = playback.fetch_cancel_guard();
+        assert!(!guard.is_cancelled());
+        playback.pause().unwrap();
+        assert!(guard.is_cancelled());
+    }
+
+    #[test]
+    fn schedule_while_paused_does_not_cancel_fetches() {
+        let playback = PlaybackController::new();
+        playback.mark_started();
+        assert!(playback.schedule_while_paused());
+        let guard = playback.fetch_cancel_guard();
+        playback.pause().unwrap();
+        assert!(!guard.is_cancelled());
     }
 }

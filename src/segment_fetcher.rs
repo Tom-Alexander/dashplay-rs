@@ -36,6 +36,9 @@ pub(crate) struct SegmentRetry<'a> {
     pub low_latency: bool,
 }
 
+/// Optional pause-cancel observer for a segment fetch.
+pub(crate) type SegmentCancel<'a> = Option<&'a mut crate::playback_control::FetchCancelGuard>;
+
 impl SegmentRetry<'_> {
     pub fn media(config: &HttpRetryConfig) -> SegmentRetry<'_> {
         SegmentRetry {
@@ -78,6 +81,7 @@ pub(crate) async fn fetch_bytes_with_base_failover(
     blacklist: &SegmentBlacklist,
     cmcd: Option<CmcdFetch<'_>>,
     retry: SegmentRetry<'_>,
+    cancel: SegmentCancel<'_>,
 ) -> Result<FetchedBytes, SegmentError> {
     fetch_bytes_with_base_failover_and_range(
         client,
@@ -87,11 +91,13 @@ pub(crate) async fn fetch_bytes_with_base_failover(
         blacklist,
         cmcd,
         retry,
+        cancel,
     )
     .await
 }
 
 /// Like [`fetch_bytes_with_base_failover`], but sends an HTTP `Range` header when `range` is set.
+#[allow(clippy::too_many_arguments)]
 pub(crate) async fn fetch_bytes_with_base_failover_and_range(
     client: &SharedHttpClient,
     bases: &[Url],
@@ -100,16 +106,31 @@ pub(crate) async fn fetch_bytes_with_base_failover_and_range(
     blacklist: &SegmentBlacklist,
     cmcd: Option<CmcdFetch<'_>>,
     retry: SegmentRetry<'_>,
+    mut cancel: SegmentCancel<'_>,
 ) -> Result<FetchedBytes, SegmentError> {
     let mut last_err: Option<SegmentError> = None;
     for base in bases {
+        if cancel.as_ref().is_some_and(|c| c.is_cancelled()) {
+            return Err(SegmentError::Cancelled);
+        }
         let url = if relative_path.is_empty() {
             base.clone()
         } else {
             base.join(relative_path)?
         };
-        match fetch_bytes_range(client, url, range, blacklist, cmcd.as_ref(), retry).await {
+        match fetch_bytes_range(
+            client,
+            url,
+            range,
+            blacklist,
+            cmcd.as_ref(),
+            retry,
+            cancel.as_deref_mut(),
+        )
+        .await
+        {
             Ok(b) => return Ok(b),
+            Err(SegmentError::Cancelled) => return Err(SegmentError::Cancelled),
             Err(e) => last_err = Some(e),
         }
     }
@@ -123,6 +144,7 @@ async fn fetch_bytes_range(
     blacklist: &SegmentBlacklist,
     cmcd: Option<&CmcdFetch<'_>>,
     retry: SegmentRetry<'_>,
+    cancel: SegmentCancel<'_>,
 ) -> Result<FetchedBytes, SegmentError> {
     if blacklist.contains_url(&url) {
         return Err(SegmentError::Blacklisted(url.to_string()));
@@ -168,8 +190,10 @@ async fn fetch_bytes_range(
         |err| match err {
             SegmentError::Request(_) => true,
             SegmentError::RequestFailed { status, .. } => is_transient_status(*status),
+            SegmentError::Cancelled => false,
             _ => false,
         },
+        cancel,
     )
     .await
     .inspect_err(|err| {
@@ -228,6 +252,7 @@ mod tests {
             &blacklist,
             None,
             retry,
+            None,
         )
         .await
         .expect_err("404");
@@ -244,6 +269,7 @@ mod tests {
             &blacklist,
             None,
             retry,
+            None,
         )
         .await
         .expect_err("blacklisted");
@@ -292,6 +318,7 @@ mod tests {
             &blacklist,
             None,
             SegmentRetry::media(&retry_cfg),
+            None,
         )
         .await
         .expect("failover");
@@ -316,6 +343,7 @@ mod tests {
             &blacklist,
             None,
             SegmentRetry::media(&retry_cfg),
+            None,
         )
         .await
         .unwrap_err();
@@ -365,6 +393,7 @@ mod tests {
             &blacklist,
             None,
             SegmentRetry::media(&retry_cfg),
+            None,
         )
         .await
         .unwrap_err();
@@ -419,6 +448,7 @@ mod tests {
             &blacklist,
             None,
             SegmentRetry::media(&retry_cfg),
+            None,
         )
         .await
         .expect("retry");

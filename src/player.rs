@@ -80,6 +80,15 @@ impl Player {
         }
     }
 
+    /// Configure pause scheduling and optional in-flight cancel.
+    ///
+    /// See [`MediaPlayer::with_pause_policy`].
+    pub fn with_pause_policy(self, policy: crate::PausePolicy) -> Self {
+        Self {
+            media_player: self.media_player.with_pause_policy(policy),
+        }
+    }
+
     /// Start the underlying `MediaPlayer` and return a **single merged byte stream**.
     ///
     /// Spawns one Tokio task that runs the stream controller and forwards all track events

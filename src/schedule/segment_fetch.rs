@@ -18,6 +18,7 @@ use crate::http::{HttpRetryConfig, SharedHttpClient};
 use crate::manifest::{self, ManifestError};
 use crate::metrics::TrackMetrics;
 use crate::mp4::partial_segment;
+use crate::playback_control::PlaybackController;
 use crate::segment::SegmentError;
 use crate::segment_blacklist::SegmentBlacklist;
 use crate::segment_fetcher::{
@@ -80,6 +81,7 @@ pub(crate) struct RepFetchEnv<'a> {
     pub(crate) track_kind: TrackKind,
     pub(crate) cmcd: Option<&'a CmcdSession>,
     pub(crate) http_retry: &'a HttpRetryConfig,
+    pub(crate) playback: &'a PlaybackController,
     /// Retained for call-site clarity around period continuity; Init emission is owned by
     /// [`InitSignalState`].
     #[allow(dead_code)]
@@ -227,6 +229,7 @@ pub(crate) async fn download_prepared_media(
         prepared.encoded_bitrate_bps,
         prepared.object_duration_ms,
     );
+    let mut cancel = env.playback.fetch_cancel_guard();
     let fetched = fetch_segment_target(
         env.client,
         &prepared.bases,
@@ -234,6 +237,7 @@ pub(crate) async fn download_prepared_media(
         env.blacklist,
         cmcd,
         SegmentRetry::media(env.http_retry),
+        Some(&mut cancel),
     )
     .await?;
     env.report_cmsd(fetched.cmsd.clone());
@@ -272,6 +276,9 @@ pub(crate) async fn fetch_media_with_rep_fallback(
         match download_prepared_media(env, &prepared).await {
             Ok(fetched) => {
                 return Ok((fetched.data, prepared.quality_index, prepared.seg_for_fetch));
+            }
+            Err(PlayerError::Segment(SegmentError::Cancelled)) => {
+                return Err(PlayerError::Segment(SegmentError::Cancelled));
             }
             Err(e) => last_err = e,
         }
@@ -440,6 +447,7 @@ pub(super) async fn fetch_cmaf_media_with_rep_fallback(
         let br_bps = rep.bandwidth.map(|b| b as f64);
         let d_ms = object_duration_ms(&seg_for_fetch);
         let cmcd = env.cmcd_fetch(env.media_object_type(), br_bps, d_ms);
+        let mut cancel = env.playback.fetch_cancel_guard();
         match partial_segment::fetch_cmaf_fragments_for_target(
             env.client,
             &bases,
@@ -447,6 +455,7 @@ pub(super) async fn fetch_cmaf_media_with_rep_fallback(
             env.blacklist,
             cmcd,
             SegmentRetry::media_low_latency(env.http_retry),
+            Some(&mut cancel),
         )
         .await
         {
@@ -455,6 +464,7 @@ pub(super) async fn fetch_cmaf_media_with_rep_fallback(
                 return Ok((fragments, quality_index, seg_for_fetch));
             }
             Ok(_) => last_err = PlayerError::from(SegmentError::ExhaustedRepresentations),
+            Err(SegmentError::Cancelled) => return Err(SegmentError::Cancelled.into()),
             Err(e) => last_err = e.into(),
         }
     }
@@ -492,6 +502,7 @@ async fn ensure_init_for_rep(
     };
     let br_bps = rep.bandwidth.map(|b| b as f64);
     let cmcd = env.cmcd_fetch(CmcdObjectType::Init, br_bps, None);
+    let mut cancel = env.playback.fetch_cancel_guard();
     let fetched = fetch_segment_target(
         env.client,
         &bases,
@@ -499,6 +510,7 @@ async fn ensure_init_for_rep(
         env.blacklist,
         cmcd,
         SegmentRetry::init(env.http_retry),
+        Some(&mut cancel),
     )
     .await?;
     env.report_cmsd(fetched.cmsd.clone());
@@ -624,6 +636,7 @@ pub(super) async fn fetch_segment_target(
     blacklist: &SegmentBlacklist,
     cmcd: Option<CmcdFetch<'_>>,
     retry: SegmentRetry<'_>,
+    cancel: crate::segment_fetcher::SegmentCancel<'_>,
 ) -> Result<FetchedBytes, PlayerError> {
     if target.range.is_some() {
         return fetch_bytes_with_base_failover_and_range(
@@ -634,11 +647,12 @@ pub(super) async fn fetch_segment_target(
             blacklist,
             cmcd,
             retry,
+            cancel,
         )
         .await
         .map_err(Into::into);
     }
-    fetch_bytes_with_base_failover(client, bases, &target.path, blacklist, cmcd, retry)
+    fetch_bytes_with_base_failover(client, bases, &target.path, blacklist, cmcd, retry, cancel)
         .await
         .map_err(Into::into)
 }
@@ -800,6 +814,7 @@ pub(super) async fn fetch_and_parse_segment_base_index(
             blacklist,
             None,
             retry,
+            None,
         )
         .await?
         .into_data();
@@ -819,6 +834,7 @@ pub(super) async fn fetch_and_parse_segment_base_index(
                         blacklist,
                         None,
                         retry,
+                        None,
                     )
                     .await?
                     .into_data();
@@ -830,9 +846,10 @@ pub(super) async fn fetch_and_parse_segment_base_index(
         }
     }
 
-    let index_bytes = fetch_segment_target(client, bases, &index_target, blacklist, None, retry)
-        .await?
-        .into_data();
+    let index_bytes =
+        fetch_segment_target(client, bases, &index_target, blacklist, None, retry, None)
+            .await?
+            .into_data();
     Ok(manifest::parse_sidx_index_for_segment_base(
         sb,
         &index_bytes,
@@ -878,7 +895,7 @@ async fn fetch_complete_template_index_bytes(
     let retry = SegmentRetry::index(http_retry);
     let Some(mut br) = index_target.range else {
         return Ok(
-            fetch_segment_target(client, bases, index_target, blacklist, None, retry)
+            fetch_segment_target(client, bases, index_target, blacklist, None, retry, None)
                 .await?
                 .into_data(),
         );
@@ -891,6 +908,7 @@ async fn fetch_complete_template_index_bytes(
         blacklist,
         None,
         retry,
+        None,
     )
     .await?
     .into_data();
@@ -910,6 +928,7 @@ async fn fetch_complete_template_index_bytes(
                     blacklist,
                     None,
                     retry,
+                    None,
                 )
                 .await?
                 .into_data();

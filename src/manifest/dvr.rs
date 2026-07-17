@@ -166,14 +166,14 @@ mod tests {
     #[test]
     fn dvr_window_uses_time_shift_buffer_and_suggested_delay() {
         let ast = Utc.with_ymd_and_hms(2020, 5, 1, 12, 0, 0).unwrap();
-    let mpd = MPD {
-        mpdtype: Some("dynamic".to_string()),
-        availabilityStartTime: Some(ast),
-        timeShiftBufferDepth: Some(Duration::from_secs(20)),
-        suggestedPresentationDelay: Some(Duration::from_secs(4)),
-        periods: vec![dash_mpd::Period::default()],
-        ..Default::default()
-    };
+        let mpd = MPD {
+            mpdtype: Some("dynamic".to_string()),
+            availabilityStartTime: Some(ast),
+            timeShiftBufferDepth: Some(Duration::from_secs(20)),
+            suggestedPresentationDelay: Some(Duration::from_secs(4)),
+            periods: vec![dash_mpd::Period::default()],
+            ..Default::default()
+        };
         let now = Utc.with_ymd_and_hms(2020, 5, 1, 12, 0, 20).unwrap();
         let window = dvr_window_at(&mpd, now).unwrap().expect("dvr");
         assert_eq!(window.start, Duration::ZERO);

@@ -7,7 +7,7 @@ use crate::http::{HttpRequest, SharedHttpClient, is_transient_status, with_retry
 use crate::manifest::SegmentFetchTarget;
 use crate::segment::SegmentError;
 use crate::segment_blacklist::SegmentBlacklist;
-use crate::segment_fetcher::{CmcdFetch, SegmentRetry};
+use crate::segment_fetcher::{CmcdFetch, SegmentCancel, SegmentRetry};
 
 use super::{box_type_at, read_box_size};
 use url::Url;
@@ -120,8 +120,10 @@ pub(crate) async fn fetch_cmaf_fragments_for_target(
     blacklist: &SegmentBlacklist,
     cmcd: Option<CmcdFetch<'_>>,
     retry: SegmentRetry<'_>,
+    cancel: SegmentCancel<'_>,
 ) -> Result<(Vec<Bytes>, Option<CmsdSnapshot>), SegmentError> {
-    fetch_cmaf_fragments_with_failover(client, bases, &target.path, blacklist, cmcd, retry).await
+    fetch_cmaf_fragments_with_failover(client, bases, &target.path, blacklist, cmcd, retry, cancel)
+        .await
 }
 
 async fn fetch_cmaf_fragments_with_failover(
@@ -131,16 +133,30 @@ async fn fetch_cmaf_fragments_with_failover(
     blacklist: &SegmentBlacklist,
     cmcd: Option<CmcdFetch<'_>>,
     retry: SegmentRetry<'_>,
+    mut cancel: SegmentCancel<'_>,
 ) -> Result<(Vec<Bytes>, Option<CmsdSnapshot>), SegmentError> {
     let mut last_err: Option<SegmentError> = None;
     for base in bases {
+        if cancel.as_ref().is_some_and(|c| c.is_cancelled()) {
+            return Err(SegmentError::Cancelled);
+        }
         let url = if relative_path.is_empty() {
             base.clone()
         } else {
             base.join(relative_path)?
         };
-        match fetch_cmaf_fragments(client, url.clone(), blacklist, cmcd.as_ref(), retry).await {
+        match fetch_cmaf_fragments(
+            client,
+            url.clone(),
+            blacklist,
+            cmcd.as_ref(),
+            retry,
+            cancel.as_deref_mut(),
+        )
+        .await
+        {
             Ok(frags) => return Ok(frags),
+            Err(SegmentError::Cancelled) => return Err(SegmentError::Cancelled),
             Err(e) => last_err = Some(e),
         }
     }
@@ -153,6 +169,7 @@ async fn fetch_cmaf_fragments(
     blacklist: &SegmentBlacklist,
     cmcd: Option<&CmcdFetch<'_>>,
     retry: SegmentRetry<'_>,
+    cancel: SegmentCancel<'_>,
 ) -> Result<(Vec<Bytes>, Option<CmsdSnapshot>), SegmentError> {
     if blacklist.contains_url(&url) {
         return Err(SegmentError::Blacklisted(url.to_string()));
@@ -185,8 +202,10 @@ async fn fetch_cmaf_fragments(
         |err| match err {
             SegmentError::Request(_) => true,
             SegmentError::RequestFailed { status, .. } => is_transient_status(*status),
+            SegmentError::Cancelled => false,
             _ => false,
         },
+        cancel,
     )
     .await
     .inspect_err(|err| {

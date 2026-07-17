@@ -9,6 +9,8 @@ use std::time::Duration;
 
 use crate::platform;
 
+use super::HttpError;
+
 /// Class of outbound request used to select retry attempts and interval.
 ///
 /// Defaults follow dash.js `streaming.retryAttempts` / `retryIntervals`.
@@ -175,30 +177,60 @@ pub fn is_transient_status(status: u16) -> bool {
 ///
 /// `is_transient` decides whether the error warrants another try. Permanent failures
 /// return immediately without sleeping.
+///
+/// When `cancel` is set, an in-flight attempt is dropped and pending retry sleeps are
+/// aborted as soon as the guard observes cancellation, returning [`HttpError::Cancelled`].
 pub async fn with_retry<T, E, F, Fut, P>(
     policy: HttpRetryPolicy,
     kind: HttpRequestKind,
     mut attempt: F,
     is_transient: P,
+    mut cancel: Option<&mut crate::playback_control::FetchCancelGuard>,
 ) -> Result<T, E>
 where
     F: FnMut(u32) -> Fut,
     Fut: Future<Output = Result<T, E>>,
     P: Fn(&E) -> bool,
+    E: From<HttpError>,
 {
     let max = policy.max_attempts.max(1);
     let mut attempt_idx = 0u32;
     let _ = kind;
     loop {
-        match attempt(attempt_idx).await {
+        if cancel.as_ref().is_some_and(|c| c.is_cancelled()) {
+            return Err(HttpError::Cancelled.into());
+        }
+
+        let result = if let Some(cancel) = cancel.as_deref_mut() {
+            tokio::select! {
+                biased;
+                result = attempt(attempt_idx) => result,
+                _ = cancel.cancelled() => Err(HttpError::Cancelled.into()),
+            }
+        } else {
+            attempt(attempt_idx).await
+        };
+
+        match result {
             Ok(v) => return Ok(v),
             Err(err) => {
+                if cancel.as_ref().is_some_and(|c| c.is_cancelled()) {
+                    return Err(HttpError::Cancelled.into());
+                }
                 let retryable = is_transient(&err) && attempt_idx + 1 < max;
                 if !retryable {
                     return Err(err);
                 }
                 if !policy.interval.is_zero() {
-                    platform::sleep(policy.interval).await;
+                    if let Some(cancel) = cancel.as_deref_mut() {
+                        tokio::select! {
+                            biased;
+                            _ = platform::sleep(policy.interval) => {}
+                            _ = cancel.cancelled() => return Err(HttpError::Cancelled.into()),
+                        }
+                    } else {
+                        platform::sleep(policy.interval).await;
+                    }
                 }
                 attempt_idx += 1;
             }
@@ -246,9 +278,14 @@ mod tests {
             HttpRequestKind::MediaSegment,
             |_| async {
                 let n = hits.fetch_add(1, Ordering::SeqCst);
-                if n < 2 { Err(503u16) } else { Ok(42) }
+                if n < 2 {
+                    Err(HttpError::Transport("503".into()))
+                } else {
+                    Ok(42)
+                }
             },
-            |status| is_transient_status(*status),
+            |err| matches!(err, HttpError::Transport(_)),
+            None,
         )
         .await;
         assert_eq!(result, Ok(42));
@@ -262,17 +299,55 @@ mod tests {
             max_attempts: 5,
             interval: Duration::ZERO,
         };
-        let result: Result<(), u16> = with_retry(
+        let result: Result<(), HttpError> = with_retry(
             policy,
             HttpRequestKind::MediaSegment,
             |_| async {
                 hits.fetch_add(1, Ordering::SeqCst);
-                Err(404u16)
+                Err(HttpError::Transport("404".into()))
             },
-            |status| is_transient_status(*status),
+            |_| false,
+            None,
         )
         .await;
-        assert_eq!(result, Err(404));
+        assert_eq!(result, Err(HttpError::Transport("404".into())));
+        assert_eq!(hits.load(Ordering::SeqCst), 1);
+    }
+
+    #[tokio::test]
+    async fn with_retry_aborts_pending_sleep_on_cancel() {
+        use crate::playback_control::{PausePolicy, PlaybackController};
+
+        let playback = PlaybackController::new();
+        playback.mark_started();
+        playback.set_pause_policy(PausePolicy::stop_and_cancel_inflight());
+        let mut cancel = playback.fetch_cancel_guard();
+
+        let hits = AtomicU32::new(0);
+        let policy = HttpRetryPolicy {
+            max_attempts: 5,
+            interval: Duration::from_secs(30),
+        };
+        let playback2 = playback.clone();
+        let join = tokio::spawn(async move {
+            crate::platform::sleep(Duration::from_millis(20)).await;
+            playback2.pause().unwrap();
+        });
+
+        let result: Result<(), HttpError> = with_retry(
+            policy,
+            HttpRequestKind::MediaSegment,
+            |_| async {
+                hits.fetch_add(1, Ordering::SeqCst);
+                Err(HttpError::Transport("503".into()))
+            },
+            |_| true,
+            Some(&mut cancel),
+        )
+        .await;
+
+        let _ = join.await;
+        assert_eq!(result, Err(HttpError::Cancelled));
         assert_eq!(hits.load(Ordering::SeqCst), 1);
     }
 }

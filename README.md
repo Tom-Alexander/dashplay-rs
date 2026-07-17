@@ -294,7 +294,7 @@ let outputs = Player::new("https://example.com/manifest.mpd", None)?
     .start_tracks()
     .await?;
 
-outputs.pause()?;                       // suspend segment delivery
+outputs.pause()?;                       // freeze media clock (scheduling continues by default)
 outputs.resume()?;                      // continue from the current position
 outputs.seek(Duration::from_secs(30))?; // jump to 30 s into the presentation
 outputs.stop()?;                        // halt playback and emit End
@@ -372,6 +372,7 @@ Player::with_http_client(self, client: SharedHttpClient) -> Player
 Player::with_abr_factory(self, factory: SharedAbrFactory) -> Player
 Player::with_quality_constraints(self, constraints: QualityConstraints) -> Player
 Player::with_http_retry(self, config: HttpRetryConfig) -> Player
+Player::with_pause_policy(self, policy: PausePolicy) -> Player
 ```
 
 Replace the default `reqwest` license POST with a custom fetcher (extra headers, cookies, proxy,
@@ -379,7 +380,9 @@ etc.). `with_http_client` replaces the default [`ReqwestClient`](#http-client) u
 segment, and `UTCTiming` requests. `with_abr_factory` replaces the default
 [`BolaAbrFactory`](#abr) used for representation selection. `with_quality_constraints` limits ABR
 to a bitrate envelope, fixed ladder index, or data-saver (lowest rung). `with_http_retry` configures
-fixed-delay retries for transient HTTP failures (defaults are enabled).
+fixed-delay retries for transient HTTP failures (defaults are enabled). `with_pause_policy`
+controls whether scheduling continues while paused (dash.js `scheduleWhilePaused`, default true)
+and whether pause aborts in-flight segment requests.
 
 ```rust
 Player::start_tracks(self) -> Result<PlayerTrackOutputs, PlayerError>
@@ -439,6 +442,7 @@ MediaPlayer::with_http_client(self, client: SharedHttpClient) -> MediaPlayer
 MediaPlayer::with_abr_factory(self, factory: SharedAbrFactory) -> MediaPlayer
 MediaPlayer::with_quality_constraints(self, constraints: QualityConstraints) -> MediaPlayer
 MediaPlayer::with_http_retry(self, config: HttpRetryConfig) -> MediaPlayer
+MediaPlayer::with_pause_policy(self, policy: PausePolicy) -> MediaPlayer
 MediaPlayer::fetch_manifest(&mut self) -> Result<(), PlayerError>
 MediaPlayer::start(self) -> Result<PlayerOutputs, PlayerError>
 ```
@@ -675,8 +679,8 @@ the same session.
 
 | Method | Description |
 |--------|-------------|
-| `pause()` | Suspend segment delivery until `resume` |
-| `resume()` | Resume delivery after `pause` |
+| `pause()` | Freeze media-clock drain; segment fetch/delivery continues by default (`PausePolicy`) |
+| `resume()` | Resume consumption after `pause` |
 | `seek(presentation_time)` | Seek to a presentation time ([`Duration`](https://doc.rust-lang.org/std/time/struct.Duration.html) from the start of the presentation) |
 | `set_track_selection(selection)` | Change audio/text preferences mid-playback without restarting (track slot count is fixed at start) |
 | `quality_constraints()` | Current user ABR quality constraints |
@@ -792,6 +796,8 @@ Player::with_http_client(self, client: SharedHttpClient) -> Player
 MediaPlayer::with_http_client(self, client: SharedHttpClient) -> MediaPlayer
 Player::with_http_retry(self, config: HttpRetryConfig) -> Player
 MediaPlayer::with_http_retry(self, config: HttpRetryConfig) -> MediaPlayer
+Player::with_pause_policy(self, policy: PausePolicy) -> Player
+MediaPlayer::with_pause_policy(self, policy: PausePolicy) -> MediaPlayer
 ```
 
 ---

@@ -6,7 +6,7 @@ use crate::http::HttpError;
 #[derive(Debug, Error)]
 pub enum SegmentError {
     #[error("request: {0}")]
-    Request(#[from] HttpError),
+    Request(HttpError),
     #[error("url: {0}")]
     Url(#[from] url::ParseError),
     #[error("segment URL blacklisted: {0}")]
@@ -15,4 +15,16 @@ pub enum SegmentError {
     RequestFailed { status: u16, url: String },
     #[error("all representation attempts failed for a segment")]
     ExhaustedRepresentations,
+    /// In-flight segment fetch aborted by pause cancel policy.
+    #[error("segment fetch cancelled")]
+    Cancelled,
+}
+
+impl From<HttpError> for SegmentError {
+    fn from(value: HttpError) -> Self {
+        match value {
+            HttpError::Cancelled => Self::Cancelled,
+            other => Self::Request(other),
+        }
+    }
 }

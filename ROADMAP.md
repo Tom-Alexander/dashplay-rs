@@ -10,7 +10,8 @@ Status: `[ ]` not started · `[~]` partial · `[x]` done.
   *dash.js:* Query mode default + header mode; `nor`/`nrr` and broad v1 key set;
   `includeInRequests` (segment/mpd); CMSD parse with optional ABR cap via `cmsd.abr.applyMb`
   (`mb` / `etp`).
-- [~] **Pause semantics.** Buffer drain signalling; optional in-flight cancel.
+- [x] **Pause semantics.** Buffer drain freezes on pause; [`PausePolicy`](src/playback_control.rs)
+  controls `schedule_while_paused` (default true) and optional in-flight cancel.
   *dash.js:* `scheduleWhilePaused` (default true); `HTTPLoader.abort()` cancels
   in-flight + pending retries.
 - [~] **Live DVR seek.** DVR window API + seek expands duration-template timelines and

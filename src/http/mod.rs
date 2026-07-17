@@ -40,6 +40,18 @@ pub(crate) async fn send_with_retry(
     kind: HttpRequestKind,
     low_latency: bool,
 ) -> Result<HttpResponse, HttpError> {
+    send_with_retry_cancellable(client, request, config, kind, low_latency, None).await
+}
+
+/// Like [`send_with_retry`], optionally aborting when `cancel` fires.
+pub(crate) async fn send_with_retry_cancellable(
+    client: &SharedHttpClient,
+    request: HttpRequest,
+    config: &HttpRetryConfig,
+    kind: HttpRequestKind,
+    low_latency: bool,
+    cancel: Option<&mut crate::playback_control::FetchCancelGuard>,
+) -> Result<HttpResponse, HttpError> {
     let policy = config.policy(kind, low_latency);
     with_retry(
         policy,
@@ -59,6 +71,7 @@ pub(crate) async fn send_with_retry(
             }
         },
         |_| true,
+        cancel,
     )
     .await
 }

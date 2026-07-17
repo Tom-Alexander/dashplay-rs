@@ -111,7 +111,7 @@ pub use metrics::{
     BitrateSwitch, BufferSample, RebufferEvent, ThroughputSample, TrackMetrics,
     TrackMetricsSnapshot,
 };
-pub use playback_control::{PlaybackControlError, PlaybackController, PlaybackState};
+pub use playback_control::{PausePolicy, PlaybackControlError, PlaybackController, PlaybackState};
 pub use player::{
     Player, PlayerMergedAsyncRead, PlayerMergedOutput, PlayerTrackOutput, PlayerTrackOutputs,
 };

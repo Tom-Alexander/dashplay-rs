@@ -56,7 +56,9 @@ async fn stop_halts_segment_delivery() {
 #[tokio::test]
 async fn pause_and_resume_delay_delivery() {
     let server = FixtureServer::spawn("vod_single").await;
-    let player = dashplayrs::Player::new(server.manifest_url.as_str(), None).expect("player");
+    let player = dashplayrs::Player::new(server.manifest_url.as_str(), None)
+        .expect("player")
+        .with_pause_policy(dashplayrs::PausePolicy::stop_while_paused());
     let outputs = player.start_tracks().await.expect("start");
     outputs.pause().expect("pause");
     let mut rx = outputs.subscribe(0).expect("one track");
@@ -71,7 +73,7 @@ async fn pause_and_resume_delay_delivery() {
         recv_event(&mut rx, Duration::from_millis(300))
             .await
             .is_none(),
-        "no segments should arrive while paused"
+        "no segments should arrive while paused when schedule_while_paused is false"
     );
 
     outputs.resume().expect("resume");
@@ -87,6 +89,39 @@ async fn pause_and_resume_delay_delivery() {
     }
     assert_eq!(segments.len(), 2, "expected both VOD segments after resume");
 
+    outputs.join.await.unwrap().expect("join");
+}
+
+#[tokio::test]
+async fn schedule_while_paused_delivers_segments_during_pause() {
+    let server = FixtureServer::spawn("vod_single").await;
+    // Default PausePolicy keeps scheduling while paused (dash.js scheduleWhilePaused).
+    let player = dashplayrs::Player::new(server.manifest_url.as_str(), None).expect("player");
+    let outputs = player.start_tracks().await.expect("start");
+    let mut rx = outputs.subscribe(0).expect("one track");
+
+    assert!(matches!(
+        recv_matching(&mut rx, TIMEOUT, |ev| matches!(ev, PlayerEvent::Init(_))).await,
+        Some(PlayerEvent::Init(_))
+    ));
+
+    outputs.pause().expect("pause");
+    assert_eq!(outputs.playback_state(), PlaybackState::Paused);
+
+    let first = recv_matching(&mut rx, TIMEOUT, |ev| {
+        matches!(ev, PlayerEvent::Segment { .. })
+    })
+    .await
+    .expect("segment while paused");
+    assert!(matches!(first, PlayerEvent::Segment { .. }));
+    assert_eq!(
+        outputs.playback_state(),
+        PlaybackState::Paused,
+        "delivery while paused must not leave Paused"
+    );
+
+    outputs.resume().expect("resume");
+    let _ = outputs.stop();
     outputs.join.await.unwrap().expect("join");
 }
 

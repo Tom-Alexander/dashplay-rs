@@ -130,6 +130,7 @@ pub(crate) async fn prefetch_next_period_first_segment(
 
     let dummy_tx = tokio::sync::broadcast::channel::<PlayerEvent>(1).0;
     let metrics = TrackMetrics::new();
+    let playback = crate::playback_control::PlaybackController::new();
     let fetch_env = RepFetchEnv {
         client,
         segment_base_ctx: &plan.next_segment_base_ctx,
@@ -144,6 +145,7 @@ pub(crate) async fn prefetch_next_period_first_segment(
         track_kind,
         cmcd,
         http_retry,
+        playback: &playback,
         emit_init: false,
     };
 

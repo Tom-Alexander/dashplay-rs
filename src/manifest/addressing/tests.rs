@@ -317,3 +317,35 @@ fn segment_template_per_segment_representation_index_detects_number_identifiers(
         ..Default::default()
     }));
 }
+
+#[test]
+fn progressive_base_url_only_uses_empty_segment_base() {
+    let period = Period::default();
+    let adaptation_set = AdaptationSet {
+        mimeType: Some("text/vtt".into()),
+        lang: Some("en".into()),
+        representations: vec![Representation {
+            BaseURL: vec![dash_mpd::BaseURL {
+                base: "captions.vtt".into(),
+                ..Default::default()
+            }],
+            ..Default::default()
+        }],
+        ..Default::default()
+    };
+    let rep = &adaptation_set.representations[0];
+
+    let addressing = segment_addressing_for_representation(&period, &adaptation_set, rep).unwrap();
+    assert!(matches!(
+        addressing,
+        SegmentAddressing::Base(SegmentBase {
+            indexRange: None,
+            representation_index: None,
+            ..
+        })
+    ));
+
+    let timeline =
+        segment_addressing_for_timeline(&period, &adaptation_set).unwrap();
+    assert!(matches!(timeline, SegmentAddressing::Base(_)));
+}

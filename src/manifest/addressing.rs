@@ -230,6 +230,18 @@ fn adaptation_set_uses_segment_base(period: &Period, adaptation_set: &Adaptation
         })
 }
 
+/// True when a Representation can be fetched as a single progressive file via BaseURL
+/// hierarchy alone (ISO/IEC 23009-1 §5.3.9.2), without an explicit Segment* element.
+fn has_progressive_base_url(
+    period: &Period,
+    adaptation_set: &AdaptationSet,
+    representation: Option<&Representation>,
+) -> bool {
+    representation.is_some_and(|r| !r.BaseURL.is_empty())
+        || !adaptation_set.BaseURL.is_empty()
+        || !period.BaseURL.is_empty()
+}
+
 fn has_segment_template_in_chain(
     period: &Period,
     adaptation_set: &AdaptationSet,
@@ -376,6 +388,16 @@ pub(crate) fn segment_addressing_for_timeline(
             adaptation_set,
         )?));
     }
+    // Sidecar WebVTT / progressive On-Demand often ships a Representation BaseURL with no
+    // SegmentBase element; treat that as a whole-file progressive SegmentBase.
+    if has_progressive_base_url(period, adaptation_set, None)
+        || adaptation_set
+            .representations
+            .iter()
+            .any(|r| has_progressive_base_url(period, adaptation_set, Some(r)))
+    {
+        return Ok(SegmentAddressing::Base(SegmentBase::default()));
+    }
     Err(ManifestError::MissingSegmentTemplate)
 }
 
@@ -404,6 +426,9 @@ pub(crate) fn segment_addressing_for_representation(
             adaptation_set,
             representation,
         )?));
+    }
+    if has_progressive_base_url(period, adaptation_set, Some(representation)) {
+        return Ok(SegmentAddressing::Base(SegmentBase::default()));
     }
     Err(ManifestError::MissingSegmentTemplate)
 }

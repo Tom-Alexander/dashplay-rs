@@ -51,7 +51,7 @@ gstreamer = { version = "0.24", optional = true, features = ["v1_22"] }
 gstreamer-app = { version = "0.24", optional = true }
 hex = "0.4"
 hmac = { version = "0.12", optional = true }
-mp4decrypt = { git = "https://github.com/Tom-Alexander/bento4-rs", rev = "06ccc733e29a80581d99805ae44fb2bf0f0111b5", optional = true }
+mp4decrypt = { version = "0.6.1", git = "https://github.com/Tom-Alexander/bento4-rs", rev = "06ccc733e29a80581d99805ae44fb2bf0f0111b5", optional = true }
 num-derive = "0.4"
 num-traits = "0.2"
 pssh-box = { version = "0.2.4", optional = true }

@@ -1,0 +1,19 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<MPD xmlns="urn:mpeg:dash:schema:mpd:2011"
+     mediaPresentationDuration="PT4S"
+     minBufferTime="PT2S">
+  <Period>
+    <AdaptationSet mimeType="video/mp4" contentType="video">
+      <Representation id="1" bandwidth="100000" codecs="avc1.42E01E" width="640" height="360">
+        <!-- Bootstrap window is only the sidx header; @indexRangeExact=false requires extending. -->
+        <SegmentTemplate timescale="1000"
+                         initialization="init.mp4"
+                         media="media.mp4"
+                         index="index.mp4"
+                         indexRange="0-7"
+                         indexRangeExact="false"
+                         startNumber="1"/>
+      </Representation>
+    </AdaptationSet>
+  </Period>
+</MPD>

@@ -1,0 +1,17 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<MPD xmlns="urn:mpeg:dash:schema:mpd:2011"
+     xmlns:cenc="urn:mpeg:cenc:2013"
+     type="static"
+     mediaPresentationDuration="PT2S"
+     minBufferTime="PT1S"
+     profiles="urn:mpeg:dash:profile:isoff-on-demand:2011">
+  <Period id="p0">
+    <AdaptationSet mimeType="video/mp4" contentType="video" segmentAlignment="true">
+      <ContentProtection schemeIdUri="urn:mpeg:dash:mp4protection:2011" value="cbcs"
+                         cenc:default_KID="eb676995-0da1-45d0-3ae4-082255eb141a"/>
+      <SegmentTemplate timescale="1000" duration="2000" initialization="init.mp4"
+                       media="segment-$Number$.m4s" startNumber="1"/>
+      <Representation id="1" bandwidth="100000" codecs="avc1.42C00D" width="320" height="240"/>
+    </AdaptationSet>
+  </Period>
+</MPD>

@@ -1,111 +1,215 @@
 //! Top-level DASH client facade (dash.js: `MediaPlayer`).
 
-use bytes::Bytes;
-use reqwest::Client;
-use std::collections::HashMap;
-use std::future::Future;
-use std::pin::Pin;
-use std::sync::Arc;
 use tokio::sync::broadcast;
-use tokio::task::JoinHandle;
+use tokio::sync::watch;
 use url::Url;
 
-use super::drm::mpd::{MpdDrmInfo, parse_mpd_drm_info};
-use super::drm::widevine::{License, WidevineLicenseManager, WidevineSessionKey};
-
 use super::PlayerError;
-use super::manifest;
+use super::abr::{
+    BolaAbrFactory, QualityConstraints, SharedAbrFactory, shared as shared_abr_factory,
+};
+use super::cmcd::{CmcdConfig, CmcdObjectType, CmcdSession, CmcdStreamType, parse_cmsd_headers};
+#[cfg(all(target_arch = "wasm32", not(feature = "reqwest-http")))]
+use super::http::FetchClient;
+#[cfg(feature = "reqwest-http")]
+use super::http::ReqwestClient;
+#[cfg(all(not(target_arch = "wasm32"), not(feature = "reqwest-http")))]
+use super::http::UnconfiguredHttpClient;
+use super::http::{HttpRequest, HttpRetryConfig, SharedHttpClient, shared};
+use super::manifest::{self, ManifestError};
+use super::playback_control::PlaybackController;
 use super::stream_controller::PlaybackLoopState;
+use super::track_selection::{TrackSelection, select_adaptation_sets};
 use super::types::PlayerOutputs;
-use super::utc_timing;
+use crate::clock::utc_timing;
 
-/// Async license fetch invoked instead of the default `reqwest` POST when set.
-pub type WidevineLicenseFetcher = Arc<
-    dyn Fn(Url, Vec<u8>) -> Pin<Box<dyn Future<Output = Result<Bytes, PlayerError>> + Send>>
-        + Send
-        + Sync,
->;
+pub use super::drm::{DrmSessionCoordinator, WidevineLicenseFetcher};
 
 /// DASH MPD client and playback coordinator (dash.js: `MediaPlayer`).
 pub struct MediaPlayer {
-    client: Client,
+    client: SharedHttpClient,
     manifest_uri: Url,
     #[allow(dead_code)]
     license_uri: Option<Url>,
-    /// When `Some`, used for Widevine license POSTs instead of [`MediaPlayer`]'s `reqwest` client.
     license_fetch: Option<WidevineLicenseFetcher>,
     manifest: Option<dash_mpd::MPD>,
     mpd_xml: Option<String>,
-    drm_info: Option<MpdDrmInfo>,
-    license_manager: WidevineLicenseManager,
-    /// Widevine sessions available to each adaptation-set (index-aligned).
-    adaptation_wv_sessions: Vec<Option<Arc<License>>>,
-    /// Representation-specific sessions for each adaptation set (repId -> session).
-    adaptation_wv_sessions_by_rep: Vec<HashMap<String, Arc<License>>>,
+    drm: DrmSessionCoordinator,
+    track_selection: TrackSelection,
+    abr_factory: SharedAbrFactory,
+    quality_constraints: QualityConstraints,
+    cmcd: Option<CmcdSession>,
+    http_retry: HttpRetryConfig,
+    pause_policy: crate::playback_control::PausePolicy,
 }
 
 impl MediaPlayer {
     pub fn new(uri: &str, license_uri: Option<&str>) -> Result<Self, PlayerError> {
+        let license_uri = license_uri.map(Url::parse).transpose()?;
+        #[cfg(feature = "reqwest-http")]
+        let client = shared(ReqwestClient::default());
+        #[cfg(all(target_arch = "wasm32", not(feature = "reqwest-http")))]
+        let client = shared(FetchClient::default());
+        #[cfg(all(not(target_arch = "wasm32"), not(feature = "reqwest-http")))]
+        let client = shared(UnconfiguredHttpClient::default());
         Ok(Self {
-            client: Client::new(),
+            client: client.clone(),
             manifest_uri: Url::parse(uri)?,
-            license_uri: license_uri.map(Url::parse).transpose()?,
+            license_uri: license_uri.clone(),
             license_fetch: None,
             manifest: None,
             mpd_xml: None,
-            drm_info: None,
-            license_manager: WidevineLicenseManager::new(),
-            adaptation_wv_sessions: Vec::new(),
-            adaptation_wv_sessions_by_rep: Vec::new(),
+            drm: DrmSessionCoordinator::new(client, license_uri, None),
+            track_selection: TrackSelection::default(),
+            abr_factory: shared_abr_factory(BolaAbrFactory::default()),
+            quality_constraints: QualityConstraints::default(),
+            cmcd: None,
+            http_retry: HttpRetryConfig::default(),
+            pause_policy: crate::playback_control::PausePolicy::default(),
         })
+    }
+
+    /// Use a custom [`HttpClient`](crate::HttpClient) for manifest, segment, and clock-sync requests.
+    pub fn with_http_client(mut self, client: SharedHttpClient) -> Self {
+        self.client = client.clone();
+        self.drm = DrmSessionCoordinator::new(
+            client,
+            self.license_uri.clone(),
+            self.license_fetch.clone(),
+        );
+        self
     }
 
     /// Use a custom async fetcher for Widevine license requests (e.g. extra headers, cookies, or a proxy).
     pub fn with_license_fetcher(mut self, fetcher: WidevineLicenseFetcher) -> Self {
-        self.license_fetch = Some(fetcher);
+        self.license_fetch = Some(fetcher.clone());
+        self.drm = DrmSessionCoordinator::new(
+            self.client.clone(),
+            self.license_uri.clone(),
+            Some(fetcher),
+        );
         self
     }
 
-    async fn fetch_widevine_license(
-        &self,
-        license_url: &Url,
-        challenge: Vec<u8>,
-    ) -> Result<Bytes, PlayerError> {
-        if let Some(fetch) = self.license_fetch.as_ref() {
-            return fetch(license_url.clone(), challenge).await;
-        }
-        let req = self
-            .client
-            .post(license_url.clone())
-            .header("Content-Type", "application/octet-stream")
-            .header("Accept", "application/octet-stream");
-        let resp = req.body(challenge).send().await?;
-        let resp = resp.error_for_status()?;
-        let raw = resp.bytes().await?;
-        Ok(raw)
+    /// Configure deterministic audio, video, and text adaptation-set selection.
+    pub fn with_track_selection(mut self, selection: TrackSelection) -> Self {
+        self.track_selection = selection;
+        self
+    }
+
+    /// Use a custom [`AbrFactory`](crate::AbrFactory) for representation selection.
+    ///
+    /// The default is [`BolaAbrFactory`].
+    pub fn with_abr_factory(mut self, factory: SharedAbrFactory) -> Self {
+        self.abr_factory = factory;
+        self
+    }
+
+    /// Constrain ABR selection (min/max bitrate, fixed quality, data-saver).
+    ///
+    /// See [`QualityConstraints`]. Runtime updates use
+    /// [`PlaybackController::set_quality_constraints`](crate::PlaybackController::set_quality_constraints).
+    pub fn with_quality_constraints(mut self, constraints: QualityConstraints) -> Self {
+        self.quality_constraints = constraints;
+        self
+    }
+
+    /// Enable CTA-5004 CMCD request headers and CTA-5006 CMSD response parsing.
+    ///
+    /// CMCD keys are sent on the four `CMCD-*` headers (header mode only). Parsed CMSD
+    /// is exposed via metrics and [`crate::PlayerEvent::CmsdUpdated`] and does not drive ABR.
+    pub fn with_cmcd(mut self, config: CmcdConfig) -> Self {
+        self.cmcd = Some(CmcdSession::new(config));
+        self
+    }
+
+    /// Configure fixed-delay HTTP retry for transient failures (dash.js-style).
+    ///
+    /// Retries apply per URL before BaseURL failover. Defaults match dash.js
+    /// (`~3` attempts, fixed intervals; scaled for low-latency CMAF fetches).
+    pub fn with_http_retry(mut self, config: HttpRetryConfig) -> Self {
+        self.http_retry = config;
+        self
+    }
+
+    /// Configure pause scheduling and optional in-flight cancel (dash.js:
+    /// `streaming.scheduling.scheduleWhilePaused`).
+    ///
+    /// Defaults keep downloading while paused. Use
+    /// [`PausePolicy::stop_while_paused`](crate::PausePolicy::stop_while_paused) to
+    /// suspend fetch/delivery on pause, or
+    /// [`PausePolicy::stop_and_cancel_inflight`](crate::PausePolicy::stop_and_cancel_inflight)
+    /// to also abort in-flight segment requests and pending retries.
+    pub fn with_pause_policy(mut self, policy: crate::playback_control::PausePolicy) -> Self {
+        self.pause_policy = policy;
+        self
     }
 
     pub async fn fetch_manifest(&mut self) -> Result<(), PlayerError> {
-        let resp = self.client.get(self.manifest_uri.clone()).send().await?;
-        let text = resp.text().await?;
-        let mpd = dash_mpd::parse(&text)?;
+        let mut req = HttpRequest::get(self.manifest_uri.clone());
+        if let Some(session) = self.cmcd.as_ref() {
+            let ctx = session.context_for(CmcdObjectType::Manifest, None, None, None, None, None);
+            req = session.apply(req, &ctx);
+        }
+        let resp = crate::http::send_with_retry(
+            &self.client,
+            req,
+            &self.http_retry,
+            crate::http::HttpRequestKind::Manifest,
+            false,
+        )
+        .await?;
+        if let Some(cmsd) =
+            parse_cmsd_headers(resp.headers().iter().map(|(k, v)| (k.as_str(), v.as_str())))
+        {
+            if let Some(session) = self.cmcd.as_ref() {
+                session.record_cmsd(cmsd);
+            }
+        }
+        let text = resp.text()?;
+        let resolved = crate::manifest_lifecycle::resolve_period_xlinks(
+            &self.client,
+            &self.manifest_uri,
+            &text,
+            &self.http_retry,
+        )
+        .await
+        .map_err(|e| ManifestError::Xlink(e.to_string()))?;
+        let mpd = dash_mpd::parse(&resolved)?;
+        if let Some(session) = self.cmcd.as_ref() {
+            session.set_stream_type(CmcdStreamType::from_dynamic(manifest::is_dynamic_mpd(&mpd)));
+        }
         self.manifest = Some(mpd);
-        self.mpd_xml = Some(text.clone());
-
-        self.drm_info = Some(parse_mpd_drm_info(&text).map_err(PlayerError::DrmMpd)?);
-
+        self.mpd_xml = Some(resolved);
         Ok(())
     }
 
-    /// Attach source and start the stream controller (dash.js: initialize + attachSource).
+    /// Seekable presentation-time range for a dynamic live MPD (dash.js: `getDvrWindow`).
+    ///
+    /// Requires a loaded manifest ([`Self::fetch_manifest`]). Uses [`UTCTiming`](crate::clock::utc_timing)
+    /// when present to anchor the live edge.
+    pub async fn dvr_window(&self) -> Result<Option<manifest::DvrWindow>, PlayerError> {
+        let mpd = manifest::mpd(&self.manifest)?;
+        let wall_now =
+            utc_timing::wall_clock_utc(&self.client, mpd, Some(&self.manifest_uri)).await;
+        Ok(manifest::dvr_window_at(mpd, wall_now)?)
+    }
+
+    /// Attach source and prepare the stream controller (dash.js: initialize + attachSource).
+    ///
+    /// This does **not** spawn a background task. After subscribing to the tracks you need,
+    /// call [`PlayerOutputs::run`] on the current task or [`PlayerOutputs::spawn`] for a
+    /// separate Tokio task.
     ///
     /// Subscribe to **every** `outputs.tracks[i]` you care about before relying on delivery:
     /// each adaptation set runs in parallel, and a broadcast with no receivers drops events.
     ///
-    /// Each receiver sees `PlayerEvent::Init` then `PlayerEvent::Segment`, then
-    /// `PlayerEvent::End` when the manifest window is exhausted (no `minimumUpdatePeriod`
+    /// Each receiver sees lifecycle events ([`PlayerEvent::ManifestLoaded`], [`PlayerEvent::BufferUpdated`],
+    /// [`PlayerEvent::BitrateChanged`], [`PlayerEvent::PlaybackStarted`]/[`PlayerEvent::PlaybackEnded`],
+    /// [`PlayerEvent::Error`]) plus [`PlayerEvent::Init`] then [`PlayerEvent::Segment`], then
+    /// [`PlayerEvent::End`] when the manifest window is exhausted (no `minimumUpdatePeriod`
     /// refresh). For live manifests, `End` is not sent until the controller stops.
-    /// Drop all `Sender`s after awaiting `outputs.join` if you need `RecvError::Closed`.
+    /// Drop all `Sender`s after the loop finishes if you need `RecvError::Closed`.
     pub async fn start(mut self) -> Result<PlayerOutputs, PlayerError> {
         self.fetch_manifest().await?;
         let mpd = manifest::mpd(&self.manifest)?;
@@ -114,108 +218,61 @@ impl MediaPlayer {
         let current_window = manifest::current_period_window_at(mpd, wall_now)?;
         let period = &mpd.periods[current_window.idx];
 
-        // Build per-adaptation Widevine sessions for the *current* Period,
-        // using DASH DRM inheritance: Rep + AS + Period + MPD.
-        self.adaptation_wv_sessions.clear();
-        self.adaptation_wv_sessions_by_rep.clear();
-        if let Some(drm) = self.drm_info.as_ref() {
-            if let Some(p) = drm.periods.get(current_window.idx) {
-                let fallback_license_uri = self.license_uri.clone();
-                // Use adaptation-set effective DRM (rep overrides are handled later when fetching init).
-                self.adaptation_wv_sessions = vec![None; p.adaptation_sets.len()];
-                self.adaptation_wv_sessions_by_rep = vec![HashMap::new(); p.adaptation_sets.len()];
-                for (idx, aset) in p.adaptation_sets.iter().enumerate() {
-                    let Some(pssh) = aset.effective.widevine_pssh.first() else {
-                        continue;
-                    };
-                    let session_key = WidevineSessionKey::from_pssh(pssh);
-                    if let Some(existing) = self.license_manager.get(&session_key) {
-                        self.adaptation_wv_sessions[idx] = Some(existing);
-                        continue;
-                    }
-                    let license_url = aset
-                        .effective
-                        .license_urls
-                        .iter()
-                        .find_map(|s| Url::parse(s).ok())
-                        .or_else(|| fallback_license_uri.clone());
-                    let Some(license_url) = license_url else {
-                        continue;
-                    };
-                    let mut license = License::new_from_pssh(pssh)?;
-                    let challenge = license.challenge()?;
-                    let bytes = self.fetch_widevine_license(&license_url, challenge).await?;
-                    license.set_license(bytes.as_ref())?;
-                    let arc = self.license_manager.insert_ready(session_key, license);
-                    self.adaptation_wv_sessions[idx] = Some(arc);
-
-                    // Also establish sessions for Representation-effective DRM when it differs.
-                    for rep in &aset.representations {
-                        let Some(rep_id) = rep.id.as_deref() else {
-                            continue;
-                        };
-                        let Some(rep_pssh) = rep.effective.widevine_pssh.first() else {
-                            continue;
-                        };
-                        let rep_key = WidevineSessionKey::from_pssh(rep_pssh);
-                        let rep_arc = if let Some(existing) = self.license_manager.get(&rep_key) {
-                            existing
-                        } else {
-                            let license_url = rep
-                                .effective
-                                .license_urls
-                                .iter()
-                                .find_map(|s| Url::parse(s).ok())
-                                .or_else(|| fallback_license_uri.clone())
-                                .unwrap_or_else(|| license_url.clone());
-                            let mut lic = License::new_from_pssh(rep_pssh)?;
-                            let challenge = lic.challenge()?;
-                            let bytes =
-                                self.fetch_widevine_license(&license_url, challenge).await?;
-                            lic.set_license(bytes.as_ref())?;
-                            self.license_manager.insert_ready(rep_key, lic)
-                        };
-                        self.adaptation_wv_sessions_by_rep[idx].insert(rep_id.to_string(), rep_arc);
-                    }
-                }
-            }
+        if let Some(xml) = self.mpd_xml.as_deref() {
+            self.drm.sync_from_mpd(xml, current_window.idx).await?;
         }
 
-        let adaptation_sets: Vec<&dash_mpd::AdaptationSet> = period
-            .adaptations
-            .iter()
-            .filter(|adaptation_set| {
-                let mime = adaptation_set.mimeType.as_deref();
-                matches!(
-                    mime,
-                    Some(m) if m == manifest::MimeType::Audio.as_str()
-                        || m == manifest::MimeType::Video.as_str()
-                )
-            })
-            .collect();
+        let adaptation_sets = select_adaptation_sets(period, &self.track_selection);
+
+        let playback = PlaybackController::new();
+        playback.set_quality_constraints_unchecked(self.quality_constraints);
+        playback.set_pause_policy_unchecked(self.pause_policy);
+        playback.mark_started();
 
         let mut tracks = Vec::with_capacity(adaptation_sets.len());
-        for aset in &adaptation_sets {
-            let (tx, _rx) = broadcast::channel(32);
-            tracks.push(super::types::PlayerTrack {
-                mime_type: aset.mimeType.clone(),
-                tx,
-            });
+        for (track_idx, selected) in adaptation_sets.into_iter().enumerate() {
+            // CMAF / LL-DASH can emit dozens of moof+mdat events per media segment; keep
+            // enough headroom so slow consumers (e.g. MSE append queues) do not lag out.
+            let (tx, _rx) = broadcast::channel(256);
+            let (buffer_tx, buffer_rx) = watch::channel(0.0);
+            let metrics = super::metrics::TrackMetrics::new();
+            let dropped_frames = super::abr::DroppedFramesHistory::new();
+            tracks.push(super::types::PlayerTrack::new(
+                selected.info,
+                tx.clone(),
+                super::types::BufferFeedback::new(
+                    buffer_tx.clone(),
+                    metrics.clone(),
+                    tx,
+                    playback.clone(),
+                    track_idx,
+                ),
+                super::types::PlaybackQualityFeedback::new(dropped_frames),
+                buffer_tx,
+                buffer_rx,
+                metrics,
+            ));
         }
+
+        let manifest_metadata = manifest::ManifestMetadata::from_mpd(mpd, self.mpd_xml.as_deref());
 
         let loop_state = PlaybackLoopState {
             client: self.client,
             manifest_uri: self.manifest_uri,
-            manifest: self.manifest,
-            adaptation_wv_sessions: self.adaptation_wv_sessions,
-            adaptation_wv_sessions_by_rep: self.adaptation_wv_sessions_by_rep,
-            last_period_idx: None,
+            drm: self.drm,
+            playback: playback.clone(),
+            track_selection: self.track_selection,
+            abr_factory: self.abr_factory,
+            cmcd: self.cmcd,
+            http_retry: self.http_retry,
         };
 
-        let tracks_for_task = tracks.clone();
-        let join: JoinHandle<Result<(), PlayerError>> =
-            tokio::spawn(async move { loop_state.run(tracks_for_task).await });
-
-        Ok(PlayerOutputs { tracks, join })
+        Ok(PlayerOutputs {
+            tracks,
+            is_dynamic: manifest::is_dynamic_mpd(mpd),
+            playback,
+            manifest_metadata,
+            loop_state,
+        })
     }
 }

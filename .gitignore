@@ -15,4 +15,8 @@ vpn-config
 .public/
 .wrangler/
 *.mpd
+!tests/fixtures/**/*.mpd
 out/
+tests/conformance/schematron/tmp/
+tests/conformance/schematron/output/
+wasm/dashplay-wasm/dist/pkg/

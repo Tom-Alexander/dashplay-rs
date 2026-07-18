@@ -1,0 +1,25 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<MPD xmlns="urn:mpeg:dash:schema:mpd:2011"
+     profiles="urn:mpeg:dash:profile:isoff-on-demand:2011,http://dashif.org/guidelines/dash264"
+     type="static"
+     mediaPresentationDuration="PT8S"
+     minBufferTime="PT2S">
+  <ProgramInformation>
+    <Title>Adapted from DASH-IF TestCases/9a trick mode (local stub media)</Title>
+  </ProgramInformation>
+  <Period>
+    <AdaptationSet mimeType="video/mp4" contentType="video" segmentAlignment="true"
+                   par="16:9" maxWidth="640" maxHeight="360" maxFrameRate="24">
+      <SegmentTemplate timescale="1000" duration="4000" initialization="main-init.mp4" media="main-seg-$Number$.m4s" startNumber="1"/>
+      <Representation id="main" bandwidth="500000" codecs="avc1.42E01E" width="640" height="360"
+                    frameRate="24" sar="1:1"/>
+    </AdaptationSet>
+    <AdaptationSet mimeType="video/mp4" contentType="video" segmentAlignment="true"
+                   par="16:9" maxWidth="640" maxHeight="360" maxFrameRate="1">
+      <EssentialProperty schemeIdUri="http://dashif.org/guidelines/trickmode" value="1"/>
+      <SegmentTemplate timescale="1000" duration="4000" initialization="trick-init.mp4" media="trick-seg-$Number$.m4s" startNumber="1"/>
+      <Representation id="trick" bandwidth="100000" codecs="avc1.42E01E" width="640" height="360"
+                    frameRate="1" maxPlayoutRate="24" sar="1:1"/>
+    </AdaptationSet>
+  </Period>
+</MPD>

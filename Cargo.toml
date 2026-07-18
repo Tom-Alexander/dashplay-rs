@@ -1,6 +1,11 @@
+[workspace]
+members = ["wasm/dashplay-wasm"]
+default-members = ["."]
+resolver = "2"
+
 [package]
-name = "dashplayrs"
-version = "0.1.0"
+name = "dashplay"
+version = "0.2.0"
 edition = "2024"
 description = "A pure Rust MPEG-DASH player library"
 readme = "README.md"
@@ -8,30 +13,92 @@ keywords = ["dash", "mpeg-dash", "streaming", "video", "abr"]
 categories = ["multimedia::video", "web-programming::http-client"]
 license = "MIT"
 
+[features]
+default = ["drm", "reqwest-http", "full-runtime"]
+# Optional gate for `examples/play_gstreamer.rs` (requires system GStreamer).
+example-gstreamer = ["dep:gstreamer", "dep:gstreamer-app"]
+drm = [
+    "dep:aes",
+    "dep:cbc",
+    "dep:cmac",
+    "dep:hmac",
+    "dep:mp4decrypt",
+    "dep:pssh-box",
+    "dep:protobuf",
+    "dep:rand",
+    "dep:rsa",
+    "dep:sha1",
+    "dep:sha2",
+    "dep:widevine-proto",
+]
+reqwest-http = ["dep:reqwest"]
+full-runtime = ["tokio/net", "tokio/fs", "tokio/rt-multi-thread"]
+
 [dependencies]
+aes = { version = "0.8", optional = true }
 anyhow = "1.0"
 base64 = "0.22"
+byteorder = "1.0"
 bytes = "1"
+cbc = { version = "0.1", features = ["alloc"], optional = true }
 chrono = { version = "0.4", features = ["serde"] }
-dash-mpd = "0.20.2"
+cmac = { version = "0.7", optional = true }
+dash-mpd = { version = "0.20.2", default-features = false }
+data-encoding = "2.5"
 futures = "0.3"
 futures-util = "0.3"
+gstreamer = { version = "0.24", optional = true, features = ["v1_22"] }
+gstreamer-app = { version = "0.24", optional = true }
 hex = "0.4"
-mp4decrypt = "0.6.1"
-pssh-box = "0.2.4"
+hmac = { version = "0.12", optional = true }
+mp4decrypt = { git = "https://github.com/Tom-Alexander/bento4-rs", rev = "06ccc733e29a80581d99805ae44fb2bf0f0111b5", optional = true }
+num-derive = "0.4"
+num-traits = "0.2"
+pssh-box = { version = "0.2.4", optional = true }
+protobuf = { version = "3.7", optional = true }
 quick-xml = "0.39.2"
-reqwest = { version = "0.13", default-features = false, features = ["rustls", "gzip", "cookies"] }
+roxmltree = "0.20"
+rand = { version = "0.8", optional = true }
+reqwest = { version = "0.13", default-features = false, features = ["rustls", "gzip", "cookies", "stream"], optional = true }
+rsa = { version = "0.9.2", optional = true }
+sha1 = { version = "0.10", optional = true }
+sha2 = { version = "0.10", optional = true }
 thiserror = "1.0"
-tokio = { version = "1", features = ["sync", "rt", "time", "macros", "net"] }
+tracing = "0.1"
+tokio = { version = "1", default-features = false, features = ["sync", "rt", "macros", "time", "io-util"] }
 tokio-stream = { version = "0.1", features = ["sync"] }
 tokio-util = { version = "0.7", features = ["io"] }
 url = "2.5"
-widevine = "0.1.0"
+widevine-proto = { version = "0.1.0", optional = true }
+
+[target.'cfg(target_arch = "wasm32")'.dependencies]
+gloo-timers = { version = "0.3", features = ["futures"] }
+getrandom = { version = "0.2", features = ["js"] }
+js-sys = "0.3"
+wasm-bindgen = "0.2"
+wasm-bindgen-futures = "0.4"
+web-sys = { version = "0.3", features = [
+    "Headers",
+    "Request",
+    "RequestInit",
+    "RequestMode",
+    "Response",
+    "Window",
+] }
+web-time = "1"
 
 [dev-dependencies]
 axum = "0.8"
+dash-mpd = "0.20.2"
+futures-util = "0.3"
+reqwest = { version = "0.13", default-features = false, features = ["rustls", "gzip"] }
+roxmltree = "0.20"
 tokio = { version = "1", features = ["macros", "rt-multi-thread"] }
 
 [lib]
-name = "dashplayrs"
+name = "dashplay"
 path = "src/lib.rs"
+
+[[example]]
+name = "play_gstreamer"
+required-features = ["example-gstreamer"]

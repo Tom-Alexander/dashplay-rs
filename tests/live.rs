@@ -1,9 +1,13 @@
 mod common;
 
 use common::{
-    AdvancingLiveServer, FixtureServer, has_end, init_payload, init_payloads,
-    play_single_track_live, segment_numbers, segment_payloads,
+    AdvancingLiveServer, FixtureServer, InbandProducerReferenceLiveServer, LatencyLiveServer,
+    LongMupLiveServer, PartialLiveServer, ProducerReferenceLiveServer,
+    assert_no_duplicate_segments, has_end, init_payload, init_payloads, partial_segment_payloads,
+    play_single_track, play_single_track_live, playback_rate_suggestions, recv_matching,
+    segment_numbers, segment_payloads,
 };
+use dashplay::PlayerEvent;
 
 const LIVE_TIMEOUT: std::time::Duration = std::time::Duration::from_millis(800);
 const REFRESH_TIMEOUT: std::time::Duration = std::time::Duration::from_secs(2);
@@ -34,6 +38,40 @@ async fn live_duration_template_emits_init_and_segments_without_end() {
     assert!(
         !has_end(&events),
         "live stream should not emit End while active"
+    );
+}
+
+#[tokio::test]
+async fn dynamic_mpd_with_static_duration_caps_segments_and_ends() {
+    // DASH-IF live2vod: `@type=dynamic` + `@mediaPresentationDuration`, no MUP —
+    // presentation is finished; client plays through the known duration then ends.
+    let server = FixtureServer::spawn("live_static_duration").await;
+    let events = play_single_track(&server.manifest_url, REFRESH_TIMEOUT)
+        .await
+        .expect("playback");
+
+    assert_eq!(
+        init_payload(&events).as_deref(),
+        Some(b"dashplay-init-v1".as_ref())
+    );
+    let numbers = segment_numbers(&events);
+    assert_eq!(
+        numbers,
+        vec![1, 2, 3, 4],
+        "expected segments capped at mediaPresentationDuration, got {numbers:?}"
+    );
+    assert_eq!(
+        segment_payloads(&events),
+        [
+            b"dashplay-ended-seg-1".as_ref(),
+            b"dashplay-ended-seg-2".as_ref(),
+            b"dashplay-ended-seg-3".as_ref(),
+            b"dashplay-ended-seg-4".as_ref(),
+        ]
+    );
+    assert!(
+        has_end(&events),
+        "dynamic MPD with static duration should emit End after presentation"
     );
 }
 
@@ -91,6 +129,26 @@ async fn live_manifest_refresh_advances_playback_window() {
 }
 
 #[tokio::test]
+async fn live_manifest_refresh_does_not_reemit_segments() {
+    let server = AdvancingLiveServer::spawn().await;
+    let events = play_single_track_live(&server.manifest_url, REFRESH_TIMEOUT)
+        .await
+        .expect("playback");
+
+    assert!(
+        segment_payloads(&events).len() >= 2,
+        "expected segments across manifest refreshes, got {:?}",
+        segment_payloads(&events)
+    );
+    assert_no_duplicate_segments(&events);
+    let numbers = segment_numbers(&events);
+    assert!(
+        numbers.iter().any(|&n| n >= 4),
+        "expected live edge segments after refresh, got {numbers:?}"
+    );
+}
+
+#[tokio::test]
 async fn live_multi_period_transition_re_emits_init() {
     let server = common::MultiPeriodLiveServer::spawn().await;
     let events = play_single_track_live(&server.manifest_url, std::time::Duration::from_secs(2))
@@ -122,4 +180,205 @@ async fn live_multi_period_transition_re_emits_init() {
         "expected period-2 segments after manifest refresh, got {segments:?}"
     );
     assert!(!has_end(&events));
+}
+
+#[tokio::test]
+async fn live_producer_reference_time_overrides_utc_timing_for_window() {
+    let server = ProducerReferenceLiveServer::spawn().await;
+    let events = play_single_track_live(&server.manifest_url, LIVE_TIMEOUT)
+        .await
+        .expect("playback");
+
+    assert_eq!(
+        init_payload(&events).as_deref(),
+        Some(b"dashplay-init-v1".as_ref())
+    );
+    let segments = segment_payloads(&events);
+    assert!(
+        segments.len() >= 2,
+        "expected live segments, got {segments:?}"
+    );
+    // UTCTiming alone (20s since AST) would start at seg-5/seg-6; PRT anchor (4s media) starts earlier.
+    assert_eq!(
+        &segments[..2],
+        [
+            b"dashplay-live-seg-1".as_ref(),
+            b"dashplay-live-seg-2".as_ref(),
+        ],
+        "live window must follow ProducerReferenceTime, not UTCTiming"
+    );
+    let numbers = segment_numbers(&events);
+    assert_eq!(&numbers[..2], [1, 2]);
+    assert!(!has_end(&events));
+}
+
+#[tokio::test]
+async fn live_inband_prft_producer_reference_time_selects_correct_window() {
+    let server = InbandProducerReferenceLiveServer::spawn().await;
+    let events = play_single_track_live(&server.manifest_url, LIVE_TIMEOUT)
+        .await
+        .expect("playback");
+
+    assert_eq!(
+        init_payload(&events).as_deref(),
+        Some(b"dashplay-init-v1".as_ref())
+    );
+    let segments = segment_payloads(&events);
+    assert!(
+        segments.len() >= 2,
+        "expected live segments, got {segments:?}"
+    );
+    assert!(
+        segments[0].windows(4).any(|w| w == b"prft"),
+        "expected in-band prft box in segment payload"
+    );
+    let numbers = segment_numbers(&events);
+    assert_eq!(
+        &numbers[..2],
+        [1, 2],
+        "live window must follow in-band prft / ProducerReferenceTime, not UTCTiming alone"
+    );
+    assert!(!has_end(&events));
+}
+
+#[tokio::test]
+async fn live_duration_template_extends_past_manifest_window_without_mup() {
+    // MUP is PT500S; without wall-clock live-edge extension the client would stall after the
+    // first snapshot (edge ≈ `$Number$=6` at the frozen UTCTiming).
+    let server = LongMupLiveServer::spawn().await;
+    let events = play_single_track_live(&server.manifest_url, std::time::Duration::from_secs(4))
+        .await
+        .expect("playback");
+
+    assert_eq!(
+        init_payload(&events).as_deref(),
+        Some(b"dashplay-init-v1".as_ref())
+    );
+    let numbers = segment_numbers(&events);
+    assert!(
+        numbers.iter().any(|&n| n >= 7),
+        "expected Instant-extrapolated segments past the initial live edge, got {numbers:?}"
+    );
+    assert!(!has_end(&events));
+}
+
+#[tokio::test]
+async fn live_partial_segment_transfer_emits_chunked_cmaf_fragments() {
+    let server = PartialLiveServer::spawn().await;
+    let events = play_single_track_live(&server.manifest_url, LIVE_TIMEOUT)
+        .await
+        .expect("playback");
+
+    assert_eq!(
+        init_payload(&events).as_deref(),
+        Some(b"dashplay-init-v1".as_ref())
+    );
+
+    let partials = partial_segment_payloads(&events);
+    assert!(
+        partials.len() >= 4,
+        "expected multiple partial chunks, got {partials:?}"
+    );
+    assert!(
+        partials.iter().any(
+            |(meta, payload)| meta.is_some_and(|p| p.index == 1 && !p.is_final)
+                && payload.ends_with(b"partial-seg-5.m4s-a")
+        ),
+        "expected first chunk of seg-5, got {partials:?}"
+    );
+    assert!(
+        partials
+            .iter()
+            .any(|(meta, payload)| meta.is_some_and(|p| p.is_final)
+                && payload.ends_with(b"partial-seg-5.m4s-b")),
+        "expected final chunk of seg-5, got {partials:?}"
+    );
+    assert!(!has_end(&events));
+}
+
+#[tokio::test]
+async fn live_dvr_seek_repositions_within_time_shift_buffer() {
+    let server = FixtureServer::spawn("live_duration").await;
+    let player = dashplay::Player::new(server.manifest_url.as_str(), None).expect("player");
+    let outputs = player.start_tracks().await.expect("start");
+    let buffer = outputs.buffer_feedback(0).expect("track");
+    let _ = buffer.report(25.0);
+    let mut rx = outputs.subscribe(0).expect("one track");
+
+    assert!(matches!(
+        recv_matching(&mut rx, LIVE_TIMEOUT, |ev| matches!(
+            ev,
+            PlayerEvent::Init(_)
+        ))
+        .await,
+        Some(PlayerEvent::Init(_))
+    ));
+    assert!(matches!(
+        recv_matching(&mut rx, LIVE_TIMEOUT, |ev| matches!(
+            ev,
+            PlayerEvent::Segment { .. }
+        ))
+        .await,
+        Some(PlayerEvent::Segment { .. })
+    ));
+
+    outputs
+        .seek(std::time::Duration::from_secs(8))
+        .expect("seek");
+
+    let mut payloads = Vec::new();
+    let deadline = tokio::time::Instant::now() + LIVE_TIMEOUT;
+    while tokio::time::Instant::now() < deadline {
+        if let Some(ev) = tokio::time::timeout(std::time::Duration::from_millis(500), rx.recv())
+            .await
+            .ok()
+            .and_then(Result::ok)
+        {
+            match ev {
+                PlayerEvent::Segment { data, .. } => payloads.push(data),
+                PlayerEvent::End => break,
+                _ => {}
+            }
+        }
+    }
+
+    assert!(
+        payloads
+            .first()
+            .is_some_and(|p| p.starts_with(b"dashplay-live-seg-3")),
+        "DVR seek to 8s should start at seg-3 within the TSBD window, got {payloads:?}"
+    );
+
+    outputs.stop().ok();
+    drop(rx);
+    outputs.join.await.unwrap().expect("join");
+}
+
+#[tokio::test]
+async fn live_service_description_latency_suggests_catch_up_rate() {
+    let server = LatencyLiveServer::spawn().await;
+    let events = play_single_track_live(&server.manifest_url, LIVE_TIMEOUT)
+        .await
+        .expect("playback");
+
+    assert!(
+        !segment_payloads(&events).is_empty(),
+        "expected live segments, got {:?}",
+        segment_payloads(&events)
+    );
+    let suggestions = playback_rate_suggestions(&events);
+    assert!(
+        !suggestions.is_empty(),
+        "expected PlaybackRateSuggested events, got none (events={events:?})"
+    );
+    assert!(
+        suggestions.iter().any(|(rate, _)| *rate > 1.0),
+        "expected catch-up rate > 1.0, got {suggestions:?}"
+    );
+    assert!(
+        suggestions
+            .iter()
+            .all(|(rate, _)| *rate >= 0.96 && *rate <= 1.04),
+        "rates must stay within PlaybackRate bounds, got {suggestions:?}"
+    );
 }

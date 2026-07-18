@@ -1,0 +1,22 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<MPD xmlns="urn:mpeg:dash:schema:mpd:2011"
+     xmlns:xsi="http://www.w3.org/2001/XMLSchema-instance"
+     profiles="urn:mpeg:dash:profile:isoff-on-demand:2011,http://dashif.org/guidelines/dash-if-simple"
+     type="static"
+     mediaPresentationDuration="PT8S"
+     minBufferTime="PT2S"
+     maxSegmentDuration="PT2S">
+  <ProgramInformation>
+    <Title>DASH-IF livesim2 testpic_2s-style fixture (local)</Title>
+  </ProgramInformation>
+  <Period id="one" start="PT0S">
+    <AdaptationSet contentType="video" mimeType="video/mp4" segmentAlignment="true" startWithSAP="1"
+                   par="16:9" maxWidth="640" maxHeight="360" maxFrameRate="24">
+      <SegmentTemplate timescale="1" duration="2" startNumber="1" endNumber="4"
+                       initialization="$RepresentationID$/init.mp4"
+                       media="$RepresentationID$/$Number$.m4s"/>
+      <Representation id="V300" bandwidth="300000" codecs="avc1.64001e" width="640" height="360"
+                    sar="1:1" frameRate="24"/>
+    </AdaptationSet>
+  </Period>
+</MPD>

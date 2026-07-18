@@ -1,0 +1,21 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<MPD xmlns="urn:mpeg:dash:schema:mpd:2011"
+     type="static"
+     mediaPresentationDuration="PT8S"
+     minBufferTime="PT2S"
+     profiles="http://dashif.org/guidelines/dashif#vp9-hdr">
+  <Period>
+    <AdaptationSet mimeType="video/mp4" contentType="video" maxWidth="1280" maxHeight="720" maxFrameRate="30" par="16:9">
+      <EssentialProperty schemeIdUri="urn:mpeg:mpegB:cicp:ColourPrimaries" value="9"/>
+      <EssentialProperty schemeIdUri="urn:mpeg:mpegB:cicp:TransferCharacteristics" value="16"/>
+      <EssentialProperty schemeIdUri="urn:mpeg:mpegB:cicp:MatrixCoefficients" value="9"/>
+      <EssentialProperty schemeIdUri="urn:dvb:dash:hdr-dmi" value="HDR10"/>
+      <SegmentTemplate timescale="1000" duration="4000"
+                       initialization="init.mp4"
+                       media="seg-$Number$.m4s"
+                       startNumber="1"/>
+      <Representation id="vp9" bandwidth="2000000" codecs="vp09.02.10.10.01.09.16.09.01"
+                      width="1280" height="720" frameRate="30" sar="1:1"/>
+    </AdaptationSet>
+  </Period>
+</MPD>

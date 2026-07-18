@@ -2,6 +2,8 @@
 
 #![allow(dead_code)]
 
+pub mod drm;
+
 use axum::{
     Router,
     body::Body,
@@ -13,8 +15,10 @@ use axum::{
 use std::collections::{HashMap, HashSet};
 use std::path::{Path as FsPath, PathBuf};
 use std::sync::Arc;
+use std::sync::Mutex;
 use std::sync::atomic::{AtomicUsize, Ordering};
 use std::time::Duration as StdDuration;
+use std::time::Instant;
 use tokio::sync::oneshot;
 use tokio::task::JoinHandle;
 use url::Url;
@@ -24,6 +28,11 @@ struct AppState {
     files: Arc<HashMap<String, Vec<u8>>>,
     not_found_prefixes: Arc<HashSet<String>>,
     delay_prefixes: Arc<HashSet<String>>,
+    /// Optional delay applied to `delay_prefixes` (defaults to 11s when unset).
+    delay_duration: Option<StdDuration>,
+    /// Peak concurrent in-flight requests matching `delay_prefixes` (media paths).
+    peak_concurrency: Option<Arc<AtomicUsize>>,
+    in_flight: Option<Arc<AtomicUsize>>,
 }
 
 pub struct FixtureServer {
@@ -39,19 +48,39 @@ impl FixtureServer {
 
     /// URL path prefixes (e.g. `"/bad"`) that always return HTTP 404.
     pub async fn spawn_with_options(fixture: &str, not_found_prefixes: &[&str]) -> Self {
-        Self::spawn_configured(fixture, not_found_prefixes, &[]).await
+        Self::spawn_configured(fixture, not_found_prefixes, &[], None, None).await
     }
 
     /// Like [`Self::spawn_with_options`], but adds an artificial delay before responding for
     /// paths under the given prefixes (used to simulate slow high-bitrate downloads in ABR tests).
     pub async fn spawn_with_delays(fixture: &str, delay_prefixes: &[&str]) -> Self {
-        Self::spawn_configured(fixture, &[], delay_prefixes).await
+        Self::spawn_configured(fixture, &[], delay_prefixes, None, None).await
+    }
+
+    /// Media-path delay plus peak in-flight concurrency probe (for parallel prefetch tests).
+    pub async fn spawn_with_concurrency_probe(
+        fixture: &str,
+        delay_prefixes: &[&str],
+        delay: StdDuration,
+    ) -> (Self, Arc<AtomicUsize>) {
+        let peak = Arc::new(AtomicUsize::new(0));
+        let server = Self::spawn_configured(
+            fixture,
+            &[],
+            delay_prefixes,
+            Some(delay),
+            Some(Arc::clone(&peak)),
+        )
+        .await;
+        (server, peak)
     }
 
     async fn spawn_configured(
         fixture: &str,
         not_found_prefixes: &[&str],
         delay_prefixes: &[&str],
+        delay_duration: Option<StdDuration>,
+        peak_concurrency: Option<Arc<AtomicUsize>>,
     ) -> Self {
         let root = fixture_dir(fixture);
         let files = Arc::new(load_fixture_files(&root));
@@ -68,10 +97,17 @@ impl FixtureServer {
                 .collect::<HashSet<_>>(),
         );
 
+        let in_flight = peak_concurrency
+            .as_ref()
+            .map(|_| Arc::new(AtomicUsize::new(0)));
+
         let state = AppState {
             files,
             not_found_prefixes,
             delay_prefixes,
+            delay_duration,
+            peak_concurrency,
+            in_flight,
         };
 
         let app = Router::new()
@@ -111,6 +147,123 @@ impl Drop for FixtureServer {
         }
         self.handle.abort();
     }
+}
+
+#[derive(Clone)]
+struct SyncBufferState {
+    files: Arc<HashMap<String, Vec<u8>>>,
+    /// Monotonic times when specific media paths are requested.
+    p1_seg2_request: Arc<Mutex<Option<Instant>>>,
+    p2_seg1_request: Arc<Mutex<Option<Instant>>>,
+    request_log: Arc<Mutex<Vec<String>>>,
+}
+
+/// Fixture server that records when period-1 last seg and period-2 first seg are requested.
+pub struct SyncBufferServer {
+    pub manifest_url: Url,
+    p1_seg2_request: Arc<Mutex<Option<Instant>>>,
+    p2_seg1_request: Arc<Mutex<Option<Instant>>>,
+    request_log: Arc<Mutex<Vec<String>>>,
+    shutdown: Option<oneshot::Sender<()>>,
+    handle: JoinHandle<()>,
+}
+
+impl SyncBufferServer {
+    pub async fn spawn(fixture: &str) -> Self {
+        let root = fixture_dir(fixture);
+        let files = Arc::new(load_fixture_files(&root));
+        let p1_seg2_request = Arc::new(Mutex::new(None));
+        let p2_seg1_request = Arc::new(Mutex::new(None));
+        let request_log = Arc::new(Mutex::new(Vec::new()));
+        let state = SyncBufferState {
+            files,
+            p1_seg2_request: p1_seg2_request.clone(),
+            p2_seg1_request: p2_seg1_request.clone(),
+            request_log: request_log.clone(),
+        };
+
+        let app = Router::new()
+            .route("/{*path}", get(serve_sync_buffer_path))
+            .with_state(state);
+
+        let listener = tokio::net::TcpListener::bind("127.0.0.1:0")
+            .await
+            .expect("bind test server");
+        let addr = listener.local_addr().expect("local addr");
+        let (shutdown_tx, shutdown_rx) = oneshot::channel();
+        let handle = tokio::spawn(async move {
+            axum::serve(listener, app)
+                .with_graceful_shutdown(async move {
+                    let _ = shutdown_rx.await;
+                })
+                .await
+                .expect("serve");
+        });
+
+        Self {
+            manifest_url: Url::parse(&format!("http://{addr}/manifest.mpd")).expect("manifest url"),
+            p1_seg2_request,
+            p2_seg1_request,
+            request_log,
+            shutdown: Some(shutdown_tx),
+            handle,
+        }
+    }
+
+    /// True when the next-period segment HTTP request started before period-1's last segment request.
+    pub fn p2_fetch_started_before_p1_seg2_emit(&self) -> bool {
+        let p1 = self.p1_seg2_request.lock().ok().and_then(|g| *g);
+        let p2 = self.p2_seg1_request.lock().ok().and_then(|g| *g);
+        match (p1, p2) {
+            (Some(p1_t), Some(p2_t)) => p2_t < p1_t,
+            _ => false,
+        }
+    }
+
+    pub fn request_debug(&self) -> String {
+        let p1 = self.p1_seg2_request.lock().ok().and_then(|g| *g);
+        let p2 = self.p2_seg1_request.lock().ok().and_then(|g| *g);
+        let log = self
+            .request_log
+            .lock()
+            .map(|g| g.clone())
+            .unwrap_or_default();
+        format!("p1_seg2={p1:?} p2_seg1={p2:?} log={log:?}")
+    }
+}
+
+impl Drop for SyncBufferServer {
+    fn drop(&mut self) {
+        if let Some(tx) = self.shutdown.take() {
+            let _ = tx.send(());
+        }
+        self.handle.abort();
+    }
+}
+
+async fn serve_sync_buffer_path(
+    State(state): State<SyncBufferState>,
+    Path(path): Path<String>,
+    uri: Uri,
+    headers: axum::http::HeaderMap,
+) -> Response {
+    let url_path = uri.path().trim_end_matches('/').to_string();
+    if let Ok(mut log) = state.request_log.lock() {
+        log.push(url_path.clone());
+    }
+    if url_path.ends_with("p1-seg-2.m4s") {
+        // Slow last period-1 segment so prefetch of period-2 can start first.
+        if let Ok(mut guard) = state.p1_seg2_request.lock() {
+            *guard = Some(Instant::now());
+        }
+        tokio::time::sleep(StdDuration::from_millis(250)).await;
+    }
+    if url_path.ends_with("p2-seg-1.m4s")
+        && let Ok(mut guard) = state.p2_seg1_request.lock()
+    {
+        *guard = Some(Instant::now());
+    }
+    serve_static_path(&state.files, &path, &uri, &headers)
 }
 
 #[derive(Clone)]
@@ -173,6 +326,544 @@ impl Drop for AdvancingLiveServer {
         }
         self.handle.abort();
     }
+}
+
+#[derive(Clone)]
+struct PartialLiveState {
+    files: Arc<HashMap<String, Vec<u8>>>,
+}
+
+/// Dynamic live server with `@availabilityTimeComplete=false` and chunked CMAF segment bodies.
+pub struct PartialLiveServer {
+    pub manifest_url: Url,
+    shutdown: Option<oneshot::Sender<()>>,
+    handle: JoinHandle<()>,
+}
+
+impl PartialLiveServer {
+    pub async fn spawn() -> Self {
+        let root = fixture_dir("live_duration");
+        let files = Arc::new(load_fixture_files(&root));
+        let state = PartialLiveState { files };
+
+        let app = Router::new()
+            .route("/manifest.mpd", get(serve_partial_live_manifest))
+            .route("/{*path}", get(serve_partial_live_path))
+            .with_state(state);
+
+        let listener = tokio::net::TcpListener::bind("127.0.0.1:0")
+            .await
+            .expect("bind test server");
+        let addr = listener.local_addr().expect("local addr");
+
+        let (shutdown_tx, shutdown_rx) = oneshot::channel();
+        let handle = tokio::spawn(async move {
+            axum::serve(listener, app)
+                .with_graceful_shutdown(async move {
+                    let _ = shutdown_rx.await;
+                })
+                .await
+                .expect("serve");
+        });
+
+        let manifest_url =
+            Url::parse(&format!("http://{addr}/manifest.mpd")).expect("manifest url");
+
+        Self {
+            manifest_url,
+            shutdown: Some(shutdown_tx),
+            handle,
+        }
+    }
+}
+
+impl Drop for PartialLiveServer {
+    fn drop(&mut self) {
+        if let Some(tx) = self.shutdown.take() {
+            let _ = tx.send(());
+        }
+        self.handle.abort();
+    }
+}
+
+/// Duration-template live with a very long `minimumUpdatePeriod`.
+///
+/// New `$Number$` segments must be discovered from wall-clock progress without waiting for MPD
+/// refresh (Akamai CMAF ULL-style streams use `PT500S` MUP).
+pub struct LongMupLiveServer {
+    pub manifest_url: Url,
+    shutdown: Option<oneshot::Sender<()>>,
+    handle: JoinHandle<()>,
+}
+
+impl LongMupLiveServer {
+    pub async fn spawn() -> Self {
+        let root = fixture_dir("live_duration");
+        let files = Arc::new(load_fixture_files(&root));
+        let state = PartialLiveState { files };
+
+        let app = Router::new()
+            .route("/manifest.mpd", get(serve_long_mup_live_manifest))
+            .route("/{*path}", get(serve_partial_live_path))
+            .with_state(state);
+
+        let listener = tokio::net::TcpListener::bind("127.0.0.1:0")
+            .await
+            .expect("bind test server");
+        let addr = listener.local_addr().expect("local addr");
+
+        let (shutdown_tx, shutdown_rx) = oneshot::channel();
+        let handle = tokio::spawn(async move {
+            axum::serve(listener, app)
+                .with_graceful_shutdown(async move {
+                    let _ = shutdown_rx.await;
+                })
+                .await
+                .expect("serve");
+        });
+
+        let manifest_url =
+            Url::parse(&format!("http://{addr}/manifest.mpd")).expect("manifest url");
+
+        Self {
+            manifest_url,
+            shutdown: Some(shutdown_tx),
+            handle,
+        }
+    }
+}
+
+impl Drop for LongMupLiveServer {
+    fn drop(&mut self) {
+        if let Some(tx) = self.shutdown.take() {
+            let _ = tx.send(());
+        }
+        self.handle.abort();
+    }
+}
+
+/// Dynamic live server with `ServiceDescription/Latency@target` for catch-up tests.
+pub struct LatencyLiveServer {
+    pub manifest_url: Url,
+    shutdown: Option<oneshot::Sender<()>>,
+    handle: JoinHandle<()>,
+}
+
+impl LatencyLiveServer {
+    pub async fn spawn() -> Self {
+        let root = fixture_dir("live_duration");
+        let files = Arc::new(load_fixture_files(&root));
+        let state = PartialLiveState { files };
+
+        let app = Router::new()
+            .route("/manifest.mpd", get(serve_latency_live_manifest))
+            .route("/{*path}", get(serve_partial_live_path))
+            .with_state(state);
+
+        let listener = tokio::net::TcpListener::bind("127.0.0.1:0")
+            .await
+            .expect("bind test server");
+        let addr = listener.local_addr().expect("local addr");
+
+        let (shutdown_tx, shutdown_rx) = oneshot::channel();
+        let handle = tokio::spawn(async move {
+            axum::serve(listener, app)
+                .with_graceful_shutdown(async {
+                    let _ = shutdown_rx.await;
+                })
+                .await
+                .expect("serve");
+        });
+
+        let manifest_url =
+            Url::parse(&format!("http://{addr}/manifest.mpd")).expect("manifest url");
+
+        Self {
+            manifest_url,
+            shutdown: Some(shutdown_tx),
+            handle,
+        }
+    }
+}
+
+impl Drop for LatencyLiveServer {
+    fn drop(&mut self) {
+        if let Some(tx) = self.shutdown.take() {
+            let _ = tx.send(());
+        }
+        self.handle.abort();
+    }
+}
+
+async fn serve_latency_live_manifest() -> Response {
+    // since_ast ≈ 20s via UTCTiming; Latency@target=500ms → playhead behind target → catch-up.
+    let body = r#"<?xml version="1.0" encoding="UTF-8"?>
+<MPD xmlns="urn:mpeg:dash:schema:mpd:2011"
+     type="dynamic"
+     minimumUpdatePeriod="PT0.5S"
+     availabilityStartTime="2020-05-01T12:00:00Z"
+     timeShiftBufferDepth="PT20S"
+     minBufferTime="PT2S">
+  <UTCTiming schemeIdUri="urn:mpeg:dash:utc:direct:2014" value="2020-05-01T12:00:20Z"/>
+  <ServiceDescription id="0">
+    <Latency target="500" min="200" max="8000"/>
+    <PlaybackRate min="0.96" max="1.04"/>
+  </ServiceDescription>
+  <Period>
+    <AdaptationSet mimeType="video/mp4" contentType="video">
+      <SegmentTemplate timescale="1000" duration="4000" initialization="init.mp4" media="seg-$Number$.m4s" startNumber="1"/>
+      <Representation id="1" bandwidth="100000" codecs="avc1.42E01E" width="640" height="360"/>
+      <ProducerReferenceTime id="0" type="encoder" wallClockTime="2020-05-01T12:00:00Z" presentationTime="0"/>
+    </AdaptationSet>
+  </Period>
+</MPD>
+"#;
+
+    Response::builder()
+        .status(StatusCode::OK)
+        .header("Content-Type", "application/dash+xml")
+        .body(Body::from(body))
+        .unwrap_or_else(|_| StatusCode::INTERNAL_SERVER_ERROR.into_response())
+}
+
+async fn serve_partial_live_manifest() -> Response {
+    let body = r#"<?xml version="1.0" encoding="UTF-8"?>
+<MPD xmlns="urn:mpeg:dash:schema:mpd:2011"
+     type="dynamic"
+     minimumUpdatePeriod="PT0.5S"
+     availabilityStartTime="2020-05-01T12:00:00Z"
+     timeShiftBufferDepth="PT20S"
+     suggestedPresentationDelay="PT4S"
+     minBufferTime="PT2S">
+  <UTCTiming schemeIdUri="urn:mpeg:dash:utc:direct:2014" value="2020-05-01T12:00:20Z"/>
+  <Period>
+    <AdaptationSet mimeType="video/mp4" contentType="video">
+      <SegmentTemplate timescale="1000" duration="4000" initialization="init.mp4" media="seg-$Number$.m4s" startNumber="1" availabilityTimeOffset="7" availabilityTimeComplete="false"/>
+      <Representation id="1" bandwidth="100000" codecs="avc1.42E01E" width="640" height="360"/>
+      <ProducerReferenceTime id="0" type="encoder" wallClockTime="2020-05-01T12:00:00Z" presentationTime="0"/>
+    </AdaptationSet>
+  </Period>
+</MPD>
+"#;
+
+    Response::builder()
+        .status(StatusCode::OK)
+        .header("Content-Type", "application/dash+xml")
+        .body(Body::from(body))
+        .unwrap_or_else(|_| StatusCode::INTERNAL_SERVER_ERROR.into_response())
+}
+
+/// Flat duration template with MUP far too long to cover segment cadence.
+///
+/// UTC at AST+5s / 1s segments → live edge number 6 at join; Instant progress must unlock 7+.
+async fn serve_long_mup_live_manifest() -> Response {
+    let body = r#"<?xml version="1.0" encoding="UTF-8"?>
+<MPD xmlns="urn:mpeg:dash:schema:mpd:2011"
+     type="dynamic"
+     minimumUpdatePeriod="PT500S"
+     availabilityStartTime="2020-05-01T12:00:00Z"
+     timeShiftBufferDepth="PT30S"
+     maxSegmentDuration="PT1S"
+     minBufferTime="PT1S">
+  <UTCTiming schemeIdUri="urn:mpeg:dash:utc:direct:2014" value="2020-05-01T12:00:05Z"/>
+  <ServiceDescription id="0">
+    <Latency target="2000"/>
+  </ServiceDescription>
+  <Period>
+    <AdaptationSet mimeType="video/mp4" contentType="video">
+      <SegmentTemplate timescale="1000" duration="1000" initialization="init.mp4" media="seg-$Number$.m4s" startNumber="1" availabilityTimeOffset="0.8" availabilityTimeComplete="false"/>
+      <Representation id="1" bandwidth="100000" codecs="avc1.42E01E" width="640" height="360"/>
+    </AdaptationSet>
+  </Period>
+</MPD>
+"#;
+
+    Response::builder()
+        .status(StatusCode::OK)
+        .header("Content-Type", "application/dash+xml")
+        .body(Body::from(body))
+        .unwrap_or_else(|_| StatusCode::INTERNAL_SERVER_ERROR.into_response())
+}
+
+async fn serve_partial_live_path(
+    State(state): State<PartialLiveState>,
+    Path(path): Path<String>,
+    uri: Uri,
+    headers: axum::http::HeaderMap,
+) -> Response {
+    let url_path = uri.path().trim_end_matches('/').to_string();
+    if url_path.ends_with(".m4s") {
+        let segment_id = url_path.rsplit('/').next().unwrap_or("");
+        let (chunk_a, chunk_b) = dual_cmaf_chunks_for_segment(segment_id);
+        let stream = futures_util::stream::iter(vec![
+            Ok::<_, std::convert::Infallible>(chunk_a),
+            Ok(chunk_b),
+        ]);
+        return Response::builder()
+            .status(StatusCode::OK)
+            .header("Content-Type", "video/iso.segment")
+            .body(Body::from_stream(stream))
+            .unwrap_or_else(|_| StatusCode::INTERNAL_SERVER_ERROR.into_response());
+    }
+    serve_static_path(&state.files, &path, &uri, &headers)
+}
+
+fn dual_cmaf_chunks_for_segment(segment_id: &str) -> (Vec<u8>, Vec<u8>) {
+    (
+        build_cmaf_chunk(format!("partial-{segment_id}-a").as_bytes()),
+        build_cmaf_chunk(format!("partial-{segment_id}-b").as_bytes()),
+    )
+}
+
+fn build_cmaf_chunk(payload: &[u8]) -> Vec<u8> {
+    let mut moof = Vec::with_capacity(8);
+    moof.extend_from_slice(&8u32.to_be_bytes());
+    moof.extend_from_slice(b"moof");
+    let mut mdat = Vec::with_capacity(8 + payload.len());
+    mdat.extend_from_slice(&(8u32 + payload.len() as u32).to_be_bytes());
+    mdat.extend_from_slice(b"mdat");
+    mdat.extend_from_slice(payload);
+    moof.extend_from_slice(&mdat);
+    moof
+}
+
+#[derive(Clone)]
+struct ProducerReferenceLiveState {
+    files: Arc<HashMap<String, Vec<u8>>>,
+}
+
+/// Dynamic live server where `ProducerReferenceTime` intentionally diverges from `UTCTiming`.
+///
+/// `UTCTiming` reports 20s since `availabilityStartTime`, but the encoder anchor says only 4s
+/// of media have elapsed at that same wall instant — live-window selection must follow PRT.
+pub struct ProducerReferenceLiveServer {
+    pub manifest_url: Url,
+    shutdown: Option<oneshot::Sender<()>>,
+    handle: JoinHandle<()>,
+}
+
+impl ProducerReferenceLiveServer {
+    pub async fn spawn() -> Self {
+        let root = fixture_dir("live_duration");
+        let files = Arc::new(load_fixture_files(&root));
+        let state = ProducerReferenceLiveState { files };
+
+        let app = Router::new()
+            .route("/manifest.mpd", get(serve_producer_reference_live_manifest))
+            .route("/{*path}", get(serve_producer_reference_live_path))
+            .with_state(state);
+
+        let listener = tokio::net::TcpListener::bind("127.0.0.1:0")
+            .await
+            .expect("bind test server");
+        let addr = listener.local_addr().expect("local addr");
+
+        let (shutdown_tx, shutdown_rx) = oneshot::channel();
+        let handle = tokio::spawn(async move {
+            axum::serve(listener, app)
+                .with_graceful_shutdown(async move {
+                    let _ = shutdown_rx.await;
+                })
+                .await
+                .expect("serve");
+        });
+
+        let manifest_url =
+            Url::parse(&format!("http://{addr}/manifest.mpd")).expect("manifest url");
+
+        Self {
+            manifest_url,
+            shutdown: Some(shutdown_tx),
+            handle,
+        }
+    }
+}
+
+impl Drop for ProducerReferenceLiveServer {
+    fn drop(&mut self) {
+        if let Some(tx) = self.shutdown.take() {
+            let _ = tx.send(());
+        }
+        self.handle.abort();
+    }
+}
+
+async fn serve_producer_reference_live_manifest() -> Response {
+    let body = r#"<?xml version="1.0" encoding="UTF-8"?>
+<MPD xmlns="urn:mpeg:dash:schema:mpd:2011"
+     type="dynamic"
+     minimumUpdatePeriod="PT0.5S"
+     availabilityStartTime="2020-05-01T12:00:00Z"
+     timeShiftBufferDepth="PT20S"
+     suggestedPresentationDelay="PT4S"
+     minBufferTime="PT2S">
+  <UTCTiming schemeIdUri="urn:mpeg:dash:utc:direct:2014" value="2020-05-01T12:00:20Z"/>
+  <Period>
+    <AdaptationSet mimeType="video/mp4" contentType="video">
+      <SegmentTemplate timescale="1000" duration="4000" initialization="init.mp4" media="seg-$Number$.m4s" startNumber="1"/>
+      <Representation id="1" bandwidth="100000" codecs="avc1.42E01E" width="640" height="360"/>
+      <ProducerReferenceTime id="0" type="encoder" wallClockTime="2020-05-01T12:00:20Z" presentationTime="4000"/>
+    </AdaptationSet>
+  </Period>
+</MPD>
+"#;
+
+    Response::builder()
+        .status(StatusCode::OK)
+        .header("Content-Type", "application/dash+xml")
+        .body(Body::from(body))
+        .unwrap_or_else(|_| StatusCode::INTERNAL_SERVER_ERROR.into_response())
+}
+
+async fn serve_producer_reference_live_path(
+    State(state): State<ProducerReferenceLiveState>,
+    Path(path): Path<String>,
+    uri: Uri,
+    headers: axum::http::HeaderMap,
+) -> Response {
+    serve_static_path(&state.files, &path, &uri, &headers)
+}
+
+#[derive(Clone)]
+struct InbandProducerReferenceLiveState {
+    files: Arc<HashMap<String, Vec<u8>>>,
+}
+
+/// Dynamic live server with `ProducerReferenceTime@inband=true` and matching `prft` boxes in segments.
+pub struct InbandProducerReferenceLiveServer {
+    pub manifest_url: Url,
+    shutdown: Option<oneshot::Sender<()>>,
+    handle: JoinHandle<()>,
+}
+
+impl InbandProducerReferenceLiveServer {
+    pub async fn spawn() -> Self {
+        let root = fixture_dir("live_duration");
+        let files = Arc::new(load_fixture_files(&root));
+        let state = InbandProducerReferenceLiveState { files };
+
+        let app = Router::new()
+            .route(
+                "/manifest.mpd",
+                get(serve_inband_producer_reference_live_manifest),
+            )
+            .route("/{*path}", get(serve_inband_producer_reference_live_path))
+            .with_state(state);
+
+        let listener = tokio::net::TcpListener::bind("127.0.0.1:0")
+            .await
+            .expect("bind test server");
+        let addr = listener.local_addr().expect("local addr");
+
+        let (shutdown_tx, shutdown_rx) = oneshot::channel();
+        let handle = tokio::spawn(async move {
+            axum::serve(listener, app)
+                .with_graceful_shutdown(async move {
+                    let _ = shutdown_rx.await;
+                })
+                .await
+                .expect("serve");
+        });
+
+        let manifest_url =
+            Url::parse(&format!("http://{addr}/manifest.mpd")).expect("manifest url");
+
+        Self {
+            manifest_url,
+            shutdown: Some(shutdown_tx),
+            handle,
+        }
+    }
+}
+
+impl Drop for InbandProducerReferenceLiveServer {
+    fn drop(&mut self) {
+        if let Some(tx) = self.shutdown.take() {
+            let _ = tx.send(());
+        }
+        self.handle.abort();
+    }
+}
+
+async fn serve_inband_producer_reference_live_manifest() -> Response {
+    let body = r#"<?xml version="1.0" encoding="UTF-8"?>
+<MPD xmlns="urn:mpeg:dash:schema:mpd:2011"
+     type="dynamic"
+     minimumUpdatePeriod="PT0.5S"
+     availabilityStartTime="2020-05-01T12:00:00Z"
+     timeShiftBufferDepth="PT20S"
+     suggestedPresentationDelay="PT4S"
+     minBufferTime="PT2S">
+  <UTCTiming schemeIdUri="urn:mpeg:dash:utc:direct:2014" value="2020-05-01T12:00:20Z"/>
+  <Period>
+    <AdaptationSet mimeType="video/mp4" contentType="video">
+      <SegmentTemplate timescale="1000" duration="4000" initialization="init.mp4" media="seg-$Number$.m4s" startNumber="1"/>
+      <Representation id="1" bandwidth="100000" codecs="avc1.42E01E" width="640" height="360"/>
+      <ProducerReferenceTime id="0" type="encoder" inband="true" wallClockTime="2020-05-01T12:00:20Z" presentationTime="4000"/>
+    </AdaptationSet>
+  </Period>
+</MPD>
+"#;
+
+    Response::builder()
+        .status(StatusCode::OK)
+        .header("Content-Type", "application/dash+xml")
+        .body(Body::from(body))
+        .unwrap_or_else(|_| StatusCode::INTERNAL_SERVER_ERROR.into_response())
+}
+
+async fn serve_inband_producer_reference_live_path(
+    State(state): State<InbandProducerReferenceLiveState>,
+    Path(path): Path<String>,
+    uri: Uri,
+    headers: axum::http::HeaderMap,
+) -> Response {
+    let url_path = uri.path().trim_end_matches('/').to_string();
+    if url_path.ends_with(".m4s") {
+        let segment_id = url_path.rsplit('/').next().unwrap_or("");
+        let key = format!("/{segment_id}");
+        let Some(raw) = state
+            .files
+            .get(&key)
+            .or_else(|| state.files.get(segment_id))
+        else {
+            return StatusCode::NOT_FOUND.into_response();
+        };
+        // prft anchor: 4s media at 2020-05-01T12:00:20Z (matches MPD PRT; diverges from UTCTiming).
+        let wrapped = wrap_segment_with_prft(raw, 4000, 1_588_334_420);
+        return Response::builder()
+            .status(StatusCode::OK)
+            .header("Content-Type", "video/iso.segment")
+            .body(Body::from(wrapped))
+            .unwrap_or_else(|_| StatusCode::INTERNAL_SERVER_ERROR.into_response());
+    }
+    serve_static_path(&state.files, &path, &uri, &headers)
+}
+
+const NTP_UNIX_OFFSET: i64 = 2_208_988_800;
+
+fn ntp_timestamp_from_unix(unix_secs: i64) -> u64 {
+    let ntp_sec = (unix_secs + NTP_UNIX_OFFSET) as u64;
+    ntp_sec << 32
+}
+
+fn build_prft_box(reference_track_id: u32, ntp_timestamp: u64, media_time: u64) -> Vec<u8> {
+    let mut payload = vec![0u8, 0, 0, 0]; // version 0, flags 0
+    payload.extend_from_slice(&reference_track_id.to_be_bytes());
+    payload.extend_from_slice(&ntp_timestamp.to_be_bytes());
+    payload.extend_from_slice(&(media_time as u32).to_be_bytes());
+    let size = (8 + payload.len()) as u32;
+    let mut out = Vec::with_capacity(size as usize);
+    out.extend_from_slice(&size.to_be_bytes());
+    out.extend_from_slice(b"prft");
+    out.extend_from_slice(&payload);
+    out
+}
+
+fn wrap_segment_with_prft(segment: &[u8], media_time: u64, wall_unix_secs: i64) -> Vec<u8> {
+    let mut out = build_prft_box(1, ntp_timestamp_from_unix(wall_unix_secs), media_time);
+    out.extend_from_slice(segment);
+    out
 }
 
 #[derive(Clone)]
@@ -279,8 +970,9 @@ async fn serve_multi_period_path(
     State(state): State<MultiPeriodLiveState>,
     Path(path): Path<String>,
     uri: Uri,
+    headers: axum::http::HeaderMap,
 ) -> Response {
-    serve_static_path(&state.files, &path, &uri)
+    serve_static_path(&state.files, &path, &uri, &headers)
 }
 
 async fn serve_advancing_manifest(State(state): State<AdvancingLiveState>) -> Response {
@@ -319,11 +1011,17 @@ async fn serve_advancing_path(
     State(state): State<AdvancingLiveState>,
     Path(path): Path<String>,
     uri: Uri,
+    headers: axum::http::HeaderMap,
 ) -> Response {
-    serve_static_path(&state.files, &path, &uri)
+    serve_static_path(&state.files, &path, &uri, &headers)
 }
 
-fn serve_static_path(files: &HashMap<String, Vec<u8>>, path: &str, uri: &Uri) -> Response {
+fn serve_static_path(
+    files: &HashMap<String, Vec<u8>>,
+    path: &str,
+    uri: &Uri,
+    headers: &axum::http::HeaderMap,
+) -> Response {
     let url_path = uri.path().trim_end_matches('/').to_string();
     if url_path.is_empty() {
         return StatusCode::NOT_FOUND.into_response();
@@ -339,10 +1037,45 @@ fn serve_static_path(files: &HashMap<String, Vec<u8>>, path: &str, uri: &Uri) ->
         return StatusCode::NOT_FOUND.into_response();
     };
 
+    if let Some(range_hdr) = headers.get(axum::http::header::RANGE) {
+        if let Ok(range_str) = range_hdr.to_str() {
+            if let Some((start, end)) = parse_http_range(range_str, bytes.len()) {
+                let slice = &bytes[start..=end];
+                return Response::builder()
+                    .status(StatusCode::PARTIAL_CONTENT)
+                    .header(
+                        axum::http::header::CONTENT_RANGE,
+                        format!("bytes {start}-{end}/{}", bytes.len()),
+                    )
+                    .body(Body::from(slice.to_vec()))
+                    .unwrap_or_else(|_| StatusCode::INTERNAL_SERVER_ERROR.into_response());
+            }
+        }
+    }
+
     Response::builder()
         .status(StatusCode::OK)
         .body(Body::from(bytes.clone()))
         .unwrap_or_else(|_| StatusCode::INTERNAL_SERVER_ERROR.into_response())
+}
+
+fn parse_http_range(header: &str, len: usize) -> Option<(usize, usize)> {
+    let bytes_part = header.strip_prefix("bytes=")?;
+    let (start_s, end_s) = bytes_part.split_once('-')?;
+    let end = if end_s.is_empty() {
+        len.saturating_sub(1)
+    } else {
+        end_s.parse().ok()?
+    };
+    let start = if start_s.is_empty() {
+        len.saturating_sub(end + 1)
+    } else {
+        start_s.parse().ok()?
+    };
+    if start > end || end >= len {
+        return None;
+    }
+    Some((start, end))
 }
 
 fn path_matches_prefix(url_path: &str, prefix: &str) -> bool {
@@ -366,7 +1099,17 @@ pub fn read_fixture(name: &str, relative: &str) -> String {
         .unwrap_or_else(|e| panic!("read fixture {name}/{relative}: {e}"))
 }
 
-async fn serve_path(State(state): State<AppState>, Path(path): Path<String>, uri: Uri) -> Response {
+pub fn read_fixture_bytes(name: &str, relative: &str) -> Vec<u8> {
+    std::fs::read(fixture_dir(name).join(relative))
+        .unwrap_or_else(|e| panic!("read fixture {name}/{relative}: {e}"))
+}
+
+async fn serve_path(
+    State(state): State<AppState>,
+    Path(path): Path<String>,
+    uri: Uri,
+    headers: axum::http::HeaderMap,
+) -> Response {
     let url_path = uri.path().trim_end_matches('/').to_string();
     if url_path.is_empty() {
         return StatusCode::NOT_FOUND.into_response();
@@ -378,20 +1121,67 @@ async fn serve_path(State(state): State<AppState>, Path(path): Path<String>, uri
         }
     }
 
+    let mut matches_delay = false;
     for prefix in state.delay_prefixes.iter() {
         if path_has_prefix(&url_path, prefix) {
-            tokio::time::sleep(StdDuration::from_secs(11)).await;
+            matches_delay = true;
             break;
         }
     }
 
-    serve_static_path(&state.files, &path, &uri)
+    let _guard = if matches_delay {
+        if let (Some(in_flight), Some(peak)) =
+            (state.in_flight.as_ref(), state.peak_concurrency.as_ref())
+        {
+            let current = in_flight.fetch_add(1, Ordering::SeqCst) + 1;
+            peak.fetch_max(current, Ordering::SeqCst);
+            Some(InFlightGuard {
+                in_flight: Arc::clone(in_flight),
+            })
+        } else {
+            None
+        }
+    } else {
+        None
+    };
+
+    if matches_delay {
+        let delay = state
+            .delay_duration
+            .unwrap_or_else(|| StdDuration::from_secs(11));
+        tokio::time::sleep(delay).await;
+    }
+
+    serve_static_path(&state.files, &path, &uri, &headers)
+}
+
+struct InFlightGuard {
+    in_flight: Arc<AtomicUsize>,
+}
+
+impl Drop for InFlightGuard {
+    fn drop(&mut self) {
+        self.in_flight.fetch_sub(1, Ordering::SeqCst);
+    }
 }
 
 fn load_fixture_files(root: &FsPath) -> HashMap<String, Vec<u8>> {
     let mut files = HashMap::new();
     collect_files(root, root, &mut files);
     files
+}
+
+pub fn load_fixture_files_public(root: &FsPath) -> HashMap<String, Vec<u8>> {
+    load_fixture_files(root)
+}
+
+pub fn serve_static_path_public(
+    files: &HashMap<String, Vec<u8>>,
+    path: &str,
+    uri: &Uri,
+    headers: &axum::http::HeaderMap,
+) -> Response {
+    serve_static_path(files, path, uri, headers)
 }
 
 fn collect_files(root: &FsPath, dir: &FsPath, out: &mut HashMap<String, Vec<u8>>) {
@@ -413,10 +1203,10 @@ fn collect_files(root: &FsPath, dir: &FsPath, out: &mut HashMap<String, Vec<u8>>
     }
 }
 
-async fn collect_events(
-    rx: &mut tokio::sync::broadcast::Receiver<dashplayrs::PlayerEvent>,
+pub async fn collect_events(
+    rx: &mut tokio::sync::broadcast::Receiver<dashplay::PlayerEvent>,
     timeout: std::time::Duration,
-) -> Vec<dashplayrs::PlayerEvent> {
+) -> Vec<dashplay::PlayerEvent> {
     let mut events = Vec::new();
     let deadline = tokio::time::Instant::now() + timeout;
 
@@ -427,8 +1217,8 @@ async fn collect_events(
         }
 
         match tokio::time::timeout(remaining, rx.recv()).await {
-            Ok(Ok(dashplayrs::PlayerEvent::End)) => {
-                events.push(dashplayrs::PlayerEvent::End);
+            Ok(Ok(ev)) if ev.is_terminal() => {
+                events.push(ev);
                 break;
             }
             Ok(Ok(ev)) => events.push(ev),
@@ -440,10 +1230,49 @@ async fn collect_events(
     events
 }
 
+/// Receive the next event matching `pred`, skipping others until `timeout` elapses.
+pub async fn recv_matching(
+    rx: &mut tokio::sync::broadcast::Receiver<dashplay::PlayerEvent>,
+    timeout: std::time::Duration,
+    mut pred: impl FnMut(&dashplay::PlayerEvent) -> bool,
+) -> Option<dashplay::PlayerEvent> {
+    let deadline = tokio::time::Instant::now() + timeout;
+    while tokio::time::Instant::now() < deadline {
+        let remaining = deadline.saturating_duration_since(tokio::time::Instant::now());
+        match tokio::time::timeout(remaining, rx.recv()).await {
+            Ok(Ok(ev)) if pred(&ev) => return Some(ev),
+            Ok(Ok(_)) => continue,
+            Ok(Err(_)) => return None,
+            Err(_) => return None,
+        }
+    }
+    None
+}
+
+/// Simulates 1× playback consumption by draining buffer occupancy over wall-clock time.
+pub fn spawn_playback_buffer_simulation(
+    buffer_feedback: dashplay::BufferFeedback,
+    initial_buffer_s: f64,
+) -> JoinHandle<()> {
+    tokio::spawn(async move {
+        let mut buffer_s = initial_buffer_s;
+        let _ = buffer_feedback.report(buffer_s);
+        let mut interval = tokio::time::interval(StdDuration::from_millis(100));
+        interval.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Skip);
+        loop {
+            interval.tick().await;
+            buffer_s = (buffer_s - 0.1).max(0.0);
+            if buffer_feedback.report(buffer_s).is_err() {
+                break;
+            }
+        }
+    })
+}
+
 pub async fn play_single_track(
     manifest_url: &Url,
     timeout: std::time::Duration,
-) -> Result<Vec<dashplayrs::PlayerEvent>, dashplayrs::PlayerError> {
+) -> Result<Vec<dashplay::PlayerEvent>, dashplay::PlayerError> {
     play_single_track_with_options(manifest_url, timeout, false).await
 }
 
@@ -452,7 +1281,7 @@ pub async fn play_single_track(
 pub async fn play_single_track_live(
     manifest_url: &Url,
     timeout: std::time::Duration,
-) -> Result<Vec<dashplayrs::PlayerEvent>, dashplayrs::PlayerError> {
+) -> Result<Vec<dashplay::PlayerEvent>, dashplay::PlayerError> {
     play_single_track_with_options(manifest_url, timeout, true).await
 }
 
@@ -460,9 +1289,21 @@ async fn play_single_track_with_options(
     manifest_url: &Url,
     timeout: std::time::Duration,
     drop_receiver_before_join: bool,
-) -> Result<Vec<dashplayrs::PlayerEvent>, dashplayrs::PlayerError> {
-    let player = dashplayrs::Player::new(manifest_url.as_str(), None)?;
+) -> Result<Vec<dashplay::PlayerEvent>, dashplay::PlayerError> {
+    play_single_track_with_buffer(manifest_url, timeout, drop_receiver_before_join, 25.0).await
+}
+
+pub async fn play_single_track_with_buffer(
+    manifest_url: &Url,
+    timeout: std::time::Duration,
+    drop_receiver_before_join: bool,
+    initial_buffer_s: f64,
+) -> Result<Vec<dashplay::PlayerEvent>, dashplay::PlayerError> {
+    let player = dashplay::Player::new(manifest_url.as_str(), None)?;
     let outputs = player.start_tracks().await?;
+    let buffer_feedback = outputs.buffer_feedback(0).expect("one track");
+    let _ = buffer_feedback.report(initial_buffer_s);
+    let drain = spawn_playback_buffer_simulation(buffer_feedback, initial_buffer_s);
     let mut rx = outputs
         .tracks
         .into_iter()
@@ -473,6 +1314,7 @@ async fn play_single_track_with_options(
     if drop_receiver_before_join {
         drop(rx);
     }
+    drain.abort();
     outputs.join.await.unwrap()?;
     Ok(events)
 }
@@ -480,10 +1322,16 @@ async fn play_single_track_with_options(
 pub async fn play_all_tracks(
     manifest_url: &Url,
     timeout: std::time::Duration,
-) -> Result<Vec<Vec<dashplayrs::PlayerEvent>>, dashplayrs::PlayerError> {
-    let player = dashplayrs::Player::new(manifest_url.as_str(), None)?;
+) -> Result<Vec<Vec<dashplay::PlayerEvent>>, dashplay::PlayerError> {
+    let player = dashplay::Player::new(manifest_url.as_str(), None)?;
     let outputs = player.start_tracks().await?;
     let track_count = outputs.tracks.len();
+    let mut drains = Vec::with_capacity(track_count);
+    for i in 0..track_count {
+        if let Some(feedback) = outputs.buffer_feedback(i) {
+            drains.push(spawn_playback_buffer_simulation(feedback, 25.0));
+        }
+    }
     let mut receivers: Vec<_> = outputs
         .tracks
         .into_iter()
@@ -495,35 +1343,38 @@ pub async fn play_all_tracks(
         all_events.push(collect_events(rx, timeout).await);
     }
 
+    for drain in drains {
+        drain.abort();
+    }
     outputs.join.await.unwrap()?;
     Ok(all_events)
 }
 
-pub fn init_payload(events: &[dashplayrs::PlayerEvent]) -> Option<Vec<u8>> {
+pub fn init_payload(events: &[dashplay::PlayerEvent]) -> Option<Vec<u8>> {
     init_payloads(events).into_iter().next()
 }
 
-pub fn init_payloads(events: &[dashplayrs::PlayerEvent]) -> Vec<Vec<u8>> {
+pub fn init_payloads(events: &[dashplay::PlayerEvent]) -> Vec<Vec<u8>> {
     events
         .iter()
         .filter_map(|ev| match ev {
-            dashplayrs::PlayerEvent::Init(data) => Some(trim_payload(data.as_ref())),
+            dashplay::PlayerEvent::Init(data) => Some(trim_payload(data.as_ref())),
             _ => None,
         })
         .collect()
 }
 
-pub fn segment_payloads(events: &[dashplayrs::PlayerEvent]) -> Vec<Vec<u8>> {
+pub fn segment_payloads(events: &[dashplay::PlayerEvent]) -> Vec<Vec<u8>> {
     events
         .iter()
         .filter_map(|ev| match ev {
-            dashplayrs::PlayerEvent::Segment { data, .. } => Some(trim_payload(data.as_ref())),
+            dashplay::PlayerEvent::Segment { data, .. } => Some(trim_payload(data.as_ref())),
             _ => None,
         })
         .collect()
 }
 
-fn trim_payload(bytes: &[u8]) -> Vec<u8> {
+pub fn trim_payload(bytes: &[u8]) -> Vec<u8> {
     let end = bytes
         .iter()
         .rposition(|b| *b != b'\n' && *b != b'\r')
@@ -532,17 +1383,71 @@ fn trim_payload(bytes: &[u8]) -> Vec<u8> {
     bytes[..end].to_vec()
 }
 
-pub fn has_end(events: &[dashplayrs::PlayerEvent]) -> bool {
-    events
-        .iter()
-        .any(|ev| matches!(ev, dashplayrs::PlayerEvent::End))
+pub fn has_end(events: &[dashplay::PlayerEvent]) -> bool {
+    events.iter().any(|ev| ev.is_terminal())
 }
 
-pub fn segment_numbers(events: &[dashplayrs::PlayerEvent]) -> Vec<u64> {
+pub fn segment_numbers(events: &[dashplay::PlayerEvent]) -> Vec<u64> {
     events
         .iter()
         .filter_map(|ev| match ev {
-            dashplayrs::PlayerEvent::Segment { number, .. } => Some(*number),
+            dashplay::PlayerEvent::Segment { number, .. } => Some(*number),
+            _ => None,
+        })
+        .collect()
+}
+
+/// Unique `(number, time, sub_number)` keys for delivered segments.
+pub fn segment_keys(events: &[dashplay::PlayerEvent]) -> Vec<(u64, u64, Option<u64>)> {
+    events
+        .iter()
+        .filter_map(|ev| match ev {
+            dashplay::PlayerEvent::Segment {
+                number,
+                time,
+                sub_number,
+                ..
+            } => Some((*number, *time, *sub_number)),
+            _ => None,
+        })
+        .collect()
+}
+
+pub fn assert_no_duplicate_segments(events: &[dashplay::PlayerEvent]) {
+    let keys = segment_keys(events);
+    let mut seen = std::collections::HashSet::new();
+    for key in keys {
+        assert!(
+            seen.insert(key),
+            "duplicate segment {key:?}; all keys: {:?}",
+            segment_keys(events)
+        );
+    }
+}
+
+pub fn partial_segment_payloads(
+    events: &[dashplay::PlayerEvent],
+) -> Vec<(Option<dashplay::PartialSegmentChunk>, Vec<u8>)> {
+    events
+        .iter()
+        .filter_map(|ev| match ev {
+            dashplay::PlayerEvent::Segment { partial, data, .. } => {
+                Some((*partial, trim_payload(data.as_ref())))
+            }
+            _ => None,
+        })
+        .collect()
+}
+
+pub fn playback_rate_suggestions(events: &[dashplay::PlayerEvent]) -> Vec<(f64, StdDuration)> {
+    events
+        .iter()
+        .filter_map(|ev| match ev {
+            dashplay::PlayerEvent::PlaybackRateSuggested {
+                rate,
+                latency,
+                target_latency: _,
+            } => Some((*rate, *latency)),
             _ => None,
         })
         .collect()

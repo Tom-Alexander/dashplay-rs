@@ -4,10 +4,10 @@ use std::cell::RefCell;
 use std::rc::Rc;
 
 use dashplay::{
-    BufferFeedback, MediaPlayer, PlayerError, PlayerEvent, TrackKind, TrackPreference,
-    TrackSelection, set_widevine_device_bytes,
+    BufferFeedback, MediaPlayer, PlayerError, PlayerEvent, SubtitleType, TrackKind,
+    TrackPreference, TrackSelection, set_widevine_device_bytes,
 };
-use js_sys::Function;
+use js_sys::{Function, Reflect};
 use serde::Serialize;
 use tokio::sync::broadcast::error::RecvError;
 use wasm_bindgen::prelude::*;
@@ -42,6 +42,8 @@ struct TrackInfoJs {
     kind: &'static str,
     language: Option<String>,
     is_dynamic: bool,
+    subtitle_type: Option<&'static str>,
+    roles: Vec<String>,
 }
 
 fn kind_label(kind: TrackKind) -> &'static str {
@@ -52,6 +54,22 @@ fn kind_label(kind: TrackKind) -> &'static str {
         TrackKind::TrickPlay => "trickplay",
         TrackKind::Image => "image",
     }
+}
+
+fn subtitle_type_label(subtitle_type: Option<SubtitleType>) -> Option<&'static str> {
+    subtitle_type.map(|value| match value {
+        SubtitleType::Vtt => "vtt",
+        SubtitleType::Srt => "srt",
+        SubtitleType::Sub => "sub",
+        SubtitleType::Ass => "ass",
+        SubtitleType::Ttxt => "ttxt",
+        SubtitleType::Ttml => "ttml",
+        SubtitleType::Sami => "sami",
+        SubtitleType::Wvtt => "wvtt",
+        SubtitleType::Stpp => "stpp",
+        SubtitleType::Eia608 => "eia608",
+        SubtitleType::Unknown => "unknown",
+    })
 }
 
 #[wasm_bindgen]
@@ -167,7 +185,8 @@ async fn run_playback(
                 .codec("mp4a")
                 .language("en")
                 .max_tracks(1),
-        );
+        )
+        .with_text(TrackPreference::default());
 
     let media_player =
         MediaPlayer::new(manifest_url, license_url)?.with_track_selection(track_selection);
@@ -197,6 +216,8 @@ async fn run_playback(
             kind: kind_label(track.info().kind),
             language: track.info().language.clone(),
             is_dynamic,
+            subtitle_type: subtitle_type_label(track.info().subtitle_type),
+            roles: track.info().roles.clone(),
         };
 
         if let Some(callback) = on_track {
@@ -243,6 +264,7 @@ async fn consume_track_events(
                 // (`appendBuffer` per moof+mdat). The HTTP body is already complete before
                 // fragments are emitted, so coalesce back into one MSE append per segment.
                 let mut pending_media = bytes::BytesMut::new();
+                let mut pending_presentation_time_s: Option<f64> = None;
                 loop {
                     match rx.recv().await {
                         Ok(PlayerEvent::Init(data)) => {
@@ -252,16 +274,32 @@ async fn consume_track_events(
                                     index,
                                     "segment",
                                     &pending_media.split().freeze(),
+                                    pending_presentation_time_s.take(),
                                 );
                             }
-                            emit_fragment(on_fragment.as_ref(), index, "init", &data);
+                            emit_fragment(on_fragment.as_ref(), index, "init", &data, None);
                         }
-                        Ok(PlayerEvent::Segment { data, partial, .. }) => {
+                        Ok(PlayerEvent::Segment {
+                            data,
+                            partial,
+                            presentation_time,
+                            ..
+                        }) => {
+                            if pending_media.is_empty() {
+                                pending_presentation_time_s =
+                                    Some(presentation_time.as_secs_f64());
+                            }
                             pending_media.extend_from_slice(&data);
                             let complete = partial.is_none_or(|p| p.is_final);
                             if complete {
                                 let coalesced = pending_media.split().freeze();
-                                emit_fragment(on_fragment.as_ref(), index, "segment", &coalesced);
+                                emit_fragment(
+                                    on_fragment.as_ref(),
+                                    index,
+                                    "segment",
+                                    &coalesced,
+                                    pending_presentation_time_s.take(),
+                                );
                                 segments_seen = segments_seen.saturating_add(1);
                                 let estimated_buffer = (segments_seen as f64 * 2.0).min(20.0);
                                 let _ = buffer.report(estimated_buffer);
@@ -281,6 +319,7 @@ async fn consume_track_events(
                                     index,
                                     "segment",
                                     &pending_media.split().freeze(),
+                                    pending_presentation_time_s.take(),
                                 );
                             }
                             break;
@@ -305,6 +344,7 @@ async fn consume_track_events(
                                     index,
                                     "segment",
                                     &pending_media.split().freeze(),
+                                    pending_presentation_time_s.take(),
                                 );
                             }
                             break;
@@ -323,17 +363,27 @@ async fn consume_track_events(
     Ok(())
 }
 
-fn emit_fragment(callback: Option<&Function>, track_index: usize, kind: &str, data: &bytes::Bytes) {
+fn emit_fragment(
+    callback: Option<&Function>,
+    track_index: usize,
+    kind: &str,
+    data: &bytes::Bytes,
+    presentation_time_s: Option<f64>,
+) {
     let Some(callback) = callback else {
         return;
     };
     let array = js_sys::Uint8Array::from(data.as_ref());
-    let _ = callback.call3(
-        callback,
+    let args = js_sys::Array::of4(
         &JsValue::from_f64(track_index as f64),
         &JsValue::from_str(kind),
         &array,
+        &match presentation_time_s {
+            Some(seconds) => JsValue::from_f64(seconds),
+            None => JsValue::UNDEFINED,
+        },
     );
+    let _ = Reflect::apply(callback, callback, &args);
 }
 
 fn emit_status(callback: Option<&Function>, message: &str) {

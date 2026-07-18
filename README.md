@@ -24,7 +24,7 @@ segment scheduling, HTTP download, and optional Widevine decryption.
 ## Usage
 
 ```toml
-dashplay = "0.1"
+dashplay = "0.2"
 ```
 
 ```rust
